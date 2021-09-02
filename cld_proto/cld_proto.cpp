@@ -9,12 +9,14 @@
 #include <vector>
 
 #undef assert
+#define WIN32_LEAN_AND_MEAN
+#define VC_EXTRALEAN
+#define NOMINMAX
+#include <Windows.h>
 static int assert_(const char *s) {
-    // int x = MessageBoxA((void *)0, s, "Assert Fired", 0x2102);
-    // if (x == 3) ExitProcess(1);
-    // return x == 4;
-    (void)s;
-    return true;
+    int x = MessageBoxA(nullptr, s, "Assert Fired", 0x2102);
+    if (x == 3) ExitProcess(1);
+    return x == 4;
 }
 #define assert_2(LINE) #LINE
 #define assert_1(LINE) assert_2(LINE)
