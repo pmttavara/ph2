@@ -47,12 +47,15 @@ typedef struct Collision_Shape_Header {
     uint32_t material;
     uint32_t padding1;
 } Collision_Shape_Header;
+
+// sometimes known as "Hitpoly Plane"
 typedef struct Collision_Face {
     // header.shape is always COLLISION_QUAD or COLLISION_TRI
     Collision_Shape_Header header;
     Vector4 vertices[4]; // w always 1
 } Collision_Face;
 
+// sometimes known as "Hitpoly Column"
 typedef struct Collision_Cylinder {
     // header.shape is always COLLISION_CYLINDER
     Collision_Shape_Header header;
