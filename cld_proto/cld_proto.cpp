@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: © 2021 Phillip Trudeau-Tavara <pmttavara@protonmail.com>
+// SPDX-License-Identifier: 0BSD
+
 #define _CRT_SECURE_NO_WARNINGS
 
 #include <math.h>
