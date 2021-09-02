@@ -33,19 +33,29 @@ typedef struct Vector4 {
     float e[4];
 } Vector4;
 
+enum Collision_Shape_Type {
+    COLLISION_TRI = 0,
+    COLLISION_QUAD = 1,
+    COLLISION_CYLINDER = 3,
+};
+
+typedef struct Collision_Shape_Header {
+    uint8_t present;
+    uint8_t shape;
+    uint16_t padding0;
+    uint32_t weight; // always 4
+    uint32_t material;
+    uint32_t padding1;
+} Collision_Shape_Header;
 typedef struct Collision_Face {
-    uint32_t flags;
-    uint32_t always4;
-    uint32_t unknown;
-    uint32_t padding;
+    // header.shape is always COLLISION_QUAD or COLLISION_TRI
+    Collision_Shape_Header header;
     Vector4 vertices[4]; // w always 1
 } Collision_Face;
 
 typedef struct Collision_Cylinder {
-    uint32_t flags;
-    uint32_t always4;
-    uint32_t unknown;
-    uint32_t padding;
+    // header.shape is always COLLISION_CYLINDER
+    Collision_Shape_Header header;
     Vector4 position; // w always 1
     Vector3 height; // x,z always 0
     float radius;
@@ -108,8 +118,8 @@ int num_faces = 0;
 int num_tris = 0;
 int num_cylinders = 0;
 
-int unknown_values_face[256];
-int unknown_values_cylinder[256];
+int material_values_face[256];
+int material_values_cylinder[256];
 
 Collision_Face_Buffer collision_read_face_buffer(FILE *f, uint32_t start_offset) {
     Collision_Face_Buffer buf = {};
@@ -117,15 +127,16 @@ Collision_Face_Buffer collision_read_face_buffer(FILE *f, uint32_t start_offset)
     for (;;) {
         Collision_Face face = {};
         Read(f, face);
-        if (face.flags & 0x1) { // :SanityCheck face
-            assert((face.flags & ~0x101) == 0);
-            assert(face.always4 == 4);
-            assert((face.unknown & ~0x0f) == 0 || face.unknown == 99);
-            unknown_values_face[face.unknown]++;
-            assert(face.padding == 0);
+        if (face.header.present == 1) { // :SanityCheck face
+            assert(face.header.shape == COLLISION_QUAD || face.header.shape == COLLISION_TRI);
+            assert(face.header.weight == 4);
+            assert((face.header.material & ~0x0f) == 0 || face.header.material == 99);
+            material_values_face[face.header.material]++;
+            assert(face.header.padding0 == 0);
+            assert(face.header.padding1 == 0);
 
             num_faces++;
-            if (!(face.flags & 0x100)) {
+            if (face.header.shape == COLLISION_TRI) {
                 num_tris++;
                 // :SanityCheck tri
                 assert(face.vertices[3].e[0] == 0); // 4th vertex unused
@@ -155,15 +166,15 @@ Collision_Cylinder_Buffer collision_read_cylinder_buffer(FILE *f, uint32_t start
     for (;;) {
         Collision_Cylinder cylinder = {};
         Read(f, cylinder);
-        if (cylinder.flags & 1) {
+        if (cylinder.header.present == 1) {
             num_cylinders++;
             // :SanityCheck cylinder
-            assert((cylinder.flags & ~0x301) == 0);
-            assert(cylinder.always4 == 4);
-            assert((cylinder.unknown & ~0x0f) == 0 || cylinder.unknown == 99);
-            unknown_values_cylinder[cylinder.unknown]++;
-            assert(cylinder.padding == 0);
-            assert((cylinder.flags & 0x300) == 0x300);
+            assert(cylinder.header.shape == COLLISION_CYLINDER);
+            assert(cylinder.header.weight == 4);
+            assert((cylinder.header.material & ~0x0f) == 0 || cylinder.header.material == 99);
+            material_values_cylinder[cylinder.header.material]++;
+            assert(cylinder.header.padding0 == 0);
+            assert(cylinder.header.padding1 == 0);
             for (auto coord : cylinder.position.e) {
                 sanity_check_float(coord);
             }
@@ -280,15 +291,15 @@ int main() {
     printf("%d files (%d%%) have discontiguous subgroups\n", discontiguous_subgroups, discontiguous_subgroups * 100 / num_files);
     printf("%d files (%d%%) have non-monotonic subgroups\n", non_monotonic_subgroups, non_monotonic_subgroups * 100 / num_files);
     for (int i = 0; i < 256; i++) {
-        auto v = unknown_values_face[i];
+        auto v = material_values_face[i];
         if (v) {
-            printf("Collision faces had unknown value of 0x%02x %d times (%d%%)\n", i, v, v * 100 / num_faces);
+            printf("Collision faces had material value of 0x%02x %d times (%d%%)\n", i, v, v * 100 / num_faces);
         }
     }
     for (int i = 0; i < 256; i++) {
-        auto v = unknown_values_cylinder[i];
+        auto v = material_values_cylinder[i];
         if (v) {
-            printf("Collision cylinders had unknown value of 0x%02x %d times (%d%%)\n", i, v, v * 100 / num_cylinders);
+            printf("Collision cylinders had material value of 0x%02x %d times (%d%%)\n", i, v, v * 100 / num_cylinders);
         }
     }
 }
