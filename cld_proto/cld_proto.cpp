@@ -84,6 +84,7 @@ typedef struct Collision_Face {
     Collision_Shape_Header header;
     Vector4 vertices[4]; // w always 1
 } Collision_Face;
+static_assert(sizeof(Collision_Face) == 0x50, "");
 struct Collision_Face_With_Stats {
     Collision_Face face;
     int touched[16];
@@ -97,6 +98,7 @@ typedef struct Collision_Cylinder {
     Vector3 height; // x,z always 0
     float radius;
 } Collision_Cylinder;
+static_assert(sizeof(Collision_Cylinder) == 0x30, "");
 struct Collision_Cylinder_With_Stats {
     Collision_Cylinder cylinder;
     int touched[16];
@@ -370,14 +372,40 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
             do_checks(3, header.group_index_buffer_offsets[3]);
             do_checks(4, header.group_index_buffer_offsets[4]);
         }
-        /*int running_offset = sizeof(Collision_Header);
-        for (int j = 0; j < 5; j++) {
-            for (int i = 0; i < 16; i++) {
-                
+        int running_offset = sizeof(Collision_Header);
+        for (int group = 0; group < 5; group++) {
+            for (int subgroup = 0; subgroup < 16; subgroup++) {
+                new_header.group_index_buffer_offsets[group][subgroup] = running_offset;
                 // Add sentinel value
-                index_buffer_lengths[j][i] += 1;
+                uint32_t index_buffer_length_in_bytes = (index_buffer_lengths[group][subgroup] + 1) * sizeof(uint32_t);
+                running_offset += index_buffer_length_in_bytes;
             }
-        }*/
+        }
+        // @Important! SH2 .CLD files round up the start of the first collision buffers to the next 16 byte boundary.
+        // (And therefore, all the later buffers also start at 16 bytes since the size of the collision shape is 80 which is divisible by 16.)
+        // The intervening padding bytes are filled with 0.
+        // If the start is already rounded, another 16 bytes gets added on. Don't ask me why.
+        running_offset += 16;
+        running_offset &= ~15;
+        for (int group = 0; group < 5; group++) {
+            new_header.group_collision_buffer_offsets[group] = running_offset;
+            uint32_t collision_buffer_length_in_bytes = new_header.group_lengths[group];
+            running_offset += collision_buffer_length_in_bytes;
+        }
+        int new_file_length = running_offset;
+        assert(new_file_length == file_length);
+        // just @Test code
+        {
+            assert(header.origin.e[0] == new_header.origin.e[0]);
+            assert(header.origin.e[1] == new_header.origin.e[1]);
+            assert(new_header.padding == 0);
+            for (int group = 0; group < 5; group++) {
+                for (int subgroup = 0; subgroup < 16; subgroup++) {
+                    assert(new_header.group_index_buffer_offsets[group][subgroup] == header.group_index_buffer_offsets[group][subgroup]);
+                }
+                assert(new_header.group_collision_buffer_offsets[group] == header.group_collision_buffer_offsets[group]);
+            }
+        }
     }
 }
 
