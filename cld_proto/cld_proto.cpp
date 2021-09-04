@@ -102,22 +102,14 @@ struct Collision_Cylinder_With_Stats {
     int touched[16];
 };
 
-typedef struct Collision_Offset_Table {
-    uint32_t group_index_buffer_offsets[5][16];
-    uint32_t group_collision_buffer_offsets[5];
-} Collision_Offset_Table;
-
 typedef struct Collision_Header {
     Vector2 origin;
-    uint32_t floor_group_length;
-    uint32_t wall_group_length;
-    uint32_t something_group_length;
-    uint32_t furniture_group_length;
-    uint32_t radial_group_length;
+    // Group 0 is floors, 1 is walls, 2 is something, 3 is furniture, 4 is cylinders (different data structure)
+    uint32_t group_lengths[5];
     uint32_t padding;
-    Collision_Offset_Table offset_table;
+    uint32_t group_index_buffer_offsets[5][16];
+    uint32_t group_collision_buffer_offsets[5];
 } Collision_Header;
-static_assert(sizeof(Collision_Offset_Table) == 0x154 && 0x154 == 85 * 4, "");
 static_assert(sizeof(Collision_Header) == 0x174, "");
 
 struct Collision_Index_Buffer {
@@ -250,17 +242,17 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
     }
     Collision_Face_Buffer group_buffers[4] = {};
     Collision_Cylinder_Buffer group_4_buffer = {};
-    group_buffers[0] = collision_read_face_buffer(f, header.offset_table.group_collision_buffer_offsets[0]);
-    group_buffers[1] = collision_read_face_buffer(f, header.offset_table.group_collision_buffer_offsets[1]);
-    group_buffers[2] = collision_read_face_buffer(f, header.offset_table.group_collision_buffer_offsets[2]);
-    group_buffers[3] = collision_read_face_buffer(f, header.offset_table.group_collision_buffer_offsets[3]);
-    group_4_buffer = collision_read_cylinder_buffer(f, header.offset_table.group_collision_buffer_offsets[4]);
+    group_buffers[0] = collision_read_face_buffer(f, header.group_collision_buffer_offsets[0]);
+    group_buffers[1] = collision_read_face_buffer(f, header.group_collision_buffer_offsets[1]);
+    group_buffers[2] = collision_read_face_buffer(f, header.group_collision_buffer_offsets[2]);
+    group_buffers[3] = collision_read_face_buffer(f, header.group_collision_buffer_offsets[3]);
+    group_4_buffer = collision_read_cylinder_buffer(f, header.group_collision_buffer_offsets[4]);
     {
-        assert(header.floor_group_length == (group_buffers[0].faces.size() + 1) * sizeof(Collision_Face));
-        assert(header.wall_group_length == (group_buffers[1].faces.size() + 1) * sizeof(Collision_Face));
-        assert(header.something_group_length == (group_buffers[2].faces.size() + 1) * sizeof(Collision_Face));
-        assert(header.furniture_group_length == (group_buffers[3].faces.size() + 1) * sizeof(Collision_Face));
-        assert(header.radial_group_length == (group_4_buffer.cylinders.size() + 1) * sizeof(Collision_Cylinder));
+        assert(header.group_lengths[0] == (group_buffers[0].faces.size() + 1) * sizeof(Collision_Face));
+        assert(header.group_lengths[1] == (group_buffers[1].faces.size() + 1) * sizeof(Collision_Face));
+        assert(header.group_lengths[2] == (group_buffers[2].faces.size() + 1) * sizeof(Collision_Face));
+        assert(header.group_lengths[3] == (group_buffers[3].faces.size() + 1) * sizeof(Collision_Face));
+        assert(header.group_lengths[4] == (group_4_buffer.cylinders.size() + 1) * sizeof(Collision_Cylinder));
     }
     for (int i = 0; i < 16; i++) {
         auto do_checks = [&] (auto & offsets, auto & group_buffer_items) {
@@ -287,11 +279,11 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
                 group_buffer_items[idx].touched[i]++;
             }
         };
-        do_checks(header.offset_table.group_index_buffer_offsets[0], group_buffers[0].faces);
-        do_checks(header.offset_table.group_index_buffer_offsets[1], group_buffers[1].faces);
-        do_checks(header.offset_table.group_index_buffer_offsets[2], group_buffers[2].faces);
-        do_checks(header.offset_table.group_index_buffer_offsets[3], group_buffers[3].faces);
-        do_checks(header.offset_table.group_index_buffer_offsets[4], group_4_buffer.cylinders);
+        do_checks(header.group_index_buffer_offsets[0], group_buffers[0].faces);
+        do_checks(header.group_index_buffer_offsets[1], group_buffers[1].faces);
+        do_checks(header.group_index_buffer_offsets[2], group_buffers[2].faces);
+        do_checks(header.group_index_buffer_offsets[3], group_buffers[3].faces);
+        do_checks(header.group_index_buffer_offsets[4], group_4_buffer.cylinders);
     }
     for (auto & buf : group_buffers) {
         for (auto c : buf.faces) {
@@ -340,11 +332,11 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
         
         Collision_Header new_header = {};
         new_header.origin = header.origin;
-        new_header.floor_group_length = (uint32_t)(group_buffers[0].faces.size() + 1) * sizeof(Collision_Face);
-        new_header.wall_group_length = (uint32_t)(group_buffers[1].faces.size() + 1) * sizeof(Collision_Face);
-        new_header.something_group_length = (uint32_t)(group_buffers[2].faces.size() + 1) * sizeof(Collision_Face);
-        new_header.furniture_group_length = (uint32_t)(group_buffers[3].faces.size() + 1) * sizeof(Collision_Face);
-        new_header.radial_group_length = (uint32_t)(group_4_buffer.cylinders.size() + 1) * sizeof(Collision_Cylinder);
+        new_header.group_lengths[0] = (uint32_t)(group_buffers[0].faces.size() + 1) * sizeof(Collision_Face);
+        new_header.group_lengths[1] = (uint32_t)(group_buffers[1].faces.size() + 1) * sizeof(Collision_Face);
+        new_header.group_lengths[2] = (uint32_t)(group_buffers[2].faces.size() + 1) * sizeof(Collision_Face);
+        new_header.group_lengths[3] = (uint32_t)(group_buffers[3].faces.size() + 1) * sizeof(Collision_Face);
+        new_header.group_lengths[4] = (uint32_t)(group_4_buffer.cylinders.size() + 1) * sizeof(Collision_Cylinder);
         int index_buffer_lengths[5][16] = {};
         for (int group = 0; group < 4; group++) {
             for (auto c : group_buffers[group].faces) {
@@ -372,11 +364,11 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
                 Collision_Index_Buffer buf = collision_read_index_buffer(f, offsets[subgroup]);
                 assert(index_buffer_lengths[group][subgroup] == buf.indices.size());
             };
-            do_checks(0, header.offset_table.group_index_buffer_offsets[0]);
-            do_checks(1, header.offset_table.group_index_buffer_offsets[1]);
-            do_checks(2, header.offset_table.group_index_buffer_offsets[2]);
-            do_checks(3, header.offset_table.group_index_buffer_offsets[3]);
-            do_checks(4, header.offset_table.group_index_buffer_offsets[4]);
+            do_checks(0, header.group_index_buffer_offsets[0]);
+            do_checks(1, header.group_index_buffer_offsets[1]);
+            do_checks(2, header.group_index_buffer_offsets[2]);
+            do_checks(3, header.group_index_buffer_offsets[3]);
+            do_checks(4, header.group_index_buffer_offsets[4]);
         }
         /*int running_offset = sizeof(Collision_Header);
         for (int j = 0; j < 5; j++) {
