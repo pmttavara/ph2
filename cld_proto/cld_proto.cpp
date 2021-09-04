@@ -103,16 +103,8 @@ struct Collision_Cylinder_With_Stats {
 };
 
 typedef struct Collision_Offset_Table {
-    uint32_t group_0_index_buffer_offsets[16];
-    uint32_t group_1_index_buffer_offsets[16];
-    uint32_t group_2_index_buffer_offsets[16];
-    uint32_t group_3_index_buffer_offsets[16];
-    uint32_t group_4_index_buffer_offsets[16];
-    uint32_t group_0_face_buffer_offset;
-    uint32_t group_1_face_buffer_offset;
-    uint32_t group_2_face_buffer_offset;
-    uint32_t group_3_face_buffer_offset;
-    uint32_t group_4_cylinder_buffer_offset;
+    uint32_t group_index_buffer_offsets[5][16];
+    uint32_t group_collision_buffer_offsets[5];
 } Collision_Offset_Table;
 
 typedef struct Collision_Header {
@@ -258,11 +250,11 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
     }
     Collision_Face_Buffer group_buffers[4] = {};
     Collision_Cylinder_Buffer group_4_buffer = {};
-    group_buffers[0] = collision_read_face_buffer(f, header.offset_table.group_0_face_buffer_offset);
-    group_buffers[1] = collision_read_face_buffer(f, header.offset_table.group_1_face_buffer_offset);
-    group_buffers[2] = collision_read_face_buffer(f, header.offset_table.group_2_face_buffer_offset);
-    group_buffers[3] = collision_read_face_buffer(f, header.offset_table.group_3_face_buffer_offset);
-    group_4_buffer = collision_read_cylinder_buffer(f, header.offset_table.group_4_cylinder_buffer_offset);
+    group_buffers[0] = collision_read_face_buffer(f, header.offset_table.group_collision_buffer_offsets[0]);
+    group_buffers[1] = collision_read_face_buffer(f, header.offset_table.group_collision_buffer_offsets[1]);
+    group_buffers[2] = collision_read_face_buffer(f, header.offset_table.group_collision_buffer_offsets[2]);
+    group_buffers[3] = collision_read_face_buffer(f, header.offset_table.group_collision_buffer_offsets[3]);
+    group_4_buffer = collision_read_cylinder_buffer(f, header.offset_table.group_collision_buffer_offsets[4]);
     {
         assert(header.floor_group_length == (group_buffers[0].faces.size() + 1) * sizeof(Collision_Face));
         assert(header.wall_group_length == (group_buffers[1].faces.size() + 1) * sizeof(Collision_Face));
@@ -295,11 +287,11 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
                 group_buffer_items[idx].touched[i]++;
             }
         };
-        do_checks(header.offset_table.group_0_index_buffer_offsets, group_buffers[0].faces);
-        do_checks(header.offset_table.group_1_index_buffer_offsets, group_buffers[1].faces);
-        do_checks(header.offset_table.group_2_index_buffer_offsets, group_buffers[2].faces);
-        do_checks(header.offset_table.group_3_index_buffer_offsets, group_buffers[3].faces);
-        do_checks(header.offset_table.group_4_index_buffer_offsets, group_4_buffer.cylinders);
+        do_checks(header.offset_table.group_index_buffer_offsets[0], group_buffers[0].faces);
+        do_checks(header.offset_table.group_index_buffer_offsets[1], group_buffers[1].faces);
+        do_checks(header.offset_table.group_index_buffer_offsets[2], group_buffers[2].faces);
+        do_checks(header.offset_table.group_index_buffer_offsets[3], group_buffers[3].faces);
+        do_checks(header.offset_table.group_index_buffer_offsets[4], group_4_buffer.cylinders);
     }
     for (auto & buf : group_buffers) {
         for (auto c : buf.faces) {
@@ -380,11 +372,11 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
                 Collision_Index_Buffer buf = collision_read_index_buffer(f, offsets[subgroup]);
                 assert(index_buffer_lengths[group][subgroup] == buf.indices.size());
             };
-            do_checks(0, header.offset_table.group_0_index_buffer_offsets);
-            do_checks(1, header.offset_table.group_1_index_buffer_offsets);
-            do_checks(2, header.offset_table.group_2_index_buffer_offsets);
-            do_checks(3, header.offset_table.group_3_index_buffer_offsets);
-            do_checks(4, header.offset_table.group_4_index_buffer_offsets);
+            do_checks(0, header.offset_table.group_index_buffer_offsets[0]);
+            do_checks(1, header.offset_table.group_index_buffer_offsets[1]);
+            do_checks(2, header.offset_table.group_index_buffer_offsets[2]);
+            do_checks(3, header.offset_table.group_index_buffer_offsets[3]);
+            do_checks(4, header.offset_table.group_index_buffer_offsets[4]);
         }
         /*int running_offset = sizeof(Collision_Header);
         for (int j = 0; j < 5; j++) {
