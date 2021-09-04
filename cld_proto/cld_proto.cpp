@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: 0BSD
 
 #define _CRT_SECURE_NO_WARNINGS
+#pragma warning(disable: 4201)
 
 #include <math.h>
 #include <stdio.h>
@@ -23,15 +24,35 @@ static int assert_(const char *s) {
 #define assert(e) ((e) || assert_("At " __FILE__ ":" assert_1(__LINE__) ":\n\n" #e "\n\nPress Retry to debug.") && (__debugbreak(), 0))
 
 
-typedef struct Vector2 {
+struct Vector2 {
     float e[2];
-} Vector2;
-typedef struct Vector3 {
-    float e[3];
-} Vector3;
-typedef struct Vector4 {
-    float e[4];
-} Vector4;
+};
+union Vector3 {
+    float e[3] = {};
+    struct {
+        float x, y, z;
+    };
+    Vector3() = default;
+    Vector3(float x, float y, float z) : x{x}, y{y}, z{z} {}
+};
+Vector3 operator-(Vector3 v) { return { -v.x, -v.y, -v.z }; }
+Vector3 operator+(Vector3 a, Vector3 b) {
+    return { a.x + b.x, a.y + b.y, a.z + b.z };
+}
+Vector3 operator-(Vector3 a, Vector3 b) {
+    return { a.x - b.x, a.y - b.y, a.z - b.z };
+}
+union Vector4 {
+    float e[4] = {};
+    struct {
+        float x, y, z, w;
+    };
+    Vector3 xyz;
+    Vector4() : e{} {}
+};
+float vector3_length(Vector3 v) {
+    return sqrtf(v.e[0] * v.e[0] + v.e[1] * v.e[1] + v.e[2] * v.e[2]);
+}
 
 enum Collision_Shape_Type {
     COLLISION_TRI = 0,
@@ -54,6 +75,10 @@ typedef struct Collision_Face {
     Collision_Shape_Header header;
     Vector4 vertices[4]; // w always 1
 } Collision_Face;
+struct Collision_Face_With_Stats {
+    Collision_Face face;
+    int touched[16];
+};
 
 // sometimes known as "Hitpoly Column"
 typedef struct Collision_Cylinder {
@@ -63,6 +88,10 @@ typedef struct Collision_Cylinder {
     Vector3 height; // x,z always 0
     float radius;
 } Collision_Cylinder;
+struct Collision_Cylinder_With_Stats {
+    Collision_Cylinder cylinder;
+    int touched[16];
+};
 
 typedef struct Collision_Offset_Table {
     uint32_t group_0_index_buffer_offsets[16];
@@ -94,10 +123,10 @@ struct Collision_Index_Buffer {
     std::vector<uint32_t> indices = {};
 };
 struct Collision_Face_Buffer {
-    std::vector<Collision_Face> faces = {};
+    std::vector<Collision_Face_With_Stats> faces = {};
 };
 struct Collision_Cylinder_Buffer {
-    std::vector<Collision_Cylinder> cylinders = {};
+    std::vector<Collision_Cylinder_With_Stats> cylinders = {};
 };
 
 void sanity_check_float(float f) {
@@ -145,6 +174,15 @@ Collision_Face_Buffer collision_read_face_buffer(FILE *f, uint32_t start_offset)
                 assert(face.vertices[3].e[0] == 0); // 4th vertex unused
                 assert(face.vertices[3].e[1] == 0); // 4th vertex unused
                 assert(face.vertices[3].e[2] == 0); // 4th vertex unused
+            } else {
+                // Quads can be trapezoids/etc., so they can't be implicitly encoded via 3 vertices.
+                //Vector3 _0 = face.vertices[0].xyz;
+                //Vector3 _1 = face.vertices[1].xyz;
+                //Vector3 _2 = face.vertices[2].xyz;
+                //Vector3 _3_encoded = -(_1 - _0) + (_2 - _0) + _0;
+                //Vector3 disp = face.vertices[3].xyz - _3_encoded;
+                //float distance = vector3_length(disp);
+                //assert(distance < 1.0e-04f);
             }
             // :SanityCheck vertices
             for (auto v : face.vertices) {
@@ -159,7 +197,7 @@ Collision_Face_Buffer collision_read_face_buffer(FILE *f, uint32_t start_offset)
             assert(memcmp(&face, &zero, sizeof(face)) == 0);
             break;
         }
-        buf.faces.push_back(face);
+        buf.faces.push_back( Collision_Face_With_Stats{ face, {} } );
     }
     return buf;
 }
@@ -194,11 +232,14 @@ Collision_Cylinder_Buffer collision_read_cylinder_buffer(FILE *f, uint32_t start
             assert(memcmp(&cylinder, &zero, sizeof(cylinder)) == 0);
             break;
         }
-        buf.cylinders.push_back(cylinder);
+        buf.cylinders.push_back(Collision_Cylinder_With_Stats { cylinder, {} });
     }
     return buf;
 }
 
+int total_surfaces = 0;
+int total_surface_references = 0;
+int total_surface_references_by_distinct_subgroups = 0;
 void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, bool *nonmonotonic) {
     Collision_Header header = {};
     Read(f, header);
@@ -242,6 +283,7 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
                     *discontiguous = true;
                 }
                 monotonicityChecker = idx;
+                group_buffer_items[idx].touched[i]++;
             }
         };
         do_checks(header.offset_table.group_0_index_buffer_offsets, group_buffers[0].faces);
@@ -249,6 +291,41 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
         do_checks(header.offset_table.group_2_index_buffer_offsets, group_buffers[2].faces);
         do_checks(header.offset_table.group_3_index_buffer_offsets, group_buffers[3].faces);
         do_checks(header.offset_table.group_4_index_buffer_offsets, group_4_buffer.cylinders);
+    }
+    for (auto & buf : group_buffers) {
+        for (auto c : buf.faces) {
+            int sum = 0;
+            int distinct = 0;
+            for (int i = 0; i < 16; i++) {
+                sum += c.touched[i];
+                if (c.touched[i] > 0) {
+                    distinct += 1;
+                }
+                // :SanityCheck - by being <= 1, we can encode subgroups as bitfields
+                assert(c.touched[i] <= 1);
+            }
+            total_surfaces += 1;
+            total_surface_references += sum;
+            total_surface_references_by_distinct_subgroups += distinct;
+        }
+    }
+    {
+        auto & buf = group_4_buffer;
+        for (auto c : buf.cylinders) {
+            int sum = 0;
+            int distinct = 0;
+            for (int i = 0; i < 16; i++) {
+                sum += c.touched[i];
+                if (c.touched[i] > 0) {
+                    distinct += 1;
+                }
+                // :SanityCheck - by being <= 1, we can encode subgroups as bitfields
+                assert(c.touched[i] <= 1);
+            }
+            total_surfaces += 1;
+            total_surface_references += sum;
+            total_surface_references_by_distinct_subgroups += distinct;
+        }
     }
 }
 
@@ -293,6 +370,13 @@ int main() {
     printf("%d files (%d%%) use more than just their first subgroup in a group\n", more_than_one_subgroup, more_than_one_subgroup * 100 / num_files);
     printf("%d files (%d%%) have discontiguous subgroups\n", discontiguous_subgroups, discontiguous_subgroups * 100 / num_files);
     printf("%d files (%d%%) have non-monotonic subgroups\n", non_monotonic_subgroups, non_monotonic_subgroups * 100 / num_files);
+    printf("%d surfaces, %d references (%.2f each), %d distinct subgroup references (%.2f each)\n",
+        total_surfaces,
+        total_surface_references,
+        (float)total_surface_references / total_surfaces,
+        total_surface_references_by_distinct_subgroups,
+        (float)total_surface_references_by_distinct_subgroups / total_surfaces
+    );
     for (int i = 0; i < 256; i++) {
         auto v = material_values_face[i];
         if (v) {
