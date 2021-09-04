@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: © 2021 Phillip Trudeau-Tavara <pmttavara@protonmail.com>
 // SPDX-License-Identifier: 0BSD
 
+#ifndef defer
+struct defer_dummy {};
+template <class F> struct deferrer { F f; ~deferrer() { f(); } };
+template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
+#define DEFER_(LINE) zz_defer##LINE
+#define DEFER(LINE) DEFER_(LINE)
+#define defer auto DEFER(__LINE__) = defer_dummy{} *[&]()
+#endif // defer
+
 #define _CRT_SECURE_NO_WARNINGS
 #pragma warning(disable: 4201)
 
@@ -326,6 +335,65 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
             total_surface_references += sum;
             total_surface_references_by_distinct_subgroups += distinct;
         }
+    }
+    { // Test Write File - Roundtrippability
+        fseek(f, 0, SEEK_END);
+        int file_length = ftell(f);
+        char * file_data = (char *)malloc(file_length);
+        defer {
+            free(file_data);
+        };
+        fseek(f, 0, SEEK_SET);
+        assert(fread(file_data, 1, file_length, f) == file_length);
+        
+        Collision_Header new_header = {};
+        new_header.origin = header.origin;
+        new_header.floor_group_length = (uint32_t)(group_buffers[0].faces.size() + 1) * sizeof(Collision_Face);
+        new_header.wall_group_length = (uint32_t)(group_buffers[1].faces.size() + 1) * sizeof(Collision_Face);
+        new_header.something_group_length = (uint32_t)(group_buffers[2].faces.size() + 1) * sizeof(Collision_Face);
+        new_header.furniture_group_length = (uint32_t)(group_buffers[3].faces.size() + 1) * sizeof(Collision_Face);
+        new_header.radial_group_length = (uint32_t)(group_4_buffer.cylinders.size() + 1) * sizeof(Collision_Cylinder);
+        int index_buffer_lengths[5][16] = {};
+        for (int group = 0; group < 4; group++) {
+            for (auto c : group_buffers[group].faces) {
+                for (int subgroup = 0; subgroup < 16; subgroup++) {
+                    assert(c.touched[subgroup] <= 1);
+                    if (c.touched[subgroup]) {
+                        index_buffer_lengths[group][subgroup]++;
+                    }
+                }
+            }
+        }
+        {
+            for (auto c : group_4_buffer.cylinders) {
+                for (int subgroup = 0; subgroup < 16; subgroup++) {
+                    assert(c.touched[subgroup] <= 1);
+                    if (c.touched[subgroup]) {
+                        index_buffer_lengths[4][subgroup]++;
+                    }
+                }
+            }
+        }
+        // just @Test code
+        for (int subgroup = 0; subgroup < 16; subgroup++) {
+            auto do_checks = [&] (int group, auto & offsets) {
+                Collision_Index_Buffer buf = collision_read_index_buffer(f, offsets[subgroup]);
+                assert(index_buffer_lengths[group][subgroup] == buf.indices.size());
+            };
+            do_checks(0, header.offset_table.group_0_index_buffer_offsets);
+            do_checks(1, header.offset_table.group_1_index_buffer_offsets);
+            do_checks(2, header.offset_table.group_2_index_buffer_offsets);
+            do_checks(3, header.offset_table.group_3_index_buffer_offsets);
+            do_checks(4, header.offset_table.group_4_index_buffer_offsets);
+        }
+        /*int running_offset = sizeof(Collision_Header);
+        for (int j = 0; j < 5; j++) {
+            for (int i = 0; i < 16; i++) {
+                
+                // Add sentinel value
+                index_buffer_lengths[j][i] += 1;
+            }
+        }*/
     }
 }
 
