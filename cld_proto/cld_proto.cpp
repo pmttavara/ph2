@@ -452,16 +452,67 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
             }
             for (int group = 0; group < 4; group++) {
                 for (auto &c : group_buffers[group].faces) {
-                    Write(c.face); // @Temporary: gotta clean-room extract only the info we'll be preserving in the packed representation
+                    // @Note: I'm trying to reflect my expected packed data representation here.
+                    Collision_Face face = {0};
+                    face.header.present = 1;
+                    bool quad = (c.face.header.shape == COLLISION_QUAD);
+                    face.header.shape = quad ? (uint8_t)COLLISION_QUAD : (uint8_t)COLLISION_TRI;
+                    face.header.padding0 = 0;
+                    face.header.weight = 4;
+                    face.header.material = c.face.header.material;
+                    face.header.padding1 = 0;
+                    face.vertices[0].e[0] = c.face.vertices[0].e[0];
+                    face.vertices[0].e[1] = c.face.vertices[0].e[1];
+                    face.vertices[0].e[2] = c.face.vertices[0].e[2];
+                    face.vertices[0].e[3] = 1;
+                    
+                    face.vertices[1].e[0] = c.face.vertices[1].e[0];
+                    face.vertices[1].e[1] = c.face.vertices[1].e[1];
+                    face.vertices[1].e[2] = c.face.vertices[1].e[2];
+                    face.vertices[1].e[3] = 1;
+                    
+                    face.vertices[2].e[0] = c.face.vertices[2].e[0];
+                    face.vertices[2].e[1] = c.face.vertices[2].e[1];
+                    face.vertices[2].e[2] = c.face.vertices[2].e[2];
+                    face.vertices[2].e[3] = 1;
+                    
+                    if (quad) {
+                        face.vertices[3].e[0] = c.face.vertices[3].e[0];
+                        face.vertices[3].e[1] = c.face.vertices[3].e[1];
+                        face.vertices[3].e[2] = c.face.vertices[3].e[2];
+                        face.vertices[3].e[3] = 1;
+                    } else {
+                        face.vertices[3].e[0] = 0;
+                        face.vertices[3].e[1] = 0;
+                        face.vertices[3].e[2] = 0;
+                        face.vertices[3].e[3] = 1;
+                    }
+                    Write(face);
                 }
-                Collision_Face sentinel = {};
+                Collision_Face sentinel = {0};
                 Write(sentinel);
             }
             {
                 for (auto &c : group_4_buffer.cylinders) {
-                    Write(c.cylinder); // @Temporary: gotta clean-room extract only the info we'll be preserving in the packed representation
+                    // @Note: I'm trying to reflect my expected packed data representation here.
+                    Collision_Cylinder cylinder = {0};
+                    cylinder.header.present = 1;
+                    cylinder.header.shape = (uint8_t)COLLISION_CYLINDER;
+                    cylinder.header.padding0 = 0;
+                    cylinder.header.weight = 4;
+                    cylinder.header.material = c.cylinder.header.material;
+                    cylinder.header.padding1 = 0;
+                    cylinder.position.e[0] = c.cylinder.position.e[0];
+                    cylinder.position.e[1] = c.cylinder.position.e[1];
+                    cylinder.position.e[2] = c.cylinder.position.e[2];
+                    cylinder.position.e[3] = 1;
+                    cylinder.height.e[0] = 0;
+                    cylinder.height.e[1] = c.cylinder.height.e[1];
+                    cylinder.height.e[2] = 0;
+                    cylinder.radius = c.cylinder.radius;
+                    Write(cylinder);
                 }
-                Collision_Cylinder sentinel = {};
+                Collision_Cylinder sentinel = {0};
                 Write(sentinel);
             }
             assert(ptr == end);
