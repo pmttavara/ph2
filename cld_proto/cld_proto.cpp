@@ -325,7 +325,7 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
     { // Test Write File - Roundtrippability
         fseek(f, 0, SEEK_END);
         int file_length = ftell(f);
-        char * file_data = (char *)malloc(file_length);
+        char *file_data = (char *)malloc(file_length);
         defer {
             free(file_data);
         };
@@ -405,6 +405,70 @@ void check_cld_file(FILE *f, bool *only_first_subgroup, bool *discontiguous, boo
                 }
                 assert(new_header.group_collision_buffer_offsets[group] == header.group_collision_buffer_offsets[group]);
             }
+        }
+        char *new_file_data = (char *)malloc(new_file_length);
+        defer {
+            free(new_file_data);
+        };
+        {
+            char *ptr = new_file_data;
+            int len = new_file_length;
+            char *end = ptr + len;
+#define Write(x) (assert(ptr + sizeof(x) <= end), memcpy(ptr, &x, sizeof(x)), ptr += sizeof(x))
+            Write(new_header);
+            for (int group = 0; group < 4; group++) {
+                for (int subgroup = 0; subgroup < 16; subgroup++) {
+                    for (auto &c : group_buffers[group].faces) {
+                        uint32_t idx = (uint32_t)(&c - group_buffers[group].faces.data()); // semi-@Hack @SemiHack
+                        assert(c.touched[subgroup] <= 1);
+                        if (c.touched[subgroup]) {
+                            Write(idx);
+                        }
+                    }
+                    uint32_t sentinel = 0xffffffff;
+                    Write(sentinel);
+                }
+            }
+            {
+                for (int subgroup = 0; subgroup < 16; subgroup++) {
+                    for (auto &c : group_4_buffer.cylinders) {
+                        uint32_t idx = (uint32_t)(&c - group_4_buffer.cylinders.data()); // semi-@Hack @SemiHack
+                        assert(c.touched[subgroup] <= 1);
+                        if (c.touched[subgroup]) {
+                            Write(idx);
+                        }
+                    }
+                    uint32_t sentinel = 0xffffffff;
+                    Write(sentinel);
+                }
+            }
+            { // @Important: round up to next 16 bytes
+                char *new_ptr = ptr + 16;
+                new_ptr = (char *)((uintptr_t)new_ptr & ~15);
+                while (ptr < new_ptr) {
+                    uint8_t zero = 0;
+                    Write(zero);
+                }
+            }
+            for (int group = 0; group < 4; group++) {
+                for (auto &c : group_buffers[group].faces) {
+                    Write(c.face); // @Temporary: gotta clean-room extract only the info we'll be preserving in the packed representation
+                }
+                Collision_Face sentinel = {};
+                Write(sentinel);
+            }
+            {
+                for (auto &c : group_4_buffer.cylinders) {
+                    Write(c.cylinder); // @Temporary: gotta clean-room extract only the info we'll be preserving in the packed representation
+                }
+                Collision_Cylinder sentinel = {};
+                Write(sentinel);
+            }
+            assert(ptr == end);
+            for (int i = 0; i < file_length; i++) {
+                assert(new_file_data[i] == file_data[i]);
+            }
+            assert(memcmp(new_file_data, file_data, file_length) == 0);
         }
     }
 }
