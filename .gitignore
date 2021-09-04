@@ -2,5 +2,7 @@
 *.cld
 *.ilk
 *.obj
+*.exp
+*.lib
 *.pdb
 *.exe
