@@ -7,4 +7,4 @@ set "INCLUDE=%vctoolsdir%\include;%winkits10include%\ucrt;%winkits8dir%\include\
 set "LIB=%vctoolsdir%\lib\amd64;%winkits8dir%\lib\winv6.3\um\x64;%winkits10lib%\ucrt\x64;"
 set "PATH=%vctoolsdir%\bin\amd64;%PATH%"
 cl -Od -Z7 -nologo -Wall -WX -wd4820 -wd4710 -EHsc- ph2_cld.c ph2_cld_test.c
-clang -O0 -g -gfull -gcodeview -fsanitize=address -fsanitize=undefined -fsanitize-address-use-after-scope -ftrapv -Werror -Weverything -Wpedantic -std=c89 ph2_cld.c ph2_cld_test.c -o ph2_cld_test.exe
+:: clang -O0 -g -gfull -gcodeview -fsanitize=address -fsanitize=undefined -fsanitize-address-use-after-scope -ftrapv -Werror -Weverything -Wpedantic -std=c89 ph2_cld.c ph2_cld_test.c -o ph2_cld_test.exe
