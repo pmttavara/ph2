@@ -292,6 +292,51 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
             if (memcmp(&cylinder, &zero, sizeof(cylinder)) != 0) return result;
         }
     }
+    { /* Populate the face subgroup bitfields */
+        int group = 0;
+        for (; group < 4; group++) {
+            int subgroup = 0;
+            for (; subgroup < 16; subgroup++) {
+                PH2CLD_Face *faces;
+                size_t faces_count;
+                uint32_t index_offset = header.group_index_buffer_offsets[group][subgroup];
+                /* Yuck! */
+                /**/ if (group == 0) { faces = result.group_0_faces; faces_count = result.group_0_faces_count; }
+                else if (group == 1) { faces = result.group_1_faces; faces_count = result.group_1_faces_count; }
+                else if (group == 2) { faces = result.group_2_faces; faces_count = result.group_2_faces_count; }
+                else /*           */ { faces = result.group_3_faces; faces_count = result.group_3_faces_count; }
+
+                for (;; index_offset += 4) {
+                    uint32_t index = 0;
+                    if (!PH2CLD_read(file_data, file_bytes, index_offset, &index, sizeof(index))) return result;
+                    if (index == 0xffffffff) break;
+                    if (index >= faces_count) return result;
+
+                    if (faces[index].subgroups & (1 << subgroup)) return result;
+                    faces[index].subgroups |= 1 << subgroup;
+                }
+            }
+        }
+    }
+    { /* Populate the cylinder subgroup bitfields */
+        int group = 4;
+        int subgroup = 0;
+        for (; subgroup < 16; subgroup++) {
+            PH2CLD_Cylinder *cylinders = result.group_4_cylinders;
+            size_t cylinders_count = result.group_4_cylinders_count;
+            uint32_t index_offset = header.group_index_buffer_offsets[group][subgroup];
+
+            for (; ; index_offset += 4) {
+                uint32_t index = 0;
+                if (!PH2CLD_read(file_data, file_bytes, index_offset, &index, sizeof(index))) return result;
+                if (index == 0xffffffff) break;
+                if (index >= cylinders_count) return result;
+
+                if (cylinders[index].subgroups & (1 << subgroup)) return result;
+                cylinders[index].subgroups |= 1 << subgroup;
+            }
+        }
+    }
     
     result.valid = PH2CLD_true;
     return result;

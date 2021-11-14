@@ -32,6 +32,10 @@ int main(void) {
                 file_length = fread(file_data, 1, file_length, f);
                 data = PH2CLD_get_collision_data_from_memory(file_data, file_length, collision_memory, collision_memory_length);
                 assert(data.valid);
+
+                free(file_data);
+                free(collision_memory);
+
                 fclose(f);
                 if (_findnext(directory, &find_data) < 0) {
                     if (errno == ENOENT) break;
