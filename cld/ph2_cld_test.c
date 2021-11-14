@@ -29,7 +29,7 @@ int main(void) {
                 size_t collision_memory_length = 1024*1024;
                 char *collision_memory = malloc(collision_memory_length);
                 PH2CLD_Collision_Data data;
-                fread(file_data, 1, file_length, f);
+                file_length = fread(file_data, 1, file_length, f);
                 data = PH2CLD_get_collision_data_from_memory(file_data, file_length, collision_memory, collision_memory_length);
                 assert(data.valid);
                 fclose(f);
