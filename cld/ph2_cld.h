@@ -61,14 +61,16 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
     void *collision_memory,
     size_t collision_memory_bytes);
 
+/* given a pre-allocated buffer and all 5 collision groups + origin, write out the CLD file */
+PH2CLD_bool PH2CLD_write_cld_from_data(PH2CLD_Collision_Data data, void *file_data, size_t file_bytes);
+
 #endif /* PH2CLD_H */
 
 #if defined(PH2CLD_IMPLEMENTATION)
 #ifndef PH2CLD_IMPLEMENTED
 #define PH2CLD_IMPLEMENTED
-#include <string.h>
-#include <stdio.h> /* printf. This is just for testing code so they would nice to remove. */
-#include <math.h> /* isfinite, fabsf. These are just for testing code so they would nice to remove. */
+#include <string.h> /* memset, memcpy, memcmp */
+#include <math.h> /* isfinite, fabsf for sanity checks */
 
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -133,7 +135,11 @@ static PH2CLD_bool PH2CLD__sanity_check_float4(float f[4]) {
 }
 
 #define PH2CLD_read(file_data, file_bytes, byte_index, struct_pointer, struct_size) \
-    ((byte_index) + (struct_size) <= (file_bytes) && (memcpy((struct_pointer), PH2CLD_cast(const char *, file_data) + (byte_index), (struct_size)), 1))
+    ((byte_index) + (struct_size) <= (file_bytes) && \
+        (memcpy((struct_pointer), PH2CLD_cast(const char *, file_data) + (byte_index), (struct_size)), 1))
+#define PH2CLD_write(file_data, file_bytes, byte_index, struct_pointer, struct_size) \
+    ((byte_index) + (struct_size) <= (file_bytes) && \
+        (memcpy(PH2CLD_cast(const char *, file_data) + (byte_index), (struct_pointer), (struct_size)), 1))
 
 PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
     const void *file_data,
@@ -165,11 +171,6 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
     result.group_2_faces_count = header.group_bytes[2] / sizeof(PH2CLD__Collision_Face) - 1;
     result.group_3_faces_count = header.group_bytes[3] / sizeof(PH2CLD__Collision_Face) - 1;
     result.group_4_cylinders_count = header.group_bytes[4] / sizeof(PH2CLD__Collision_Cylinder) - 1;
-    printf("Header says Group 0 has %zu faces\n", result.group_0_faces_count);
-    printf("Header says Group 1 has %zu faces\n", result.group_1_faces_count);
-    printf("Header says Group 2 has %zu faces\n", result.group_2_faces_count);
-    printf("Header says Group 3 has %zu faces\n", result.group_3_faces_count);
-    printf("Header says Group 4 has %zu cylinders\n", result.group_4_cylinders_count);
     collision_memory_bytes_needed =
         (
             result.group_0_faces_count + 
@@ -178,7 +179,6 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
             result.group_3_faces_count
         ) * sizeof(PH2CLD_Face) +
         result.group_4_cylinders_count * sizeof(PH2CLD_Cylinder);
-    printf("That's %zu bytes overall :)\n", collision_memory_bytes_needed);
     if (collision_memory_bytes_needed > collision_memory_bytes) {
         return result;
     }
@@ -342,6 +342,24 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
     return result;
 }
 
+PH2CLD_bool PH2CLD_write_cld_from_data(PH2CLD_Collision_Data data, void *file_data, size_t file_bytes) {
+    /* Error on no vaild input data or output buffer */
+    if (!data.valid) return PH2CLD_false;
+    if (!file_data) return PH2CLD_false;
+    /* Error on overlapping memory ranges */
+    if (PH2CLD_cast(const char *, file_data) + file_bytes > PH2CLD_reinterpret_cast(const char *, data.group_0_faces) &&
+        PH2CLD_cast(const char *, file_data) < PH2CLD_reinterpret_cast(const char *, data.group_0_faces + data.group_0_faces_count)) return PH2CLD_false;
+    if (PH2CLD_cast(const char *, file_data) + file_bytes > PH2CLD_reinterpret_cast(const char *, data.group_1_faces) &&
+        PH2CLD_cast(const char *, file_data) < PH2CLD_reinterpret_cast(const char *, data.group_1_faces + data.group_1_faces_count)) return PH2CLD_false;
+    if (PH2CLD_cast(const char *, file_data) + file_bytes > PH2CLD_reinterpret_cast(const char *, data.group_2_faces) &&
+        PH2CLD_cast(const char *, file_data) < PH2CLD_reinterpret_cast(const char *, data.group_2_faces + data.group_2_faces_count)) return PH2CLD_false;
+    if (PH2CLD_cast(const char *, file_data) + file_bytes > PH2CLD_reinterpret_cast(const char *, data.group_3_faces) &&
+        PH2CLD_cast(const char *, file_data) < PH2CLD_reinterpret_cast(const char *, data.group_3_faces + data.group_3_faces_count)) return PH2CLD_false;
+    if (PH2CLD_cast(const char *, file_data) + file_bytes > PH2CLD_reinterpret_cast(const char *, data.group_4_cylinders) &&
+        PH2CLD_cast(const char *, file_data) < PH2CLD_reinterpret_cast(const char *, data.group_4_cylinders + data.group_4_cylinders_count)) return PH2CLD_false;
+    return PH2CLD_false; /* @Temporary */
+}
+        
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif

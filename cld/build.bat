@@ -6,7 +6,7 @@ set "winkits8dir=%programfiles(x86)%\Windows Kits\8.1\"
 set "INCLUDE=%vctoolsdir%\include;%winkits10include%\ucrt;%winkits8dir%\include\shared;%winkits8dir%\include\um;"
 set "LIB=%vctoolsdir%\lib\amd64;%winkits8dir%\lib\winv6.3\um\x64;%winkits10lib%\ucrt\x64;"
 set "PATH=%vctoolsdir%\bin\amd64;%PATH%"
-if %errorlevel%==0 clang -O0 -Werror -Weverything -std=c++20 ph2_cld_test_cpp.cpp -o ph2_cld_test.exe
-if %errorlevel%==0 clang -O0 -Werror -Weverything -std=c89   -g -gfull -gcodeview -fsanitize=address -fsanitize=undefined -fsanitize-address-use-after-scope -ftrapv ph2_cld.c ph2_cld_test.c -o ph2_cld_test.exe
-if %errorlevel%==0 cl -Od -Z7 -nologo -Wall -WX -wd4820 -wd4710 -wd4514 -EHsc- ph2_cld_test_cpp.cpp -o ph2_cld_test.exe
-if %errorlevel%==0 cl -Od -Z7 -nologo -Wall -WX -wd4820 -wd4710 -wd4514 -EHsc- ph2_cld.c ph2_cld_test.c -o ph2_cld_test.exe
+if %errorlevel%==0 clang -O0 -Werror -Weverything -std=c++20 ph2_cld_test_cpp.cpp -c -o ph2_cld_test_cpp_clang.obj
+if %errorlevel%==0 clang -O0 -Werror -Weverything -std=c89   ph2_cld.c ph2_cld_test.c -o ph2_cld_test_clang.exe
+if %errorlevel%==0 cl -Od -Z7 -nologo -Wall -WX -wd4820 -wd4710 -wd4514 -EHsc- ph2_cld_test_cpp.cpp -c -Foph2_cld_test_cpp.obj
+if %errorlevel%==0 cl -Od -Z7 -nologo -Wall -WX -wd4820 -wd4710 -wd4514 -EHsc- ph2_cld.c ph2_cld_test.c -Feph2_cld_test.exe
