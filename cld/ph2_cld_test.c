@@ -6,6 +6,7 @@
 #include <io.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "ph2_cld.h"
 
@@ -26,14 +27,23 @@ int main(void) {
             if (!fopen_result) {
                 size_t file_length = 1024*1024;
                 char *file_data = malloc(file_length);
+                char *roundtrip_data = malloc(file_length);
                 size_t collision_memory_length = 1024*1024;
                 char *collision_memory = malloc(collision_memory_length);
                 PH2CLD_Collision_Data data;
+                PH2CLD_bool write_result;
                 file_length = fread(file_data, 1, file_length, f);
                 data = PH2CLD_get_collision_data_from_memory(file_data, file_length, collision_memory, collision_memory_length);
                 assert(data.valid);
 
+                roundtrip_data = malloc(file_length);
+                write_result = PH2CLD_write_cld_to_memory(data, roundtrip_data, file_length);
+                assert(write_result);
+
+                assert(memcmp(file_data, roundtrip_data, file_length) == 0);
+
                 free(file_data);
+                free(roundtrip_data);
                 free(collision_memory);
 
                 fclose(f);

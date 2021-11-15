@@ -62,7 +62,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
     size_t collision_memory_bytes);
 
 /* given a pre-allocated buffer and all 5 collision groups + origin, write out the CLD file */
-PH2CLD_bool PH2CLD_write_cld_from_data(PH2CLD_Collision_Data data, void *file_data, size_t file_bytes);
+PH2CLD_bool PH2CLD_write_cld_to_memory(PH2CLD_Collision_Data data, void *file_data, size_t file_bytes);
 
 #endif /* PH2CLD_H */
 
@@ -134,12 +134,12 @@ static PH2CLD_bool PH2CLD__sanity_check_float4(float f[4]) {
                                     PH2CLD__sanity_check_float(f[3]));
 }
 
-#define PH2CLD_read(file_data, file_bytes, byte_index, struct_pointer, struct_size) \
-    ((byte_index) + (struct_size) <= (file_bytes) && \
-        (memcpy((struct_pointer), PH2CLD_cast(const char *, file_data) + (byte_index), (struct_size)), 1))
-#define PH2CLD_write(file_data, file_bytes, byte_index, struct_pointer, struct_size) \
-    ((byte_index) + (struct_size) <= (file_bytes) && \
-        (memcpy(PH2CLD_cast(const char *, file_data) + (byte_index), (struct_pointer), (struct_size)), 1))
+#define PH2CLD_read(file_data, file_bytes, byte_idx, val) \
+    ((byte_idx) + sizeof(val) <= (file_bytes) && \
+        (memcpy(&(val), PH2CLD_cast(const char *, file_data) + (byte_idx), sizeof(val)), 1))
+#define PH2CLD_write(file_data, file_bytes, write_idx, val) \
+    ((write_idx) + sizeof(val) <= (file_bytes) && \
+        (memcpy(PH2CLD_cast(char *, file_data) + (write_idx), &(val), sizeof(val)), (write_idx) += sizeof(val), 1))
 
 PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
     const void *file_data,
@@ -150,22 +150,14 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
     PH2CLD__Collision_Header header;
     PH2CLD_Collision_Data result;
     memset(&result, 0, sizeof(result));
-    if (!file_data) {
-        return result;
-    }
-    if (!collision_memory) {
-        return result;
-    }
+    if (!file_data) return result;
+    if (!collision_memory) return result;
     if (PH2CLD_cast(const char *, file_data) + file_bytes > PH2CLD_cast(const char *, collision_memory) &&
-        PH2CLD_cast(const char *, file_data) < PH2CLD_cast(const char *, collision_memory) + collision_memory_bytes) {
-        return result;
-    }
-    if (!PH2CLD_read(file_data, file_bytes, 0, &header, sizeof(header))) {
-        return result;
-    }
-    if (!PH2CLD__sanity_check_float2(header.origin)) {
-        return result;
-    }
+        PH2CLD_cast(const char *, file_data) < PH2CLD_cast(const char *, collision_memory) + collision_memory_bytes) return result;
+    if (!PH2CLD_read(file_data, file_bytes, 0, header)) return result;
+    if (!PH2CLD__sanity_check_float2(header.origin)) return result;
+    result.origin[0] = header.origin[0];
+    result.origin[1] = header.origin[1];
     result.group_0_faces_count = header.group_bytes[0] / sizeof(PH2CLD__Collision_Face) - 1;
     result.group_1_faces_count = header.group_bytes[1] / sizeof(PH2CLD__Collision_Face) - 1;
     result.group_2_faces_count = header.group_bytes[2] / sizeof(PH2CLD__Collision_Face) - 1;
@@ -196,7 +188,6 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
             PH2CLD_Face *faces;
             size_t faces_count;
             uint32_t base_offset = header.group_collision_buffer_offsets[group];
-            /* Yuck! */
             /**/ if (group == 0) { faces = result.group_0_faces; faces_count = result.group_0_faces_count; }
             else if (group == 1) { faces = result.group_1_faces; faces_count = result.group_1_faces_count; }
             else if (group == 2) { faces = result.group_2_faces; faces_count = result.group_2_faces_count; }
@@ -205,7 +196,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
             for (; i < faces_count; i++) {
                 size_t file_offset = base_offset + i * sizeof(PH2CLD__Collision_Face);
                 PH2CLD__Collision_Face face;
-                if (!PH2CLD_read(file_data, file_bytes, file_offset, &face, sizeof(face))) return result;
+                if (!PH2CLD_read(file_data, file_bytes, file_offset, face)) return result;
                 /* Sanity checks */
                 if (face.header.shape != 0 && face.header.shape != 1) return result;
                 if (face.header.weight != 4) return result;
@@ -246,7 +237,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
                 PH2CLD__Collision_Face zero;
                 PH2CLD__Collision_Face face;
                 memset(&zero, 0, sizeof(zero));
-                if (!PH2CLD_read(file_data, file_bytes, sentinel_offset, &face, sizeof(face))) return result;
+                if (!PH2CLD_read(file_data, file_bytes, sentinel_offset, face)) return result;
                 if (memcmp(&face, &zero, sizeof(face)) != 0) return result;
             }
         }
@@ -261,7 +252,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
         for (; i < cylinders_count; i++) {
             size_t file_offset = base_offset + i * sizeof(PH2CLD__Collision_Cylinder);
             PH2CLD__Collision_Cylinder cylinder;
-            if (!PH2CLD_read(file_data, file_bytes, file_offset, &cylinder, sizeof(cylinder))) return result;
+            if (!PH2CLD_read(file_data, file_bytes, file_offset, cylinder)) return result;
             /* Sanity checks */
             if (cylinder.header.shape != 3) return result;
             if (cylinder.header.weight != 4) return result;
@@ -288,7 +279,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
             PH2CLD__Collision_Cylinder zero;
             PH2CLD__Collision_Cylinder cylinder;
             memset(&zero, 0, sizeof(zero));
-            if (!PH2CLD_read(file_data, file_bytes, sentinel_offset, &cylinder, sizeof(cylinder))) return result;
+            if (!PH2CLD_read(file_data, file_bytes, sentinel_offset, cylinder)) return result;
             if (memcmp(&cylinder, &zero, sizeof(cylinder)) != 0) return result;
         }
     }
@@ -300,7 +291,6 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
                 PH2CLD_Face *faces;
                 size_t faces_count;
                 uint32_t index_offset = header.group_index_buffer_offsets[group][subgroup];
-                /* Yuck! */
                 /**/ if (group == 0) { faces = result.group_0_faces; faces_count = result.group_0_faces_count; }
                 else if (group == 1) { faces = result.group_1_faces; faces_count = result.group_1_faces_count; }
                 else if (group == 2) { faces = result.group_2_faces; faces_count = result.group_2_faces_count; }
@@ -308,7 +298,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
 
                 for (;; index_offset += 4) {
                     uint32_t index = 0;
-                    if (!PH2CLD_read(file_data, file_bytes, index_offset, &index, sizeof(index))) return result;
+                    if (!PH2CLD_read(file_data, file_bytes, index_offset, index)) return result;
                     if (index == 0xffffffff) break;
                     if (index >= faces_count) return result;
 
@@ -328,7 +318,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
 
             for (; ; index_offset += 4) {
                 uint32_t index = 0;
-                if (!PH2CLD_read(file_data, file_bytes, index_offset, &index, sizeof(index))) return result;
+                if (!PH2CLD_read(file_data, file_bytes, index_offset, index)) return result;
                 if (index == 0xffffffff) break;
                 if (index >= cylinders_count) return result;
 
@@ -342,7 +332,11 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
     return result;
 }
 
-PH2CLD_bool PH2CLD_write_cld_from_data(PH2CLD_Collision_Data data, void *file_data, size_t file_bytes) {
+PH2CLD_bool PH2CLD_write_cld_to_memory(PH2CLD_Collision_Data data, void *file_data, size_t file_bytes) {
+    PH2CLD__Collision_Header header;
+    size_t index_buffer_counts[5][16];
+    size_t file_bytes_needed;
+    size_t write_index = 0;
     /* Error on no vaild input data or output buffer */
     if (!data.valid) return PH2CLD_false;
     if (!file_data) return PH2CLD_false;
@@ -357,7 +351,125 @@ PH2CLD_bool PH2CLD_write_cld_from_data(PH2CLD_Collision_Data data, void *file_da
         PH2CLD_cast(const char *, file_data) < PH2CLD_reinterpret_cast(const char *, data.group_3_faces + data.group_3_faces_count)) return PH2CLD_false;
     if (PH2CLD_cast(const char *, file_data) + file_bytes > PH2CLD_reinterpret_cast(const char *, data.group_4_cylinders) &&
         PH2CLD_cast(const char *, file_data) < PH2CLD_reinterpret_cast(const char *, data.group_4_cylinders + data.group_4_cylinders_count)) return PH2CLD_false;
-    return PH2CLD_false; /* @Temporary */
+    if (!PH2CLD__sanity_check_float2(data.origin)) return PH2CLD_false;
+    memset(&header, 0, sizeof(header));
+    header.origin[0] = data.origin[0];
+    header.origin[1] = data.origin[1];
+    header.group_bytes[0] = PH2CLD_cast(uint32_t, (data.group_0_faces_count + 1) * sizeof(PH2CLD__Collision_Face));
+    header.group_bytes[1] = PH2CLD_cast(uint32_t, (data.group_1_faces_count + 1) * sizeof(PH2CLD__Collision_Face));
+    header.group_bytes[2] = PH2CLD_cast(uint32_t, (data.group_2_faces_count + 1) * sizeof(PH2CLD__Collision_Face));
+    header.group_bytes[3] = PH2CLD_cast(uint32_t, (data.group_3_faces_count + 1) * sizeof(PH2CLD__Collision_Face));
+    header.group_bytes[4] = PH2CLD_cast(uint32_t, (data.group_4_cylinders_count + 1) * sizeof(PH2CLD__Collision_Cylinder));
+    memset(index_buffer_counts, 0, sizeof(index_buffer_counts));
+    {
+        int group = 0;
+        for (; group < 4; group++) {
+            size_t i = 0;
+            PH2CLD_Face *faces;
+            size_t faces_count;
+            /**/ if (group == 0) { faces = data.group_0_faces; faces_count = data.group_0_faces_count; }
+            else if (group == 1) { faces = data.group_1_faces; faces_count = data.group_1_faces_count; }
+            else if (group == 2) { faces = data.group_2_faces; faces_count = data.group_2_faces_count; }
+            else /*           */ { faces = data.group_3_faces; faces_count = data.group_3_faces_count; }
+            for (; i < faces_count; i++) {
+                int subgroup = 0;
+                for (; subgroup < 16; subgroup++) {
+                    if (faces[i].subgroups & (1 << subgroup)) {
+                        index_buffer_counts[group][subgroup]++;
+                    }
+                }
+            }
+        }
+    }
+    {
+        int group = 4;
+        size_t i = 0;
+        PH2CLD_Cylinder *cylinders = data.group_4_cylinders;
+        size_t cylinders_count = data.group_4_cylinders_count;
+        for (; i < cylinders_count; i++) {
+            int subgroup = 0;
+            for (; subgroup < 16; subgroup++) {
+                if (cylinders[i].subgroups & (1 << subgroup)) {
+                    index_buffer_counts[group][subgroup]++;
+                }
+            }
+        }
+    }
+    {
+        size_t running_offset = sizeof(PH2CLD__Collision_Header);
+        {
+            int group = 0;
+            for (; group < 5; group++) {
+                int subgroup = 0;
+                for (; subgroup < 16; subgroup++) {
+                    size_t index_buffer_length_in_bytes = (index_buffer_counts[group][subgroup] + 1) * sizeof(uint32_t);
+                    header.group_index_buffer_offsets[group][subgroup] = PH2CLD_cast(uint32_t, running_offset);
+                    running_offset += index_buffer_length_in_bytes;
+                }
+            }
+        }
+        /* Note: SH2 .CLD files round up the start of the first collision buffers to the next 16 byte boundary.
+           (And therefore, all the later buffers also start at 16 bytes since the size of the collision shape is 80 which is divisible by 16.)
+           The intervening padding bytes are filled with 0.
+           If the start is already rounded, another 16 bytes gets added on. Don't ask me why. */
+        running_offset += 16;
+        running_offset &= ~15u;
+        {
+            int group = 0;
+            for (; group < 5; group++) {
+                size_t collision_buffer_length_in_bytes = header.group_bytes[group];
+                header.group_collision_buffer_offsets[group] = PH2CLD_cast(uint32_t, running_offset);
+                running_offset += collision_buffer_length_in_bytes;
+            }
+        }
+        file_bytes_needed = running_offset;
+    }
+    if (file_bytes_needed > file_bytes) return PH2CLD_false;
+    if (!PH2CLD_write(file_data, file_bytes, write_index, header)) return PH2CLD_false;
+    {
+        int group = 0;
+        for (; group < 4; group++) {
+            int subgroup = 0;
+            PH2CLD_Face *faces;
+            size_t faces_count;
+            /**/ if (group == 0) { faces = data.group_0_faces; faces_count = data.group_0_faces_count; }
+            else if (group == 1) { faces = data.group_1_faces; faces_count = data.group_1_faces_count; }
+            else if (group == 2) { faces = data.group_2_faces; faces_count = data.group_2_faces_count; }
+            else /*           */ { faces = data.group_3_faces; faces_count = data.group_3_faces_count; }
+            for (; subgroup < 16; subgroup++) {
+                size_t i = 0;
+                for (; i < faces_count; i++) {
+                    if (faces[i].subgroups & (1 << subgroup)) {
+                        uint32_t index = PH2CLD_cast(uint32_t, i);
+                        if (!PH2CLD_write(file_data, file_bytes, write_index, index)) return PH2CLD_false;
+                    }
+                }
+                {
+                    uint32_t sentinel = 0xffffffff;
+                    if (!PH2CLD_write(file_data, file_bytes, write_index, sentinel)) return PH2CLD_false;
+                }
+            }
+        }
+    }
+    {
+        PH2CLD_Cylinder *cylinders = data.group_4_cylinders;
+        size_t cylinders_count = data.group_4_cylinders_count;
+        int subgroup = 0;
+        for (; subgroup < 16; subgroup++) {
+            size_t i = 0;
+            for (; i < cylinders_count; i++) {
+                if (cylinders[i].subgroups & (1 << subgroup)) {
+                    uint32_t index = PH2CLD_cast(uint32_t, i);
+                    if (!PH2CLD_write(file_data, file_bytes, write_index, index)) return PH2CLD_false;
+                }
+            }
+            {
+                uint32_t sentinel = 0xffffffff;
+                if (!PH2CLD_write(file_data, file_bytes, write_index, sentinel)) return PH2CLD_false;
+            }
+        }
+    }
+    return PH2CLD_true;
 }
         
 #ifdef __clang__
