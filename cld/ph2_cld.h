@@ -116,7 +116,7 @@ typedef struct PH2CLD__Collision_Cylinder {
 } PH2CLD__Collision_Cylinder;
 
 static PH2CLD_bool PH2CLD__sanity_check_float(float f) {
-    return PH2CLD_cast(PH2CLD_bool, isfinite(f) && fabsf(f) < 400000);
+    return PH2CLD_cast(PH2CLD_bool, isfinite(f) /* && fabsf(f) < 400000 */);
 }
 static PH2CLD_bool PH2CLD__sanity_check_float2(float f[2]) {
     return PH2CLD_cast(PH2CLD_bool, PH2CLD__sanity_check_float(f[0]) &&
@@ -350,7 +350,38 @@ PH2CLD_bool PH2CLD_write_cld_to_memory(PH2CLD_Collision_Data data, void *file_da
         PH2CLD_cast(const char *, file_data) < PH2CLD_reinterpret_cast(const char *, data.group_3_faces + data.group_3_faces_count)) return PH2CLD_false;
     if (PH2CLD_cast(const char *, file_data) + file_bytes > PH2CLD_reinterpret_cast(const char *, data.group_4_cylinders) &&
         PH2CLD_cast(const char *, file_data) < PH2CLD_reinterpret_cast(const char *, data.group_4_cylinders + data.group_4_cylinders_count)) return PH2CLD_false;
+    /* Sanity check input data */
     if (!PH2CLD__sanity_check_float2(data.origin)) return PH2CLD_false;
+    {
+        int group = 0;
+        for (; group < 4; group++) {
+            size_t i = 0;
+            PH2CLD_Face *faces;
+            size_t faces_count;
+            /**/ if (group == 0) { faces = data.group_0_faces; faces_count = data.group_0_faces_count; }
+            else if (group == 1) { faces = data.group_1_faces; faces_count = data.group_1_faces_count; }
+            else if (group == 2) { faces = data.group_2_faces; faces_count = data.group_2_faces_count; }
+            else /*           */ { faces = data.group_3_faces; faces_count = data.group_3_faces_count; }
+            for (; i < faces_count; i++) {
+                if (faces[i].quad != 0 && faces[i].quad != 1) return PH2CLD_false;
+                if ((faces[i].material & PH2CLD_cast(uint32_t, ~0x0fu)) != 0 && faces[i].material != 99) return PH2CLD_false;
+                if (!PH2CLD__sanity_check_float3(faces[i].vertices[0])) return PH2CLD_false;
+                if (!PH2CLD__sanity_check_float3(faces[i].vertices[1])) return PH2CLD_false;
+                if (!PH2CLD__sanity_check_float3(faces[i].vertices[2])) return PH2CLD_false;
+            }
+        }
+    }
+    {
+        size_t i = 0;
+        PH2CLD_Cylinder *cylinders = data.group_4_cylinders;
+        size_t cylinders_count = data.group_4_cylinders_count;
+        for (; i < cylinders_count; i++) {
+            if ((cylinders[i].material & PH2CLD_cast(uint32_t, ~0x0fu)) != 0 && cylinders[i].material != 99) return PH2CLD_false;
+            if (!PH2CLD__sanity_check_float3(cylinders[i].position)) return PH2CLD_false;
+            if (!PH2CLD__sanity_check_float(cylinders[i].height)) return PH2CLD_false;
+            if (!PH2CLD__sanity_check_float(cylinders[i].radius)) return PH2CLD_false;
+        }
+    }
     memset(&header, 0, sizeof(header));
     header.origin[0] = data.origin[0];
     header.origin[1] = data.origin[1];
