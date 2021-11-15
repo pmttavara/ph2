@@ -138,8 +138,7 @@ static PH2CLD_bool PH2CLD__sanity_check_float4(float f[4]) {
     ((byte_idx) + sizeof(val) <= (file_bytes) && \
         (memcpy(&(val), PH2CLD_cast(const char *, file_data) + (byte_idx), sizeof(val)), 1))
 #define PH2CLD_write(file_data, file_bytes, write_idx, val) \
-    ((write_idx) + sizeof(val) <= (file_bytes) && \
-        (memcpy(PH2CLD_cast(char *, file_data) + (write_idx), &(val), sizeof(val)), (write_idx) += sizeof(val), 1))
+    (memcpy(PH2CLD_cast(char *, file_data) + (write_idx), &(val), sizeof(val)), (write_idx) += sizeof(val))
 
 PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
     const void *file_data,
@@ -425,7 +424,7 @@ PH2CLD_bool PH2CLD_write_cld_to_memory(PH2CLD_Collision_Data data, void *file_da
         file_bytes_needed = running_offset;
     }
     if (file_bytes_needed > file_bytes) return PH2CLD_false;
-    if (!PH2CLD_write(file_data, file_bytes, write_index, header)) return PH2CLD_false;
+    PH2CLD_write(file_data, file_bytes, write_index, header);
     {
         int group = 0;
         for (; group < 4; group++) {
@@ -441,12 +440,12 @@ PH2CLD_bool PH2CLD_write_cld_to_memory(PH2CLD_Collision_Data data, void *file_da
                 for (; i < faces_count; i++) {
                     if (faces[i].subgroups & (1 << subgroup)) {
                         uint32_t index = PH2CLD_cast(uint32_t, i);
-                        if (!PH2CLD_write(file_data, file_bytes, write_index, index)) return PH2CLD_false;
+                        PH2CLD_write(file_data, file_bytes, write_index, index);
                     }
                 }
                 {
                     uint32_t sentinel = 0xffffffff;
-                    if (!PH2CLD_write(file_data, file_bytes, write_index, sentinel)) return PH2CLD_false;
+                    PH2CLD_write(file_data, file_bytes, write_index, sentinel);
                 }
             }
         }
@@ -460,13 +459,99 @@ PH2CLD_bool PH2CLD_write_cld_to_memory(PH2CLD_Collision_Data data, void *file_da
             for (; i < cylinders_count; i++) {
                 if (cylinders[i].subgroups & (1 << subgroup)) {
                     uint32_t index = PH2CLD_cast(uint32_t, i);
-                    if (!PH2CLD_write(file_data, file_bytes, write_index, index)) return PH2CLD_false;
+                    PH2CLD_write(file_data, file_bytes, write_index, index);
                 }
             }
             {
                 uint32_t sentinel = 0xffffffff;
-                if (!PH2CLD_write(file_data, file_bytes, write_index, sentinel)) return PH2CLD_false;
+                PH2CLD_write(file_data, file_bytes, write_index, sentinel);
             }
+        }
+    }
+    { /* Round up to next 16 bytes. */
+        size_t new_write_index = write_index + 16;
+        new_write_index = new_write_index & ~15u;
+        while (write_index < new_write_index) {
+            uint8_t zero = 0;
+            PH2CLD_write(file_data, file_bytes, write_index, zero);
+        }
+    }
+    {
+        int group = 0;
+        for (; group < 4; group++) {
+            size_t i = 0;
+            PH2CLD_Face *faces;
+            size_t faces_count;
+            /**/ if (group == 0) { faces = data.group_0_faces; faces_count = data.group_0_faces_count; }
+            else if (group == 1) { faces = data.group_1_faces; faces_count = data.group_1_faces_count; }
+            else if (group == 2) { faces = data.group_2_faces; faces_count = data.group_2_faces_count; }
+            else /*           */ { faces = data.group_3_faces; faces_count = data.group_3_faces_count; }
+            for (; i < faces_count; i++) {
+                PH2CLD__Collision_Face face;
+                face.header.present = 1;
+                face.header.shape = PH2CLD_cast(uint8_t, faces[i].quad ? 1 : 0);
+                face.header.padding0 = 0;
+                face.header.weight = 4;
+                face.header.material = faces[i].material;
+                face.header.padding1 = 0;
+                face.vertices[0][0] = faces[i].vertices[0][0];
+                face.vertices[0][1] = faces[i].vertices[0][1];
+                face.vertices[0][2] = faces[i].vertices[0][2];
+                face.vertices[0][3] = 1;
+                face.vertices[1][0] = faces[i].vertices[1][0];
+                face.vertices[1][1] = faces[i].vertices[1][1];
+                face.vertices[1][2] = faces[i].vertices[1][2];
+                face.vertices[1][3] = 1;
+                face.vertices[2][0] = faces[i].vertices[2][0];
+                face.vertices[2][1] = faces[i].vertices[2][1];
+                face.vertices[2][2] = faces[i].vertices[2][2];
+                face.vertices[2][3] = 1;
+                if (faces[i].quad) {
+                    face.vertices[3][0] = faces[i].vertices[3][0];
+                    face.vertices[3][1] = faces[i].vertices[3][1];
+                    face.vertices[3][2] = faces[i].vertices[3][2];
+                    face.vertices[3][3] = 1;
+                } else {
+                    face.vertices[3][0] = 0;
+                    face.vertices[3][1] = 0;
+                    face.vertices[3][2] = 0;
+                    face.vertices[3][3] = 1;
+                }
+                PH2CLD_write(file_data, file_bytes, write_index, face);
+            }
+            {
+                PH2CLD__Collision_Face sentinel;
+                memset(&sentinel, 0, sizeof(sentinel));
+                PH2CLD_write(file_data, file_bytes, write_index, sentinel);
+            }
+        }
+    }
+    {
+        size_t i = 0;
+        PH2CLD_Cylinder *cylinders = data.group_4_cylinders;
+        size_t cylinders_count = data.group_4_cylinders_count;
+        for (; i < cylinders_count; i++) {
+            PH2CLD__Collision_Cylinder cylinder;
+            cylinder.header.present = 1;
+            cylinder.header.shape = 3;
+            cylinder.header.padding0 = 0;
+            cylinder.header.weight = 4;
+            cylinder.header.material = cylinders[i].material;
+            cylinder.header.padding1 = 0;
+            cylinder.position[0] = cylinders[i].position[0];
+            cylinder.position[1] = cylinders[i].position[1];
+            cylinder.position[2] = cylinders[i].position[2];
+            cylinder.position[3] = 1;
+            cylinder.height[0] = 0;
+            cylinder.height[1] = cylinders[i].height;
+            cylinder.height[2] = 0;
+            cylinder.radius = cylinders[i].radius;
+            PH2CLD_write(file_data, file_bytes, write_index, cylinder);
+        }
+        {
+            PH2CLD__Collision_Cylinder sentinel;
+            memset(&sentinel, 0, sizeof(sentinel));
+            PH2CLD_write(file_data, file_bytes, write_index, sentinel);
         }
     }
     return PH2CLD_true;
