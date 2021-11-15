@@ -27,12 +27,17 @@ int main(void) {
             if (!fopen_result) {
                 char *file_data = malloc(1024*1024);
                 char *roundtrip_data = malloc(1024*1024);
-                char *collision_memory = malloc(1024*1024);
+                char *collision_memory;
+                size_t file_length = fread(file_data, 1, 1024*1024, f);
+                size_t collision_memory_length = 0;
+                if (!PH2CLD_get_collision_memory_length_from_file_memory(file_data, file_length, &collision_memory_length)) {
+                    assert(0);
+                }
+                collision_memory = malloc(collision_memory_length);
                 if (file_data && roundtrip_data && collision_memory) {
                     PH2CLD_Collision_Data data;
                     PH2CLD_bool write_result;
-                    size_t file_length = fread(file_data, 1, 1024*1024, f);
-                    data = PH2CLD_get_collision_data_from_memory(file_data, file_length, collision_memory, 1024*1024);
+                    data = PH2CLD_get_collision_data_from_file_memory_and_collision_memory(file_data, file_length, collision_memory, collision_memory_length);
                     assert(data.valid);
 
                     roundtrip_data = malloc(file_length);

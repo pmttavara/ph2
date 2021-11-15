@@ -7,20 +7,26 @@
 typedef enum PH2CLD_bool { PH2CLD_false, PH2CLD_true } PH2CLD_bool;
 /*
     Reading:
-    -> give me all 5 collision groups + origin from a filename (via fopen and malloc)
-    -> give me all 5 collision groups + origin from a filename (via fopen) and an allocator
-    -> give me all 5 collision groups + origin from a file char* (via malloc)
-    -> give me all 5 collision groups + origin from a file char* and an allocator
-    -> get the length of the pre-allocated buffer from a file char *
-    -> given a pre-allocated buffer, give me all 5 collision groups + origin from a file char*
-    
+    * (filename) -> (collision data) [via fopen and malloc]
+    * (filename, allocator) -> (collision data) [via fopen]
+    * (file mem) -> (collision data) [via malloc]
+    * (file mem, allocator) -> (collision data)
+    * (file mem) -> (collision buflen)
+    * (file mem, collision buf) -> (collision data)
+
     Writing:
-    -> given a filename and all 5 collision groups + origin, write out the CLD file (via fopen)
-    -> given all 5 collision groups + origin, write the CLD file to memory and return the buffer (via malloc)
-    -> get the length of the pre-allocated buffer from all 5 collision groups + origin
-    -> given a pre-allocated buffer and all 5 collision groups + origin, write out the CLD file
+    * (filename, collision data) -> void [writes CLD to disk via fopen and malloc]
+    * (filename, collision data, allocator) -> void [writes CLD to disk via fopen]
+    * (collision data) -> (file mem) [via malloc]
+    * (collision data, allocator) -> (file mem)
+    * (collision data) -> (file mem length)
+    * (collision data, file mem) -> void [writes CLD to file mem]
 
     All of these can fail in several ways each and different ways each (OOM, file not found, out of bounds, bad input).
+    
+    Misc:
+    (collision data buffer) -> void [frees the buffer via free]
+    (collision data buffer, allocator) -> void [frees the buffer]
 */
 
 typedef struct PH2CLD_Face {
@@ -54,8 +60,10 @@ typedef struct PH2CLD_Collision_Data {
     PH2CLD_Cylinder *group_4_cylinders;
     size_t           group_4_cylinders_count;
 } PH2CLD_Collision_Data;
-/* given a pre-allocated buffer, give me all 5 collision groups + origin from a file char* */
-PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
+PH2CLD_Collision_Data PH2CLD_get_collision_data_from_file_memory(const void *file_data, size_t file_bytes);
+PH2CLD_Collision_Data PH2CLD_get_collision_data_from_file_memory_with_allocator(const void *file_data, size_t file_bytes, void *(*alloc_func)(size_t n, void *userdata), void *userdata);
+PH2CLD_bool PH2CLD_get_collision_memory_length_from_file_memory(const void *file_data, size_t file_bytes, size_t *collision_memory_length);
+PH2CLD_Collision_Data PH2CLD_get_collision_data_from_file_memory_and_collision_memory(
     const void *file_data,
     size_t file_bytes,
     void *collision_memory,
@@ -64,6 +72,9 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
 /* given a pre-allocated buffer and all 5 collision groups + origin, write out the CLD file */
 PH2CLD_bool PH2CLD_write_cld_to_memory(PH2CLD_Collision_Data data, void *file_data, size_t file_bytes);
 
+void PH2CLD_free_collision_data(PH2CLD_Collision_Data data);
+void PH2CLD_free_collision_data_with_allocator(PH2CLD_Collision_Data data, void (*free_func)(void *p, void *userdata), void *userdata);
+
 #endif /* PH2CLD_H */
 
 #if defined(PH2CLD_IMPLEMENTATION)
@@ -71,6 +82,20 @@ PH2CLD_bool PH2CLD_write_cld_to_memory(PH2CLD_Collision_Data data, void *file_da
 #define PH2CLD_IMPLEMENTED
 #include <string.h> /* memset, memcpy, memcmp */
 #include <math.h> /* isfinite, fabsf for sanity checks */
+
+#if defined(PH2CLD_malloc) && defined(PH2CLD_free)
+/* ok */
+#elif !defined(PH2CLD_malloc) && !defined(PH2CLD_free)
+/* ok */
+#else
+#error "Must define both or neither of PH2CLD_malloc and PH2CLD_free."
+#endif
+
+#ifndef PH2CLD_malloc
+#include <stdlib.h> /* malloc, free */
+#define PH2CLD_malloc(n) malloc(n)
+#define PH2CLD_free(p) free(p)
+#endif
 
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -115,6 +140,15 @@ typedef struct PH2CLD__Collision_Cylinder {
     float radius;
 } PH2CLD__Collision_Cylinder;
 
+static void *PH2CLD__malloc(size_t n, void *userdata) {
+    PH2CLD_cast(void, userdata);
+    return PH2CLD_malloc(n);
+}
+static void PH2CLD__free(void *p, void *userdata) {
+    PH2CLD_cast(void, userdata);
+    PH2CLD_free(p);
+}
+
 static PH2CLD_bool PH2CLD__sanity_check_float(float f) {
     return PH2CLD_cast(PH2CLD_bool, isfinite(f) /* && fabsf(f) < 400000 */);
 }
@@ -140,7 +174,49 @@ static PH2CLD_bool PH2CLD__sanity_check_float4(float f[4]) {
 #define PH2CLD_write(file_data, file_bytes, write_idx, val) \
     (memcpy(PH2CLD_cast(char *, file_data) + (write_idx), &(val), sizeof(val)), (write_idx) += sizeof(val))
 
-PH2CLD_Collision_Data PH2CLD_get_collision_data_from_memory(
+PH2CLD_Collision_Data PH2CLD_get_collision_data_from_file_memory(const void *file_data, size_t file_bytes) {
+    return PH2CLD_get_collision_data_from_file_memory_with_allocator(file_data, file_bytes, PH2CLD__malloc, PH2CLD_reinterpret_cast(void *, 0));
+}
+PH2CLD_Collision_Data PH2CLD_get_collision_data_from_file_memory_with_allocator(const void *file_data, size_t file_bytes, void *(*alloc_func)(size_t n, void *userdata), void *userdata) {
+    PH2CLD_Collision_Data result;
+    size_t collision_memory_length = 0;
+    void *collision_memory;
+    memset(&result, 0, sizeof(result));
+    if (!PH2CLD_get_collision_memory_length_from_file_memory(file_data, file_bytes, &collision_memory_length)) {
+        return result;
+    }
+    if (!alloc_func) {
+        return result;
+    }
+    collision_memory = alloc_func(collision_memory_length, userdata);
+    if (!collision_memory) {
+        return result;
+    }
+    return PH2CLD_get_collision_data_from_file_memory_and_collision_memory(file_data, file_bytes, collision_memory, collision_memory_length);
+}
+PH2CLD_bool PH2CLD_get_collision_memory_length_from_file_memory(const void *file_data, size_t file_bytes, size_t *collision_memory_length) {
+    PH2CLD__Collision_Header header;
+    if (!collision_memory_length) {
+        return PH2CLD_false;
+    }
+    *collision_memory_length = 0;
+    if (!file_data) {
+        return PH2CLD_false;
+    }
+    if (!PH2CLD_read(file_data, file_bytes, 0, header)) {
+        return PH2CLD_false;
+    }
+    *collision_memory_length =
+        (
+            (header.group_bytes[0] / sizeof(PH2CLD__Collision_Face) - 1) + 
+            (header.group_bytes[1] / sizeof(PH2CLD__Collision_Face) - 1) + 
+            (header.group_bytes[2] / sizeof(PH2CLD__Collision_Face) - 1) + 
+            (header.group_bytes[3] / sizeof(PH2CLD__Collision_Face) - 1)
+        ) * sizeof(PH2CLD_Face) +
+        (header.group_bytes[4] / sizeof(PH2CLD__Collision_Cylinder) - 1) * sizeof(PH2CLD_Cylinder);
+    return PH2CLD_true;
+}
+PH2CLD_Collision_Data PH2CLD_get_collision_data_from_file_memory_and_collision_memory(
     const void *file_data,
     size_t file_bytes,
     void *collision_memory,
@@ -587,6 +663,20 @@ PH2CLD_bool PH2CLD_write_cld_to_memory(PH2CLD_Collision_Data data, void *file_da
     }
     return PH2CLD_true;
 }
+
+void PH2CLD_free_collision_data(PH2CLD_Collision_Data data) {
+    PH2CLD_free_collision_data_with_allocator(data, PH2CLD__free, PH2CLD_reinterpret_cast(void *, 0));
+}
+void PH2CLD_free_collision_data_with_allocator(PH2CLD_Collision_Data data, void (*free_func)(void *p, void *userdata), void *userdata) {
+    if (!data.group_0_faces) {
+        return;
+    }
+    if (!free_func) {
+        return;
+    }
+    free_func(data.group_0_faces, userdata);
+}
+
         
 #ifdef __clang__
 #pragma clang diagnostic pop
