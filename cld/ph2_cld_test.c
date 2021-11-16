@@ -21,6 +21,7 @@ int main(void) {
             errno_t fopen_result;
             snprintf(b, sizeof(b), "cld/%s", find_data.name);
 
+#if 1
             /* I was intending to have good error checking here, but there's a lot of agile stuff lying around.
                Whenever you touch this, consider changing some logic to be more error-checky. */
             fopen_result = fopen_s(&f, b, "rb");
@@ -35,14 +36,18 @@ int main(void) {
                 }
                 collision_memory = malloc(collision_memory_length);
                 if (file_data && roundtrip_data && collision_memory) {
-                    PH2CLD_Collision_Data data;
+                    PH2CLD_Collision_Data data = {0};
                     PH2CLD_bool write_result;
-                    data = PH2CLD_get_collision_data_from_file_memory_and_collision_memory(file_data, file_length, collision_memory, collision_memory_length);
-                    assert(data.valid);
+                    {
+                        data = PH2CLD_get_collision_data_from_file_memory_and_collision_memory(file_data, file_length, collision_memory, collision_memory_length);
+                        assert(data.valid);
+                    }
 
                     roundtrip_data = malloc(file_length);
-                    write_result = PH2CLD_write_cld_to_memory(data, roundtrip_data, file_length);
-                    assert(write_result);
+                    {
+                        write_result = PH2CLD_write_cld_to_memory(data, roundtrip_data, file_length);
+                        assert(write_result);
+                    }
 
                     assert(memcmp(file_data, roundtrip_data, file_length) == 0);
 
@@ -50,16 +55,57 @@ int main(void) {
                     free(roundtrip_data);
                     free(collision_memory);
 
-                    fclose(f);
-                    if (_findnext(directory, &find_data) < 0) {
-                        if (errno == ENOENT) break;
-                        else assert(0);
-                    }
                 }
+                fclose(f);
             } else {
                 printf("File open failed! :(\n");
             }
+#else
+            printf("File '%s': ", b);
+            {
+                PH2CLD_Collision_Data data = PH2CLD_get_collision_data_from_file(b);
+                if (data.valid) {
+                    size_t i = 0;
+                    printf("\n Group 0: {\n");
+                    for (; i < data.group_0_faces_count; i++) {
+                        PH2CLD_Face face = data.group_0_faces[i];
+                        int bit = 15;
+                        printf("  Face %zu (", i);
+                        for (; bit >= 0; bit--) if (face.subgroups & (1 << bit)) printf("1"); else printf("o");
+                        printf("): (%f, %f, %f), ", (double)face.vertices[0][0], (double)face.vertices[0][1], (double)face.vertices[0][2]);
+                        printf("(%f, %f, %f), ", (double)face.vertices[1][0], (double)face.vertices[1][1], (double)face.vertices[1][2]);
+                        printf("(%f, %f, %f)", (double)face.vertices[2][0], (double)face.vertices[2][1], (double)face.vertices[2][2]);
+                        if (face.quad) {
+                            printf(", (%f, %f, %f)", (double)face.vertices[3][0], (double)face.vertices[3][1], (double)face.vertices[3][2]);
+                        }
+                        printf("\n");
+                    }
+                    printf("}\n Group 4: {\n");
+                    for (i = 0; i < data.group_4_cylinders_count; i++) {
+                        PH2CLD_Cylinder cyl = data.group_4_cylinders[i];
+                        int bit = 15;
+                        printf("  Cylinder %zu (", i);
+                        for (; bit >= 0; bit--) if (cyl.subgroups & (1 << bit)) printf("1"); else printf("o");
+                        printf("): (%f, %f, %f), ", (double)cyl.position[0], (double)cyl.position[1], (double)cyl.position[2]);
+                        printf("Height %f, Radius %f\n", (double)cyl.height, (double)cyl.radius);
+                    }
+                    printf("}\n");
+                } else {
+                    printf("Couldn't get CLD data\n");
+                }
+                {
+                    PH2CLD_bool write_result = PH2CLD_write_cld(data, "my_PH2CLD_output.cld");
+                    assert(write_result);
+                }
+                PH2CLD_free_collision_data(data);
+            }
+#endif
+            if (_findnext(directory, &find_data) < 0) {
+                if (errno == ENOENT) break;
+                else assert(0);
+            }
         }
         _findclose(directory);
+        fflush(stdout);
     }
 }
