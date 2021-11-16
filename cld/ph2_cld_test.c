@@ -10,6 +10,37 @@
 
 #include "ph2_cld.h"
 
+#ifdef __clang__
+#pragma clang diagnostic ignored "-Wfloat-equal"
+#endif
+
+#ifdef _WIN32
+#pragma warning(disable : 4255)
+#pragma warning(disable : 4668)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+
+static double get_time(void) {
+    LARGE_INTEGER counter;
+    static double invfreq;
+    if (invfreq == 0) {
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        invfreq = 1.0 / (double)freq.QuadPart;
+    }
+    QueryPerformanceCounter(&counter);
+    return (double)counter.QuadPart * invfreq;
+}
+#else
+#include <time.h>
+static double get_time(void) {
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
+}
+#endif
+
 int main(void) {
     struct _finddata_t find_data;
     intptr_t directory = _findfirst("cld/*.cld", &find_data);
@@ -38,16 +69,29 @@ int main(void) {
                 if (file_data && roundtrip_data && collision_memory) {
                     PH2CLD_Collision_Data data = {0};
                     PH2CLD_bool write_result;
-                    {
+                    static double read_time;
+                    static double write_time;
+                    static size_t total_bytes;
+                    int i;
+                    const int N = 1;
+                    total_bytes += file_length;
+                    read_time += -get_time() / (double)N;
+                    for (i = 0; i < N; i++) {
                         data = PH2CLD_get_collision_data_from_file_memory_and_collision_memory(file_data, file_length, collision_memory, collision_memory_length);
                         assert(data.valid);
                     }
+                    read_time += get_time() / (double)N;
+                    printf("Reading took %f seconds (%f MB/s)\n", read_time, (double)total_bytes / read_time / 1024 / 1024);
 
                     roundtrip_data = malloc(file_length);
-                    {
+                    write_time += -get_time() / (double)N;
+                    for (i = 0; i < N; i++) {
                         write_result = PH2CLD_write_cld_to_memory(data, roundtrip_data, file_length);
                         assert(write_result);
                     }
+                    write_time += get_time() / (double)N;
+                    printf("Writing took %f seconds (%f MB/s)\n", write_time, (double)total_bytes / write_time / 1024 / 1024);
+
 
                     assert(memcmp(file_data, roundtrip_data, file_length) == 0);
 

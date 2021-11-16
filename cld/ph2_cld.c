@@ -2,4 +2,5 @@
    SPDX-License-Identifier: 0BSD */
 
 #define PH2CLD_IMPLEMENTATION
+/* #define PH2CLD_NO_SANITY_CHECKS */
 #include "ph2_cld.h"
