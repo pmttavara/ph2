@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<N10X>
+	<Workspace>
+		<FileTypes>All Code Files</FileTypes>
+		<ExcludeFilters></ExcludeFilters>
+		<SyncFiles>true</SyncFiles>
+		<Recursive>true</Recursive>
+		<IsVirtual>false</IsVirtual>
+		<IsFolder>false</IsFolder>
+		<BuildCommand>build.bat</BuildCommand>
+		<RebuildCommand></RebuildCommand>
+		<BuildFileCommand></BuildFileCommand>
+		<CleanCommand></CleanCommand>
+		<RunCommand></RunCommand>
+		<DebugCommand>D:\Downloads\Programs\remedybg_0_3_6_0\remedybg.exe start-debugging</DebugCommand>
+		<ExePathCommand></ExePathCommand>
+		<Configurations>
+			<Configuration>Debug</Configuration>
+			<Configuration>Release</Configuration>
+		</Configurations>
+		<Platforms>
+			<Platform>x64</Platform>
+			<Platform>Win32</Platform>
+		</Platforms>
+		<AdditionalIncludePaths></AdditionalIncludePaths>
+		<ConfigProperties>
+			<Configuration>
+				<Name>Debug:x64</Name>
+				<Defines></Defines>
+				<ForceIncludes></ForceIncludes>
+			</Configuration>
+		</ConfigProperties>
+		<Children></Children>
+	</Workspace>
+</N10X>

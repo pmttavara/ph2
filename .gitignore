@@ -5,4 +5,6 @@
 *.exp
 *.lib
 *.pdb
-*.exe
+cld*.exe
+ph2*.exe
+*.glsl.h
