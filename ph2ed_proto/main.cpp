@@ -2,21 +2,71 @@
 // SPDX-License-Identifier: 0BSD
 // Parts of this code come from the Sokol libraries by Andre Weissflog
 // which are licensed under zlib/libpng license.
+// Dear Imgui is licensed under MIT License. https://github.com/ocornut/imgui/blob/master/LICENSE.txt
+#ifndef defer
+struct defer_dummy {};
+template <class F> struct deferrer { F f; ~deferrer() { f(); } };
+template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
+#define DEFER_(LINE) zz_defer##LINE
+#define DEFER(LINE) DEFER_(LINE)
+#define defer auto DEFER(__LINE__) = defer_dummy{} *[&]()
+#endif // defer
+
+#define WIN32_LEAN_AND_MEAN
+#define VC_EXTRALEAN
+#define NOMINMAX
+#include <Windows.h>
+
+// assert
+#ifdef _WIN32
+#ifdef __cplusplus
+extern "C" {
+#endif
+static int assert_(const char *s) {
+    int x = MessageBoxA(0, s, "Assertion Failed", MB_ABORTRETRYIGNORE | MB_ICONERROR | MB_SYSTEMMODAL);
+    if (x == 3) ExitProcess(1);
+    return x == 4;
+}
+#define assert_STR_(LINE) #LINE
+#define assert_STR(LINE) assert_STR_(LINE)
+#ifdef NDEBUG
+#define assert(ignore) ((void)0)
+#else
+#define assert(e) ((e) || assert_("At " __FILE__ ":" assert_STR(__LINE__) ":\n\n" #e "\n\nPress Retry to debug.") && (__debugbreak(), 0))
+#endif
+#ifdef __cplusplus
+}
+#endif
+#else
 #include <assert.h>
-#include <math.h>
+#endif // _WIN32
+#define TAU 6.283185307179586476925
+#define TAU32 6.283185307179586476925f
+
+#define IM_ASSERT assert
+#define SOKOL_ASSERT assert
+
+// Dear Imgui
+#include "imgui.h"
+
+// Sokol libraries
+#define SOKOL_IMPL
+#define SOKOL_D3D11
+// #define SOKOL_GLCORE33
+#include "sokol_app.h"
+#include "sokol_gfx.h"
+#include "sokol_imgui.h"
 
 #define HANDMADE_MATH_IMPLEMENTATION
 #include "HandmadeMath.h"
 
-#define SOKOL_IMPL
-#define SOKOL_D3D11
-#include "sokol_app.h"
-#include "sokol_gfx.h"
-#include "triangle-sapp.glsl.h"
-
 #define PH2CLD_IMPLEMENTATION
 #include "../cld/ph2_cld.h"
 
+// Shaders
+#include "main.glsl.h"
+
+// sokol_glue.h
 SOKOL_API_IMPL sg_context_desc sapp_sgcontext(void) {
     sg_context_desc desc;
     memset(&desc, 0, sizeof(desc));
@@ -38,260 +88,265 @@ SOKOL_API_IMPL sg_context_desc sapp_sgcontext(void) {
     return desc;
 }
 
-// application state
-static struct {
-    sg_pipeline pip;
-    sg_bindings bind;
-    sg_bindings bind2;
-    sg_pass_action pass_action;
-    float rx;
-    float ry;
-    float camx;
-    float camy;
-    float camz;
-    float zoom = 32000;
-    bool entered = false;
-    size_t num_verts = 0;
-    PH2CLD_Collision_Data data = {};
-} state;
-
-static void init(void) {
-    auto &data = state.data;
-    data = PH2CLD_get_collision_data_from_file("../cld/cld/ap58.cld");
-    assert(data.valid);
-
-    state.camx = -data.origin[0];
-    state.camz = -data.origin[1];
-
-    {
-        sg_desc d = {};
-        d.context = sapp_sgcontext();
-        sg_setup(d);
+#ifdef _WIN32
+#pragma warning(disable : 4255)
+#pragma warning(disable : 4668)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+static double get_time(void) {
+    LARGE_INTEGER counter;
+    static double invfreq;
+    if (invfreq == 0) {
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        invfreq = 1.0 / (double)freq.QuadPart;
     }
-    // __dbgui_setup(sapp_sample_count());
-    float triangle[] = {
-        // positions
-        0.0f,  0.5f, 0,
-        0.5f, -0.5f, 0,
-        -0.5f, -0.5f, 0,
-    };
+    QueryPerformanceCounter(&counter);
+    return (double)counter.QuadPart * invfreq;
+}
+#else
+#include <time.h>
+static double get_time(void) {
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
+}
+#endif
+
+// How's this done for Linux/etc?
+#define KEY(vk) ((unsigned short)GetAsyncKeyState(vk) >= 0x8000)
+
+struct G {
+    double last_time = 0;
+    double t = 0;
+
+    bool orbiting = false;
+
+    hmm_vec3 cam_pos = {0, 0, 5};
+    float yaw = 0;
+    float pitch = 0;
+    float move_speed = 0;
+    float scroll_speed = 0;
+    float scroll_speed_timer = 0;
+    bool scrolling_out = false;
+    
+    sg_pipeline cld_pipeline = {};
+    sg_buffer cld_buffer = {};
+};
+
+static void init(void *userdata) {
+    G &g = *(G *)userdata;
+    (void)g;
+    g.last_time = get_time();
+    sg_desc desc = {};
+    desc.context = sapp_sgcontext();
+    sg_setup(&desc);
+    simgui_desc_t simgui_desc = {};
+    simgui_desc.no_default_font = true;
+    simgui_desc.dpi_scale = sapp_dpi_scale();
+    simgui_desc.sample_count = sapp_sample_count();
+    simgui_setup(&simgui_desc);
+    {
+        ImGuiIO &io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+        ImFontConfig fontCfg;
+        fontCfg.FontDataOwnedByAtlas = false;
+        fontCfg.OversampleH = 2;
+        fontCfg.OversampleV = 2;
+        fontCfg.RasterizerMultiply = 1.5f;
+        io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/consola.ttf", 16, &fontCfg);
+        
+        // create font texture for the custom font
+        unsigned char* font_pixels;
+        int font_width, font_height;
+        io.Fonts->GetTexDataAsRGBA32(&font_pixels, &font_width, &font_height);
+        sg_image_desc img_desc = {};
+        img_desc.width = font_width;
+        img_desc.height = font_height;
+        img_desc.pixel_format = SG_PIXELFORMAT_RGBA8;
+        img_desc.wrap_u = SG_WRAP_CLAMP_TO_EDGE;
+        img_desc.wrap_v = SG_WRAP_CLAMP_TO_EDGE;
+        img_desc.min_filter = SG_FILTER_LINEAR;
+        img_desc.mag_filter = SG_FILTER_LINEAR;
+        img_desc.data.subimage[0][0].ptr = font_pixels;
+        img_desc.data.subimage[0][0].size = font_width * font_height * 4;
+        io.Fonts->TexID = (ImTextureID)(uintptr_t) sg_make_image(&img_desc).id;
+    }
+    
     {
         sg_buffer_desc d = {};
-        d.data = SG_RANGE(triangle);
-        d.label = "triangle-vertices";
-        state.bind2.vertex_buffers[0] = sg_make_buffer(d);
-    }
-    // a vertex buffer with 3 vertices
-    //float vertices[] = {
-        // positions
-    //    0.0f,  0.5f, 0.5f,
-    //    0.5f, -0.5f, 0.5f,
-    //    -0.5f, -0.5f, 0.5f,
-//
-    //    1.0f,  0.5f, 0.5f,
-    //    1.5f, -0.5f, 0.5f,
-    //    0.5f, -0.5f, 0.5f,
-//
-    //    0.0f,  0.5f, 0.5f+1,
-    //    0.5f, -0.5f, 0.5f+1,
-    //    -0.5f, -0.5f, 0.5f+1,
-    //    
-    //    0.0f,  0.5f, 0.5f+1,
-    //    0.5f, -0.5f, 0.5f+1,
-    //    -0.5f, -0.5f, 0.5f+1,
-    //    
-    //    0.0f,  0.5f, 0.5f + 100,
-    //    0.5f, -0.5f, 0.5f + 100,
-    //    -0.5f, -0.5f, 0.5f + 100,
-    //    
-    //    0.0f,  -1, 0.5f,
-    //    -100, -1, 0.5f + 100,
-    //    100, -1, 0.5f + 100,
-    //};
-    //data.group_0_faces_count = 1;
-    //data.group_1_faces_count = 1;
-    //data.group_2_faces_count = 1;
-    //data.group_3_faces_count = 1;
-    size_t vertices_bytes =
-        (data.group_0_faces_count
-            + data.group_1_faces_count
-            + data.group_2_faces_count
-            + data.group_3_faces_count) * sizeof(float[6][3]);
-    float *vertices = (float*)calloc(vertices_bytes, 1);
-    float *vertex_pointer = vertices;
-    auto push_face = [&] (PH2CLD_Face face) {
-        assert(vertex_pointer < vertices + vertices_bytes / sizeof(float));
-        auto push_vert = [&] (float (&vert)[3]) {
-            vertex_pointer++[0] = vert[0];
-            vertex_pointer++[0] = -vert[1];
-            vertex_pointer++[0] = vert[2];
+        // @Temporary CLD vertices
+        float cld_buffer_vertices[] = {
+            // positions
+            0,  0, 0,
+            1,  0, 0,
+            0,  1, 0,
         };
-        push_vert(face.vertices[0]);
-        push_vert(face.vertices[1]);
-        push_vert(face.vertices[2]);
-        if (face.quad) {
-            push_vert(face.vertices[0]);
-            push_vert(face.vertices[2]);
-            push_vert(face.vertices[3]);
-        }
-    };
-    printf("%zu floors\n", data.group_0_faces_count);
-    printf("%zu walls\n", data.group_1_faces_count);
-    printf("%zu somethings\n", data.group_2_faces_count);
-    printf("%zu furniture collider faces\n", data.group_3_faces_count);
-    printf("%zu pillars\n", data.group_4_cylinders_count);
-    for (size_t i = 0; i < data.group_0_faces_count; i++) {
-        push_face(data.group_0_faces[i]);
-    }
-    for (size_t i = 0; i < data.group_1_faces_count; i++) {
-        push_face(data.group_1_faces[i]);
-    }
-    for (size_t i = 0; i < data.group_2_faces_count; i++) {
-        push_face(data.group_2_faces[i]);
-    }
-    for (size_t i = 0; i < data.group_3_faces_count; i++) {
-        push_face(data.group_3_faces[i]);
-    }
-    assert(!((vertex_pointer - vertices) % 3));
-    state.num_verts = (vertex_pointer - vertices) / 3;
-    {
-        sg_buffer_desc d = {};
-        d.data = sg_range{vertices, state.num_verts * sizeof(float)};
-        d.label = "cld-vertices";
-        state.bind.vertex_buffers[0] = sg_make_buffer(d);
+        d.data = SG_RANGE(cld_buffer_vertices);
+        g.cld_buffer = sg_make_buffer(d);
     }
 
-    // create shader from code-generated sg_shader_desc
-    sg_shader shd = sg_make_shader(triangle_shader_desc(sg_query_backend()));
-
-    // create a pipeline object (default render states are fine for triangle)
     {
         sg_pipeline_desc d = {};
-        d.shader = shd;
-        d.depth.compare = SG_COMPAREFUNC_LESS;
-        d.depth.write_enabled = true;
-        // if the vertex layout doesn't have gaps, don't need to provide strides and offsets
+        d.shader = sg_make_shader(main_shader_desc(sg_query_backend()));
         d.layout.attrs[ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
-        d.label = "triangle-pipeline";
-        state.pip = sg_make_pipeline(d);
-    }
-
-    {
-        sg_pass_action a = {};
-        a.colors[0].action = SG_ACTION_CLEAR;
-        a.colors[0].value = { 0.0f, 0.0f, 0.0f, 1.0f };
-        // a pass action to framebuffer to black
-        state.pass_action = a;
+        g.cld_pipeline = sg_make_pipeline(d);
     }
 }
 
-hmm_vec4 get_rotated_direction(hmm_vec4 v) {
-    hmm_mat4 rxm = HMM_Rotate(state.rx, HMM_Vec3(-1.0f, 0.0f, 0.0f));
-    hmm_mat4 rym = HMM_Rotate(state.ry, HMM_Vec3(0.0f, -1.0f, 0.0f));
-    v = rxm * v;
-    v = rym * v;
-    return v;
+static hmm_mat4 camera_rot(G &g) {
+    // We pitch the camera by applying a rotation around X,
+    // then yaw the camera by applying a rotation around Y.
+    auto pitch_matrix = HMM_Rotate(g.pitch * (360 / TAU32), HMM_Vec3(1, 0, 0));
+    auto yaw_matrix = HMM_Rotate(g.yaw * (360 / TAU32), HMM_Vec3(0, 1, 0));
+    return yaw_matrix * pitch_matrix;
 }
-void event(const sapp_event *e) {
-    if (e->type == SAPP_EVENTTYPE_MOUSE_ENTER) {
-        state.entered = true;
-    }
-    if (e->type == SAPP_EVENTTYPE_MOUSE_LEAVE) {
-        state.entered = false;
-    }
-    if (e->type == SAPP_EVENTTYPE_KEY_DOWN && !e->key_repeat) {
-        if (state.entered) {
-            if (e->key_code == SAPP_KEYCODE_ESCAPE) {
-                sapp_lock_mouse(!sapp_mouse_locked());
-            }
+static void event(const sapp_event *e_, void *userdata) {
+    G &g = *(G *)userdata;
+    simgui_handle_event(e_);
+    const sapp_event &e = *e_;
+    if (e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
+        if (e.mouse_button & SAPP_MOUSEBUTTON_MIDDLE) {
+            g.orbiting = true;
         }
     }
-            if (e->type == SAPP_EVENTTYPE_MOUSE_SCROLL) {
-                //float left_right   = (float)(e->key_code == SAPP_KEYCODE_D)
-                //                   - (float)(e->key_code == SAPP_KEYCODE_A);
-                float forward_back = (float)(e->scroll_y * 0.125f);
-                auto forward = get_rotated_direction({0, 0, forward_back, 0});
-                state.camx += forward[0] * 1000;
-                state.camy += forward[1] * 1000;
-                state.camz += forward[2] * 1000;
-            }
-    if (e->type == SAPP_EVENTTYPE_MOUSE_MOVE) {
-        if (sapp_mouse_locked()) {
-            state.ry += e->mouse_dx * 0.0625f;
-            state.rx += e->mouse_dy * 0.0625f;
+    if (e.type == SAPP_EVENTTYPE_UNFOCUSED) {
+        g.orbiting = false;
+    }
+    if (e.type == SAPP_EVENTTYPE_MOUSE_UP) {
+        g.orbiting = false;
+    }
+    if (e.type == SAPP_EVENTTYPE_MOUSE_MOVE) {
+        if (g.orbiting) {
+            g.yaw += -e.mouse_dx * 3 * (0.022f * (TAU32 / 360));
+            g.pitch += -e.mouse_dy * 3 * (0.022f * (TAU32 / 360));
         }
+    }
+    if (g.pitch > TAU32 / 4) {
+        g.pitch = TAU32 / 4;
+    }
+    if (g.pitch < -TAU32 / 4) {
+        g.pitch = -TAU32 / 4;
+    }
+    if (e.type == SAPP_EVENTTYPE_MOUSE_SCROLL) {
+        hmm_vec4 translate = { 0, 0, -e.scroll_y * 0.1f, 0 };
+        bool scrolling_out = e.scroll_y > 0;
+        if (g.scrolling_out != scrolling_out) {
+            g.scrolling_out  = scrolling_out;
+            g.scroll_speed = 0;
+        }
+        g.scroll_speed_timer = 0.5f;
+        g.scroll_speed += 0.125f;
+        translate *= powf(2.0f, g.scroll_speed);
+        translate = camera_rot(g) * translate;
+        g.cam_pos += translate.XYZ;
     }
 }
 
-hmm_mat4 infinitePerspectiveFovReverseZLH_ZO(float fov, float width, float height, float zNear) {
-    float Cotangent = 1.0f / tanf(fov * (HMM_PI32 / 360.0f));
-    hmm_mat4 Result = HMM_PREFIX(Mat4)();
-    Result.Elements[0][0] = Cotangent / (width/height);
-    Result.Elements[1][1] = Cotangent;
-    Result.Elements[2][3] = -1;
-    Result.Elements[2][2] = -1;
-    Result.Elements[3][2] = -zNear;
-    Result.Elements[3][3] = 0.0f;
-    return Result;
-};
-void frame(void) {
-    /* NOTE: the vs_params_t struct has been code-generated by the shader-code-gen */
-    vs_params_t vs_params;
-    const float w = sapp_widthf();
-    const float h = sapp_heightf();
+static void frame(void *userdata) {
+    G &g = *(G *)userdata;
+    float dt = 0;
+    defer {
+        g.t += dt;
+    };
     {
-        hmm_mat4 proj = infinitePerspectiveFovReverseZLH_ZO(90.0f, w, h, 1.0f);
-        //hmm_mat4 view = HMM_LookAt(HMM_Vec3(0.0f, 1.5f, 10.0f), HMM_Vec3(0.0f, 0.0f, 0.0f), HMM_Vec3(0.0f, 1.0f, 0.0f));
-        //hmm_mat4 view_proj = HMM_MultiplyMat4(proj, view);
-        hmm_mat4 rxm = HMM_Rotate(state.rx, HMM_Vec3(1.0f, 0.0f, 0.0f));
-        hmm_mat4 rym = HMM_Rotate(state.ry, HMM_Vec3(0.0f, 1.0f, 0.0f));
-        hmm_mat4 model = HMM_MultiplyMat4(rxm, rym);
-        model = HMM_MultiplyMat4(model, HMM_Translate( { state.camx, state.camy, state.camz }));
-        auto mvp = HMM_MultiplyMat4(proj, model);
-        memcpy(vs_params.mvp, &mvp, sizeof(vs_params.mvp));
+        auto next = get_time();
+        dt = (float)(next - g.last_time);
+        g.last_time = next;
+    }
+    simgui_new_frame(sapp_width(), sapp_height(), dt);
+    sapp_lock_mouse(g.orbiting);
+    g.scroll_speed_timer -= dt;
+    if (g.scroll_speed_timer < 0) {
+        g.scroll_speed_timer = 0;
+        g.scroll_speed = 0;
+    }
+    if (g.orbiting) {
+        float rightwards = ((float)KEY('D') - (float)KEY('A')) * dt;
+        float forwards   = ((float)KEY('S') - (float)KEY('W')) * dt;
+        hmm_vec4 translate = {rightwards, 0, forwards, 0};
+        if (HMM_Length(translate) == 0) {
+            g.move_speed = 4;
+        } else {
+            g.move_speed += dt;
+        }
+        translate *= powf(2.0f, g.move_speed);
+        translate = camera_rot(g) * translate;
+        g.cam_pos += translate.XYZ;
     }
     {
-        sg_pass_action a = {};
-        a.colors[0].action = SG_ACTION_CLEAR;
-        a.colors[0].value = {0.1098f, 0.1294f, 0.1372f, 1.0f };
-        sg_begin_default_pass(a, sapp_width(), sapp_height());
+        ImGui::Begin("Editor", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_MenuBar);
+        defer {
+            ImGui::End();
+        };
+        ImGui::Text("Hello, world!");
     }
-    sg_apply_pipeline(state.pip);
-    sg_apply_bindings(&state.bind);
-    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(vs_params));
-    sg_draw(0, (int)state.num_verts, 1);
+    //if (g.changed) {
+    //    vertices;
+    //    sg_update_buffer(g.cld_buffer, );
+    //}
     {
-        hmm_mat4 proj = infinitePerspectiveFovReverseZLH_ZO(90.0f, w, h, 0.01f);
-        //hmm_mat4 view = HMM_LookAt(HMM_Vec3(0.0f, 1.5f, 10.0f), HMM_Vec3(0.0f, 0.0f, 0.0f), HMM_Vec3(0.0f, 1.0f, 0.0f));
-        //hmm_mat4 view_proj = HMM_MultiplyMat4(proj, view);
-        hmm_mat4 rxm = HMM_Rotate(state.rx, HMM_Vec3(1.0f, 0.0f, 0.0f));
-        hmm_mat4 rym = HMM_Rotate(state.ry, HMM_Vec3(0.0f, 1.0f, 0.0f));
-        hmm_mat4 model = HMM_MultiplyMat4(rxm, rym);
-        model = HMM_MultiplyMat4(model, HMM_Translate(get_rotated_direction({0, 0, -10, 0}).XYZ));
-        auto mvp = HMM_MultiplyMat4(proj, model);
-        memcpy(vs_params.mvp, &mvp, sizeof(vs_params.mvp));
+        sg_pass_action p = {};
+        p.colors[0].action = SG_ACTION_CLEAR;
+        p.colors[0].value = { 0.0f, 0.0f, 0.0f, 1.0f };
+        p.depth.action = SG_ACTION_CLEAR;
+        p.depth.value = 0;
+        sg_begin_default_pass(p, sapp_width(), sapp_height());
+        defer {
+            sg_end_pass();
+        };
+        {
+            sg_apply_pipeline(g.cld_pipeline);
+            vs_params_t params;
+            params.P = HMM_Perspective(90, sapp_widthf() / sapp_heightf(), 0.01f, 1000.0f);
+            
+            // The view matrix is the inverse of the camera's model matrix (aka the camera's transform matrix).
+            // We perform an inversion of the camera rotation by getting the transpose
+            // (which equals the inverse in this case since it's just a rotation matrix).
+            params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
+            {
+                params.M = HMM_Rotate((float)g.t * 180, {1, 0, 0});
+            }
+            sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
+            {
+                sg_bindings b = {};
+                b.vertex_buffers[0] = g.cld_buffer;
+                sg_apply_bindings(b);
+                sg_draw(0, 3, 1);
+            }
+        }
+        simgui_render();
     }
-    sg_apply_bindings(&state.bind2);
-    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(vs_params));
-    sg_draw(0, 3, 1);
-
-    // __dbgui_draw();
-    sg_end_pass();
     sg_commit();
 }
 
-void cleanup(void) {
-    // __dbgui_shutdown();
+static void cleanup(void *userdata) {
+    G &g = *(G *)userdata;
+    (void)g;
+    simgui_shutdown();
     sg_shutdown();
 }
 
+static void fail(const char *str) {
+    char b[512];
+    snprintf(b, sizeof(b), "There was an error during startup:\n    \"%s\"", str);
+    MessageBoxA(0, b, "Fatal Error", MB_OK | MB_ICONERROR | MB_SYSTEMMODAL);
+}
+
+G g;
 sapp_desc sokol_main(int, char **) {
     sapp_desc d = {};
-    d.win32_console_create = true;
-    d.init_cb = init;
-    d.event_cb = event;
-    d.frame_cb = frame;
-    d.cleanup_cb = cleanup;
+    d.user_data = &g;
+    d.init_userdata_cb = init;
+    d.event_userdata_cb = event;
+    d.frame_userdata_cb = frame;
+    d.cleanup_userdata_cb = cleanup;
+    d.fail_cb = fail;
     d.sample_count = 4;
+    d.swap_interval = 0;
+    d.high_dpi = true;
+    d.win32_console_create = true;
     return d;
 }
