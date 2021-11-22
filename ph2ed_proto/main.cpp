@@ -52,7 +52,7 @@ static int assert_(const char *s) {
 // Sokol libraries
 #define SOKOL_IMPL
 #define SOKOL_D3D11
-// #define SOKOL_GLCORE33
+//#define SOKOL_GLCORE33
 #include "sokol_app.h"
 #include "sokol_gfx.h"
 #include "sokol_imgui.h"
@@ -117,11 +117,15 @@ static double get_time(void) {
 // How's this done for Linux/etc?
 #define KEY(vk) ((unsigned short)GetAsyncKeyState(vk) >= 0x8000)
 
+const float FOV_MIN = 10 * (TAU32 / 360);
+const float FOV_MAX = 179 * (TAU32 / 360);
+const float FOV_DEFAULT = 90 * (TAU32 / 360);
 struct G {
     double last_time = 0;
     double t = 0;
 
     bool orbiting = false;
+    float fov = FOV_DEFAULT;
 
     hmm_vec3 cam_pos = {0, 0, 5};
     float yaw = 0;
@@ -133,6 +137,7 @@ struct G {
     
     sg_pipeline cld_pipeline = {};
     sg_buffer cld_buffer = {};
+    int cld_vertices_count = 0;
 };
 
 static void init(void *userdata) {
@@ -174,18 +179,59 @@ static void init(void *userdata) {
         img_desc.data.subimage[0][0].size = font_width * font_height * 4;
         io.Fonts->TexID = (ImTextureID)(uintptr_t) sg_make_image(&img_desc).id;
     }
-    
     {
         sg_buffer_desc d = {};
-        // @Temporary CLD vertices
-        float cld_buffer_vertices[] = {
-            // positions
-            0,  0, 0,
-            1,  0, 0,
-            0,  1, 0,
-        };
-        d.data = SG_RANGE(cld_buffer_vertices);
+
+        // @Note: 58254 is >2x all CLD faces in all SH2 rooms combined
+        // and yields a 4MB buffer per group.
+        size_t CLD_MAX_FACES_PER_GROUP = 58254;
+        size_t CLD_MAX_TRIANGLES_PER_GROUP = CLD_MAX_FACES_PER_GROUP * 2;
+        size_t CLD_MAX_VERTICES_PER_GROUP = CLD_MAX_TRIANGLES_PER_GROUP * 3;
+        size_t CLD_MAX_FLOATS_PER_GROUP = CLD_MAX_VERTICES_PER_GROUP * 3;
+        size_t CLD_GROUP_BUFFER_SIZE = CLD_MAX_FLOATS_PER_GROUP * sizeof(float);
+        d.usage = SG_USAGE_DYNAMIC;
+        d.size = CLD_GROUP_BUFFER_SIZE;
         g.cld_buffer = sg_make_buffer(d);
+    }
+    {
+        PH2CLD_Collision_Data cld = PH2CLD_get_collision_data_from_file("../cld/cld/ap50.cld");
+        assert(cld.valid);
+        defer {
+            PH2CLD_free_collision_data(cld);
+        };
+        auto num_faces = cld.group_0_faces_count;
+        auto max_triangles = num_faces * 2;
+        auto max_vertices = max_triangles * 3;
+        auto max_floats = max_vertices * 3;
+        auto floats = (float *)malloc(max_floats * sizeof(float));
+        assert(floats);
+        defer {
+            free(floats);
+        };
+        auto write_pointer = floats;
+        auto end = floats + max_floats;
+        for (size_t i = 0; i < num_faces; i++) {
+            PH2CLD_Face face = cld.group_0_faces[i];
+            auto push_vertex = [&] (float (&vertex)[3]) {
+                *write_pointer++ = vertex[0];
+                *write_pointer++ = vertex[1];
+                *write_pointer++ = vertex[2];
+            };
+            push_vertex(face.vertices[0]);
+            push_vertex(face.vertices[1]);
+            push_vertex(face.vertices[2]);
+            if (face.quad) {
+                push_vertex(face.vertices[0]);
+                push_vertex(face.vertices[2]);
+                push_vertex(face.vertices[3]);
+            }
+        }
+        auto num_floats = (size_t)(write_pointer - floats);
+        
+        sg_update_buffer(g.cld_buffer, sg_range{floats, num_floats * sizeof(float)});
+        assert(num_floats % 3 == 0);
+        g.cld_vertices_count = (int)num_floats / 3;
+        assert(g.cld_vertices_count % 3 == 0);
     }
 
     {
@@ -282,6 +328,7 @@ static void frame(void *userdata) {
             ImGui::End();
         };
         ImGui::Text("Hello, world!");
+        ImGui::SliderAngle("Camera FOV", &g.fov, FOV_MIN * (360 / TAU32), FOV_MAX * (360 / TAU32));
     }
     //if (g.changed) {
     //    vertices;
@@ -297,24 +344,64 @@ static void frame(void *userdata) {
         defer {
             sg_end_pass();
         };
+        hmm_mat4 perspective = {};
+        {
+            if (g.fov < FOV_MIN) {
+                g.fov = FOV_MIN;
+            }
+            if (g.fov > FOV_MAX) {
+                g.fov = FOV_MAX;
+            }
+            const float cot_half_fov = 1 / tanf(g.fov / 2);
+            const float near_z = 0.01f;
+            const float far_z = 1000.0f;
+            float aspect_ratio = sapp_widthf() / sapp_heightf();
+            // @Note: This is not the right projection matrix for default OpenGL, because its clip range is [-1,+1].
+            //        You can call glClipControl to fix it, except in GLES2 where you need to fudge the matrix. Too bad!
+            //perspective = hmm_mat4 {
+            //{
+            //    { cot_half_fov / aspect_ratio,            0,                                       0,  0 },
+            //    { 0,                           cot_half_fov,                                       0,  0 },
+            //    { 0,                                      0,     (near_z + far_z) / (near_z - far_z), -1 },
+            //    { 0,                                      0, (2 * near_z * far_z) / (near_z - far_z),  0 },
+            //}
+            //};
+            //perspective = hmm_mat4 {
+            //{
+            //    { cot_half_fov / aspect_ratio,            0,                                       0,  0 },
+            //    { 0,                           cot_half_fov,                                       0,  0 },
+            //    { 0,                                      0,     near_z / (far_z - near_z), -1 },
+            //    { 0,                                      0, (far_z * near_z) / (far_z - near_z),  0 },
+            //}
+            //};
+            perspective = hmm_mat4 {
+            {
+                { cot_half_fov / aspect_ratio,            0,      0,  0 },
+                { 0,                           cot_half_fov,      0,  0 },
+                { 0,                                      0,      0, -1 },
+                { 0,                                      0, near_z,  0 },
+            }
+            };
+        }
         {
             sg_apply_pipeline(g.cld_pipeline);
             vs_params_t params;
-            params.P = HMM_Perspective(90, sapp_widthf() / sapp_heightf(), 0.01f, 1000.0f);
+            params.P = perspective;
             
             // The view matrix is the inverse of the camera's model matrix (aka the camera's transform matrix).
             // We perform an inversion of the camera rotation by getting the transpose
             // (which equals the inverse in this case since it's just a rotation matrix).
             params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
             {
-                params.M = HMM_Rotate((float)g.t * 180, {1, 0, 0});
+                // params.M = HMM_Rotate((float)g.t * 180, {1, 0, 0});
+                params.M = HMM_Mat4d(1);
             }
             sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
             {
                 sg_bindings b = {};
                 b.vertex_buffers[0] = g.cld_buffer;
                 sg_apply_bindings(b);
-                sg_draw(0, 3, 1);
+                sg_draw(0, g.cld_vertices_count, 1);
             }
         }
         simgui_render();
