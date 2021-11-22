@@ -138,6 +138,10 @@ const float FOV_MIN = 10 * (TAU32 / 360);
 const float FOV_MAX = 179 * (TAU32 / 360);
 const float FOV_DEFAULT = 90 * (TAU32 / 360);
 const float MOVE_SPEED_DEFAULT = 8;
+struct CLD_Face_Buffer {
+    sg_buffer buf = {};
+    int num_vertices = 0;
+};
 struct G {
     double last_time = 0;
     double t = 0;
@@ -154,8 +158,7 @@ struct G {
     
     hmm_vec3 cld_origin = {};
     sg_pipeline cld_pipeline = {};
-    sg_buffer cld_buffer = {};
-    int cld_vertices_count = 0;
+    CLD_Face_Buffer cld_face_buffers[4] = {};
 };
 
 static void imgui_show_log() {
@@ -251,7 +254,9 @@ static void init(void *userdata) {
         size_t CLD_GROUP_BUFFER_SIZE = CLD_MAX_FLOATS_PER_GROUP * sizeof(float);
         d.usage = SG_USAGE_DYNAMIC;
         d.size = CLD_GROUP_BUFFER_SIZE;
-        g.cld_buffer = sg_make_buffer(d);
+        for (auto &buffer : g.cld_face_buffers) {
+            buffer.buf = sg_make_buffer(d);
+        }
     }
     {
         const char *filename = "../cld/cld/ap50.cld";
@@ -263,46 +268,54 @@ static void init(void *userdata) {
         };
         Log("CLD origin is (%f, 0, %f)", cld.origin[0], cld.origin[1]);
         g.cld_origin = hmm_vec3 { cld.origin[0], 0, cld.origin[1] };
-        auto num_faces = cld.group_0_faces_count;
-        Log("group 0 has %zu faces", num_faces);
-        auto max_triangles = num_faces * 2;
-        auto max_vertices = max_triangles * 3;
-        auto max_floats = max_vertices * 3;
-        auto floats = (float *)malloc(max_floats * sizeof(float));
-        assert(floats);
-        defer {
-            free(floats);
-        };
-        auto write_pointer = floats;
-        auto end = floats + max_floats;
-        for (size_t i = 0; i < num_faces; i++) {
-            PH2CLD_Face face = cld.group_0_faces[i];
-            auto push_vertex = [&] (float (&vertex)[3]) {
-                *write_pointer++ = vertex[0];
-                *write_pointer++ = vertex[1];
-                *write_pointer++ = vertex[2];
+        for (int group = 0; group < 4; group++) {
+            PH2CLD_Face *faces = cld.group_0_faces;
+            size_t num_faces = cld.group_0_faces_count;
+            if (group == 1) { faces = cld.group_1_faces; num_faces = cld.group_1_faces_count; }
+            if (group == 2) { faces = cld.group_2_faces; num_faces = cld.group_2_faces_count; }
+            if (group == 3) { faces = cld.group_3_faces; num_faces = cld.group_3_faces_count; }
+            Log("group %d has %zu faces", group, num_faces);
+            auto max_triangles = num_faces * 2;
+            auto max_vertices = max_triangles * 3;
+            auto max_floats = max_vertices * 3;
+            auto floats = (float *)malloc(max_floats * sizeof(float));
+            assert(floats);
+            defer {
+                free(floats);
             };
-            push_vertex(face.vertices[0]);
-            push_vertex(face.vertices[1]);
-            push_vertex(face.vertices[2]);
-            if (face.quad) {
+            auto write_pointer = floats;
+            auto end = floats + max_floats;
+            for (size_t i = 0; i < num_faces; i++) {
+                PH2CLD_Face face = faces[i];
+                auto push_vertex = [&] (float (&vertex)[3]) {
+                    *write_pointer++ = vertex[0];
+                    *write_pointer++ = vertex[1];
+                    *write_pointer++ = vertex[2];
+                };
                 push_vertex(face.vertices[0]);
+                push_vertex(face.vertices[1]);
                 push_vertex(face.vertices[2]);
-                push_vertex(face.vertices[3]);
+                if (face.quad) {
+                    push_vertex(face.vertices[0]);
+                    push_vertex(face.vertices[2]);
+                    push_vertex(face.vertices[3]);
+                }
             }
+            auto num_floats = (size_t)(write_pointer - floats);
+
+            sg_update_buffer(g.cld_face_buffers[group].buf, sg_range { floats, num_floats * sizeof(float) });
+            assert(num_floats % 3 == 0);
+            g.cld_face_buffers[group].num_vertices = (int)num_floats / 3;
+            assert(g.cld_face_buffers[group].num_vertices % 3 == 0);
         }
-        auto num_floats = (size_t)(write_pointer - floats);
-        
-        sg_update_buffer(g.cld_buffer, sg_range{floats, num_floats * sizeof(float)});
-        assert(num_floats % 3 == 0);
-        g.cld_vertices_count = (int)num_floats / 3;
-        assert(g.cld_vertices_count % 3 == 0);
     }
 
     {
         sg_pipeline_desc d = {};
         d.shader = sg_make_shader(main_shader_desc(sg_query_backend()));
         d.layout.attrs[ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
+        d.depth.write_enabled = true;
+        d.depth.compare = SG_COMPAREFUNC_GREATER;
         g.cld_pipeline = sg_make_pipeline(d);
     }
 }
@@ -436,7 +449,7 @@ static void frame(void *userdata) {
                 g.fov = FOV_MAX;
             }
             const float cot_half_fov = 1 / tanf(g.fov / 2);
-            const float near_z = 0.01f;
+            const float near_z = 1;
             const float far_z = 1000.0f;
             float aspect_ratio = sapp_widthf() / sapp_heightf();
             // @Note: This is not the right projection matrix for default OpenGL, because its clip range is [-1,+1].
@@ -469,21 +482,24 @@ static void frame(void *userdata) {
         {
             sg_apply_pipeline(g.cld_pipeline);
             vs_params_t params;
+            params.cam_pos = g.cam_pos;
             params.P = perspective;
             
             // The view matrix is the inverse of the camera's model matrix (aka the camera's transform matrix).
             // We perform an inversion of the camera rotation by getting the transpose
             // (which equals the inverse in this case since it's just a rotation matrix).
-            params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
-            {
-                params.M = HMM_Translate(-g.cld_origin);
-            }
-            sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
-            {
-                sg_bindings b = {};
-                b.vertex_buffers[0] = g.cld_buffer;
-                sg_apply_bindings(b);
-                sg_draw(0, g.cld_vertices_count, 1);
+            params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos) * HMM_Scale({ 1, -1, 1 });
+            for (int i = 0; i < 4; i++) {
+                {
+                    params.M = HMM_Translate(-g.cld_origin);
+                }
+                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
+                {
+                    sg_bindings b = {};
+                    b.vertex_buffers[0] = g.cld_face_buffers[i].buf;
+                    sg_apply_bindings(b);
+                    sg_draw(0, g.cld_face_buffers[i].num_vertices, 1);
+                }
             }
         }
         simgui_render();
