@@ -12,6 +12,12 @@ template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
 #define defer auto DEFER(__LINE__) = defer_dummy{} *[&]()
 #endif // defer
 
+#ifdef NDEBUG
+#define RELEASE 1
+#else
+#undef RELEASE
+#endif
+
 #define WIN32_LEAN_AND_MEAN
 #define VC_EXTRALEAN
 #define NOMINMAX
@@ -29,7 +35,7 @@ static int assert_(const char *s) {
 }
 #define assert_STR_(LINE) #LINE
 #define assert_STR(LINE) assert_STR_(LINE)
-#ifdef NDEBUG
+#ifdef RELEASE
 #define assert(ignore) ((void)0)
 #else
 #define assert(e) ((e) || assert_("At " __FILE__ ":" assert_STR(__LINE__) ":\n\n" #e "\n\nPress Retry to debug.") && (__debugbreak(), 0))
@@ -49,8 +55,19 @@ static int assert_(const char *s) {
 // Dear Imgui
 #include "imgui.h"
 
+struct LogMsg {
+    unsigned int colour = IM_COL32(127,127,127,255);
+    char buf[252] = {};
+};
+enum { LOG_MAX = 16384 };
+LogMsg log_buf[LOG_MAX] = {};
+int log_buf_index = 0;
+#define LogC(c, fmt, ...) ((log_buf[log_buf_index % LOG_MAX].colour = (c)), (snprintf(log_buf[log_buf_index++ % LOG_MAX].buf, sizeof(LogMsg::buf), (fmt), ##__VA_ARGS__)))
+#define Log(fmt, ...) LogC(IM_COL32(127,127,127,255), fmt, ##__VA_ARGS__)
+
 // Sokol libraries
 #define SOKOL_IMPL
+#define SOKOL_LOG(s) Log("%s", s)
 #define SOKOL_D3D11
 //#define SOKOL_GLCORE33
 #include "sokol_app.h"
@@ -120,6 +137,7 @@ static double get_time(void) {
 const float FOV_MIN = 10 * (TAU32 / 360);
 const float FOV_MAX = 179 * (TAU32 / 360);
 const float FOV_DEFAULT = 90 * (TAU32 / 360);
+const float MOVE_SPEED_DEFAULT = 8;
 struct G {
     double last_time = 0;
     double t = 0;
@@ -127,18 +145,57 @@ struct G {
     bool orbiting = false;
     float fov = FOV_DEFAULT;
 
-    hmm_vec3 cam_pos = {0, 0, 5};
+    hmm_vec3 cam_pos = {0, 0, 0};
     float yaw = 0;
     float pitch = 0;
-    float move_speed = 0;
-    float scroll_speed = 0;
+    float move_speed = MOVE_SPEED_DEFAULT;
+    float scroll_speed = MOVE_SPEED_DEFAULT;
     float scroll_speed_timer = 0;
-    bool scrolling_out = false;
     
+    hmm_vec3 cld_origin = {};
     sg_pipeline cld_pipeline = {};
     sg_buffer cld_buffer = {};
     int cld_vertices_count = 0;
 };
+
+static void imgui_show_log() {
+    ImGui::SetNextWindowPos(ImVec2 { sapp_width() * 0.66f, sapp_height() * 0.66f }, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2 { sapp_width() * 0.32f, sapp_height() * 0.32f }, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Console");
+    defer {
+        ImGui::End();
+    };
+    {
+        ImGui::BeginChild("scrolling", ImVec2(0, -24 * ImGui::GetIO().FontGlobalScale), false, ImGuiWindowFlags_HorizontalScrollbar);
+        // @Hack: For some reason pushing the item width as wrap pos wraps at 2/3rds the window width, so just multiply by 1.5 :)
+        ImGui::PushTextWrapPos(ImGui::CalcItemWidth() * 3.0f / 2);
+        defer {
+            ImGui::PopTextWrapPos();
+            ImGui::EndChild();
+        };
+        int log_start = (int)log_buf_index - LOG_MAX;
+        if (log_start < 0) {
+            log_start = 0;
+        }
+        for (int i = log_start; i < log_buf_index; i++) {
+            ImGui::PushStyleColor(ImGuiCol_Text, log_buf[i % LOG_MAX].colour);
+            ImGui::TextWrapped("%s", log_buf[i % LOG_MAX].buf);
+            ImGui::PopStyleColor();
+        }
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+            ImGui::SetScrollHereY(1.0f);
+        }
+    }
+    char buf[512] = {};
+    ImGui::Text("Command:");
+    ImGui::SameLine();
+    if (ImGui::InputText("###console input", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+        // Process buf
+        LogC(IM_COL32_WHITE, "> %s", buf);
+        Log("Unkown command :)");
+        ImGui::SetKeyboardFocusHere(-1);
+    }
+}
 
 static void init(void *userdata) {
     G &g = *(G *)userdata;
@@ -151,6 +208,9 @@ static void init(void *userdata) {
     simgui_desc.no_default_font = true;
     simgui_desc.dpi_scale = sapp_dpi_scale();
     simgui_desc.sample_count = sapp_sample_count();
+#if RELEASE
+    simgui_desc.ini_filename = "imgui.ini";
+#endif
     simgui_setup(&simgui_desc);
     {
         ImGuiIO &io = ImGui::GetIO();
@@ -194,12 +254,17 @@ static void init(void *userdata) {
         g.cld_buffer = sg_make_buffer(d);
     }
     {
-        PH2CLD_Collision_Data cld = PH2CLD_get_collision_data_from_file("../cld/cld/ap50.cld");
+        const char *filename = "../cld/cld/ap50.cld";
+        Log("CLD filename is \"%s\"", filename);
+        PH2CLD_Collision_Data cld = PH2CLD_get_collision_data_from_file(filename);
         assert(cld.valid);
         defer {
             PH2CLD_free_collision_data(cld);
         };
+        Log("CLD origin is (%f, 0, %f)", cld.origin[0], cld.origin[1]);
+        g.cld_origin = hmm_vec3 { cld.origin[0], 0, cld.origin[1] };
         auto num_faces = cld.group_0_faces_count;
+        Log("group 0 has %zu faces", num_faces);
         auto max_triangles = num_faces * 2;
         auto max_vertices = max_triangles * 3;
         auto max_floats = max_vertices * 3;
@@ -253,8 +318,11 @@ static void event(const sapp_event *e_, void *userdata) {
     G &g = *(G *)userdata;
     simgui_handle_event(e_);
     const sapp_event &e = *e_;
+    if (ImGui::GetIO().WantCaptureMouse || ImGui::GetIO().WantCaptureKeyboard) {
+        return;
+    }
     if (e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
-        if (e.mouse_button & SAPP_MOUSEBUTTON_MIDDLE) {
+        if (e.mouse_button & SAPP_MOUSEBUTTON_RIGHT) {
             g.orbiting = true;
         }
     }
@@ -278,13 +346,11 @@ static void event(const sapp_event *e_, void *userdata) {
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_SCROLL) {
         hmm_vec4 translate = { 0, 0, -e.scroll_y * 0.1f, 0 };
-        bool scrolling_out = e.scroll_y > 0;
-        if (g.scrolling_out != scrolling_out) {
-            g.scrolling_out  = scrolling_out;
-            g.scroll_speed = 0;
-        }
         g.scroll_speed_timer = 0.5f;
-        g.scroll_speed += 0.125f;
+        g.scroll_speed += 0.5f;
+        if (g.scroll_speed > 12) {
+            g.scroll_speed = 12;
+        }
         translate *= powf(2.0f, g.scroll_speed);
         translate = camera_rot(g) * translate;
         g.cam_pos += translate.XYZ;
@@ -314,22 +380,39 @@ static void frame(void *userdata) {
         float forwards   = ((float)KEY('S') - (float)KEY('W')) * dt;
         hmm_vec4 translate = {rightwards, 0, forwards, 0};
         if (HMM_Length(translate) == 0) {
-            g.move_speed = 4;
+            g.move_speed = MOVE_SPEED_DEFAULT;
         } else {
             g.move_speed += dt;
         }
-        translate *= powf(2.0f, g.move_speed);
+        float move_speed = g.move_speed;
+        if (KEY(VK_SHIFT)) {
+            move_speed += 4;
+        }
+        if (move_speed > 16) {
+            move_speed = 16;
+        }
+        translate *= powf(2.0f, move_speed);
         translate = camera_rot(g) * translate;
         g.cam_pos += translate.XYZ;
     }
+    if (g.orbiting) {
+        ImGui::GetStyle().Alpha = 0.333f;
+    } else {
+        ImGui::GetStyle().Alpha = 1;
+    }
     {
-        ImGui::Begin("Editor", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_MenuBar);
+        ImGui::Begin("Editor", nullptr, ImGuiWindowFlags_MenuBar);
         defer {
             ImGui::End();
         };
-        ImGui::Text("Hello, world!");
         ImGui::SliderAngle("Camera FOV", &g.fov, FOV_MIN * (360 / TAU32), FOV_MAX * (360 / TAU32));
+        if (ImGui::Button("Reset Camera")) {
+            g.cam_pos = {};
+            g.pitch = 0;
+            g.yaw = 0;
+        }
     }
+    imgui_show_log();
     //if (g.changed) {
     //    vertices;
     //    sg_update_buffer(g.cld_buffer, );
@@ -393,8 +476,7 @@ static void frame(void *userdata) {
             // (which equals the inverse in this case since it's just a rotation matrix).
             params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
             {
-                // params.M = HMM_Rotate((float)g.t * 180, {1, 0, 0});
-                params.M = HMM_Mat4d(1);
+                params.M = HMM_Translate(-g.cld_origin);
             }
             sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
             {
@@ -419,12 +501,15 @@ static void cleanup(void *userdata) {
 static void fail(const char *str) {
     char b[512];
     snprintf(b, sizeof(b), "There was an error during startup:\n    \"%s\"", str);
+    Log("%s", b);
     MessageBoxA(0, b, "Fatal Error", MB_OK | MB_ICONERROR | MB_SYSTEMMODAL);
 }
 
 G g;
 sapp_desc sokol_main(int, char **) {
     sapp_desc d = {};
+    d.width = 1900; // @Temporary
+    d.height = 1000; // @Temporary
     d.user_data = &g;
     d.init_userdata_cb = init;
     d.event_userdata_cb = event;
@@ -434,6 +519,9 @@ sapp_desc sokol_main(int, char **) {
     d.sample_count = 4;
     d.swap_interval = 0;
     d.high_dpi = true;
+#if !RELEASE
     d.win32_console_create = true;
+#endif
+    d.html5_ask_leave_site = true;
     return d;
 }
