@@ -28,7 +28,7 @@ out vec4 frag_color;
 void main() {
     vec3 N = normalize(cross(dFdx(cam_relative_pos.xyz), dFdy(cam_relative_pos.xyz)));
     vec3 L = normalize(vec3(-1, -10, -4));
-    float light = clamp(dot(N, L), 0, 1);
+    float light = clamp(dot(N, L), 0.1, 1);
     frag_color = vec4(light);
     // frag_color *= vec4(fract(worldpos), 1);
 }
