@@ -30,7 +30,7 @@ void main() {
     vec3 L = normalize(vec3(-1, -10, -4));
     float light = clamp(dot(N, L), 0, 1);
     frag_color = vec4(light);
-    frag_color *= vec4(fract(worldpos), 1);
+    // frag_color *= vec4(fract(worldpos), 1);
 }
 @end
 

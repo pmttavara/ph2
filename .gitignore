@@ -1,5 +1,6 @@
 .vs/
 *.cld
+*.map
 *.ilk
 *.obj
 *.exp
