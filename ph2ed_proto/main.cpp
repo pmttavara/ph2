@@ -55,6 +55,15 @@ static int assert_(const char *s) {
 // Dear Imgui
 #include "imgui.h"
 
+// Sokol libraries
+#define SOKOL_IMPL
+//#define SOKOL_LOG(s) Log("%s", s)
+#define SOKOL_D3D11
+//#define SOKOL_GLCORE33
+#include "sokol_app.h"
+#include "sokol_gfx.h"
+#include "sokol_imgui.h"
+
 struct LogMsg {
     unsigned int colour = IM_COL32(127,127,127,255);
     char buf[252] = {};
@@ -64,15 +73,6 @@ LogMsg log_buf[LOG_MAX] = {};
 int log_buf_index = 0;
 #define LogC(c, fmt, ...) ((log_buf[log_buf_index % LOG_MAX].colour = (c)), (snprintf(log_buf[log_buf_index++ % LOG_MAX].buf, sizeof(LogMsg::buf), (fmt), ##__VA_ARGS__)))
 #define Log(fmt, ...) LogC(IM_COL32(127,127,127,255), fmt, ##__VA_ARGS__)
-
-// Sokol libraries
-#define SOKOL_IMPL
-#define SOKOL_LOG(s) Log("%s", s)
-#define SOKOL_D3D11
-//#define SOKOL_GLCORE33
-#include "sokol_app.h"
-#include "sokol_gfx.h"
-#include "sokol_imgui.h"
 
 #define HANDMADE_MATH_IMPLEMENTATION
 #include "HandmadeMath.h"
@@ -333,14 +333,21 @@ static void init(void *userdata) {
         struct _finddata_t find_data;
         intptr_t directory = _findfirst("map/*.map", &find_data);
         assert(directory >= 0);
-        while (1) {
-            char b[260 + sizeof("map/")];
-            snprintf(b, sizeof(b), "map/%s", find_data.name);
-            FILE *f = PH2CLD__fopen(b, "rb");
+        // while (1)
+        {
+            // char b[260 + sizeof("map/")];
+            // snprintf(b, sizeof(b), "map/%s", find_data.name);
+            // FILE *f = PH2CLD__fopen(b, "rb");
+            FILE *f = PH2CLD__fopen("map/ma01.map", "rb");
             assert(f);
             defer {
                 fclose(f);
             };
+
+            // @Temporary @Debug
+            static float floats_buffer[58254 * 2 * 3 * 3];
+            static const int floats_max = sizeof(floats_buffer) / sizeof(floats_buffer[0]);
+            int floats_count = 0;
 
             static char filedata[16 * 1024 * 1024];
             uint32_t file_len = (uint32_t)fread(filedata, 1, sizeof(filedata), f);
@@ -429,6 +436,8 @@ static void init(void *userdata) {
                                     int32_t unknown;
                                     int32_t mesh_part_group_count;
                                 };
+                                uint16_t indices[77 * 1024];
+                                int indices_count = 0;
                                 PH2MAP__Mapmesh_Header mapmesh_header = {};
                                 Read(ptr4, mapmesh_header);
                                 assert(PH2CLD__sanity_check_float4(mapmesh_header.bounding_box_a));
@@ -440,6 +449,9 @@ static void init(void *userdata) {
                                 assert(mapmesh_header.bounding_box_b[3] == 0);
                                 assert(mapmesh_header.vertex_sections_header_offset >= 0);
                                 assert(mapmesh_header.indices_offset >= 0);
+                                assert(mapmesh_header.indices_length >= 0);
+                                assert(mapmesh_header.indices_length % sizeof(uint16_t) == 0);
+                                assert(mapmesh_header_base + mapmesh_header.indices_offset + mapmesh_header.indices_length <= end2);
                                 
                                 ptr4 = mapmesh_header_base + mapmesh_header.vertex_sections_header_offset;
                                 struct PH2MAP__Vertex_Sections_Header {
@@ -452,6 +464,28 @@ static void init(void *userdata) {
                                 assert(vertex_sections_header.vertex_section_count >= 0);
                                 assert(vertex_sections_header.vertex_section_count <= 4);
                                 int vertex_sizes[4] = {};
+                                char *vertex_buffers[4] = {};
+                                int vertex_buffer_counts[4] = {};
+                                struct PH2MAP__Vertex14 {
+                                    float position[3];
+                                    float uv[2];
+                                };
+                                struct PH2MAP__Vertex18 {
+                                    float position[3];
+                                    uint32_t color; // rgba8888
+                                    float uv[2];
+                                };
+                                struct PH2MAP__Vertex20 {
+                                    float position[3];
+                                    float normal[3];
+                                    float uv[2];
+                                };
+                                struct PH2MAP__Vertex24 {
+                                    float position[3];
+                                    float normal[3];
+                                    uint32_t color; // rgba8888
+                                    float uv[2];
+                                };
                                 struct PH2MAP__Vertex_Section_Header {
                                     int32_t section_starts;
                                     int32_t bytes_per_vertex;
@@ -485,35 +519,31 @@ static void init(void *userdata) {
 
                                     assert(ptr5 == end_of_previous_section);
                                     char *end_of_this_section = ptr5 + vertex_section_header.section_length;
+                                    vertex_buffers[vertex_section_index] = ptr5;
+                                    vertex_buffer_counts[vertex_section_index] = num_vertices;
                                     for (int i = 0; i < num_vertices; i++) {
                                         switch (vertex_section_header.bytes_per_vertex) {
                                             case 0x14: {
-                                                struct PH2MAP__Vertex14 {
-                                                    float position[3];
-                                                    float uv[2];
-                                                };
                                                 PH2MAP__Vertex14 vert = {};
                                                 Read(ptr5, vert);
                                                 assert(PH2CLD__sanity_check_float3(vert.position));
                                                 assert(PH2CLD__sanity_check_float2(vert.uv));
+                                                assert(vert.uv[0] > -1);
+                                                assert(vert.uv[0] < +2);
+                                                assert(vert.uv[1] > -1);
+                                                assert(vert.uv[1] < +2);
                                             } break;
                                             case 0x18: {
-                                                struct PH2MAP__Vertex18 {
-                                                    float position[3];
-                                                    uint32_t color; // rgba8888
-                                                    float uv[2];
-                                                };
                                                 PH2MAP__Vertex18 vert = {};
                                                 Read(ptr5, vert);
                                                 assert(PH2CLD__sanity_check_float3(vert.position));
                                                 assert(PH2CLD__sanity_check_float2(vert.uv));
+                                                assert(vert.uv[0] > -1);
+                                                assert(vert.uv[0] < +2);
+                                                assert(vert.uv[1] > -1);
+                                                assert(vert.uv[1] < +2);
                                             } break;
                                             case 0x20: {
-                                                struct PH2MAP__Vertex20 {
-                                                    float position[3];
-                                                    float normal[3];
-                                                    float uv[2];
-                                                };
                                                 PH2MAP__Vertex20 vert = {};
                                                 Read(ptr5, vert);
                                                 assert(PH2CLD__sanity_check_float3(vert.position));
@@ -521,14 +551,12 @@ static void init(void *userdata) {
                                                 // it'd be nice to check if it's 0x7fc00000 and only sanity check otherwise.
                                                 //assert(PH2CLD__sanity_check_float3(vert.normal));
                                                 assert(PH2CLD__sanity_check_float2(vert.uv));
+                                                assert(vert.uv[0] > -1);
+                                                assert(vert.uv[0] < +2);
+                                                assert(vert.uv[1] > -1);
+                                                assert(vert.uv[1] < +2);
                                             } break;
                                             case 0x24: {
-                                                struct PH2MAP__Vertex24 {
-                                                    float position[3];
-                                                    float normal[3];
-                                                    uint32_t color; // rgba8888
-                                                    float uv[2];
-                                                };
                                                 PH2MAP__Vertex24 vert = {};
                                                 Read(ptr5, vert);
                                                 assert(PH2CLD__sanity_check_float3(vert.position));
@@ -536,11 +564,134 @@ static void init(void *userdata) {
                                                 // it'd be nice to check if it's 0x7fc00000 and only sanity check otherwise.
                                                 //assert(PH2CLD__sanity_check_float3(vert.normal));
                                                 assert(PH2CLD__sanity_check_float2(vert.uv));
+                                                assert(vert.uv[0] > -1);
+                                                assert(vert.uv[0] < +2);
+                                                assert(vert.uv[1] > -1);
+                                                assert(vert.uv[1] < +2);
                                             } break;
                                         };
                                     }
                                     assert(ptr5 == end_of_this_section);
                                     end_of_previous_section = end_of_this_section;
+                                }
+                                assert(end_of_previous_section == mapmesh_header_base + mapmesh_header.indices_offset);
+                                ptr4 = end_of_previous_section;
+                                for (int indices_index = 0; indices_index < mapmesh_header.indices_length / sizeof(uint16_t); indices_index++) {
+                                    uint16_t index = 0;
+                                    Read(ptr4, index);
+                                    indices[indices_count++] = index;
+                                }
+                                ptr4 = mapmesh_header_base + sizeof(PH2MAP__Mapmesh_Header);
+                                int indices_index = 0;
+                                for (int mesh_part_group_index = 0; mesh_part_group_index < mapmesh_header.mesh_part_group_count; mesh_part_group_index++) {
+                                    struct PH2MAP__Mesh_Part_Group_Header {
+                                        uint32_t material_index;
+                                        uint32_t section_index;
+                                        uint32_t mesh_part_count;
+                                    };
+                                    PH2MAP__Mesh_Part_Group_Header mesh_part_group_header = {};
+                                    Read(ptr4, mesh_part_group_header);
+                                    // assert(mesh_part_group_header.material_index >= );
+                                    // assert(mesh_part_group_header.material_index <= );
+                                    assert(mesh_part_group_header.section_index < 4);
+
+                                    for (uint32_t mesh_part_index = 0; mesh_part_index < mesh_part_group_header.mesh_part_count; mesh_part_index++) {
+                                        struct PH2MAP__Mesh_Part {
+                                            uint16_t strip_length;
+                                            uint8_t invert_reading;
+                                            uint8_t strip_count;
+                                            uint16_t first_vertex;
+                                            uint16_t last_vertex;
+                                        };
+                                        PH2MAP__Mesh_Part mesh_part = {};
+                                        Read(ptr4, mesh_part);
+                                        int vertex_size = vertex_sizes[mesh_part_group_header.section_index];
+                                        char *vertex_buffer = vertex_buffers[mesh_part_group_header.section_index];
+                                        int vertex_buffer_count = vertex_buffer_counts[mesh_part_group_header.section_index];
+                                        // @Note: these assertions are probably not sanity checks, but rather real
+                                        //        logical assert()s, because my code is broken if these are zero.
+                                        assert(vertex_size);
+                                        assert(vertex_buffer);
+                                        int outer_max = mesh_part.strip_count;
+                                        int inner_max = mesh_part.strip_length;
+                                        if (mesh_part.invert_reading) { // Don't know why this is a thing, but whatever. Yuck!
+                                            outer_max = mesh_part.strip_length;
+                                            inner_max = mesh_part.strip_count;
+                                        }
+#define GetIndex() (assert(indices_index < indices_count), indices[indices_index++])
+                                        for (int strip_index = 0; strip_index < outer_max; strip_index++) {
+                                            int memory = GetIndex() << 0x10;
+                                            int mask = 0xFFFF0000;
+                                            uint16_t currentIndex = GetIndex();
+                                            for (int i = 2; i < inner_max; i++) {
+                                                auto get_vertex = [&] (int index) {
+                                                    struct {
+                                                        float position[3] = {};
+                                                    } result = {};
+                                                    char *vertex_ptr = vertex_buffer + index * vertex_size;
+                                                    switch (vertex_size) {
+                                                        case 0x14: {
+                                                            PH2MAP__Vertex14 vert = {};
+                                                            Read(vertex_ptr, vert);
+                                                            result.position[0] = vert.position[0];
+                                                            result.position[1] = vert.position[1];
+                                                            result.position[2] = vert.position[2];
+                                                        } break;
+                                                        case 0x18: {
+                                                            PH2MAP__Vertex18 vert = {};
+                                                            Read(vertex_ptr, vert);
+                                                            result.position[0] = vert.position[0];
+                                                            result.position[1] = vert.position[1];
+                                                            result.position[2] = vert.position[2];
+                                                        } break;
+                                                        case 0x20: {
+                                                            PH2MAP__Vertex20 vert = {};
+                                                            Read(vertex_ptr, vert);
+                                                            result.position[0] = vert.position[0];
+                                                            result.position[1] = vert.position[1];
+                                                            result.position[2] = vert.position[2];
+                                                        } break;
+                                                        case 0x24: {
+                                                            PH2MAP__Vertex24 vert = {};
+                                                            Read(vertex_ptr, vert);
+                                                            result.position[0] = vert.position[0];
+                                                            result.position[1] = vert.position[1];
+                                                            result.position[2] = vert.position[2];
+                                                        } break;
+                                                    }
+                                                    return result;
+                                                };
+                                                memory = (memory & mask) + (currentIndex << (0x10 & mask));
+                                                mask ^= 0xFFFFFFFF;
+                                                
+                                                currentIndex = GetIndex();
+                                                
+                                                auto triangle_v0 = get_vertex(memory >> 0x10);
+                                                auto triangle_v1 = get_vertex(memory & 0xffff);
+                                                auto triangle_v2 = get_vertex(currentIndex);
+                                                assert(floats_count < floats_max);
+                                                floats_buffer[floats_count++] = triangle_v0.position[0];
+                                                assert(floats_count < floats_max);
+                                                floats_buffer[floats_count++] = triangle_v0.position[1];
+                                                assert(floats_count < floats_max);
+                                                floats_buffer[floats_count++] = triangle_v0.position[2];
+                                                
+                                                assert(floats_count < floats_max);
+                                                floats_buffer[floats_count++] = triangle_v1.position[0];
+                                                assert(floats_count < floats_max);
+                                                floats_buffer[floats_count++] = triangle_v1.position[1];
+                                                assert(floats_count < floats_max);
+                                                floats_buffer[floats_count++] = triangle_v1.position[2];
+                                                
+                                                assert(floats_count < floats_max);
+                                                floats_buffer[floats_count++] = triangle_v2.position[0];
+                                                assert(floats_count < floats_max);
+                                                floats_buffer[floats_count++] = triangle_v2.position[1];
+                                                assert(floats_count < floats_max);
+                                                floats_buffer[floats_count++] = triangle_v2.position[2];
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -573,10 +724,17 @@ static void init(void *userdata) {
             for (; ptr < end; ptr++) {
                 assert(*ptr == 0);
             }
-            if (_findnext(directory, &find_data) < 0) {
-                if (errno == ENOENT) break;
-                else assert(0);
+            if (floats_count > 0) {
+                sg_update_buffer(g.cld_face_buffers[0].buf, sg_range { floats_buffer, floats_count * sizeof(float) });
+                assert(floats_count % 3 == 0);
+                g.cld_face_buffers[0].num_vertices = (int)floats_count / 3;
+                assert(g.cld_face_buffers[0].num_vertices % 3 == 0);
+                //break;
             }
+            //if (_findnext(directory, &find_data) < 0) {
+            //    if (errno == ENOENT) break;
+            //    else assert(0);
+            //}
         }
         _findclose(directory);
         fflush(stdout);
@@ -588,6 +746,12 @@ static void init(void *userdata) {
         d.layout.attrs[ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
         d.depth.write_enabled = true;
         d.depth.compare = SG_COMPAREFUNC_GREATER;
+        //d.primitive_type = SG_PRIMITIVETYPE_POINTS;
+        //d.colors[0].blend.enabled = true;
+        //d.colors[0].blend.src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA;
+        //d.colors[0].blend.dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        //d.colors[0].blend.src_factor_alpha = SG_BLENDFACTOR_SRC_ALPHA;
+        //d.colors[0].blend.dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         g.cld_pipeline = sg_make_pipeline(d);
     }
 }

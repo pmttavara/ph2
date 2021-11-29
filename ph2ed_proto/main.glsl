@@ -18,6 +18,7 @@ void main() {
     worldpos = (M * position).xyz;
     cam_relative_pos = (M * position).xyz - cam_pos;
     gl_Position = P * V * M * position;
+    //gl_PointSize = 5.0;
 }
 @end
 
@@ -31,6 +32,7 @@ void main() {
     float light = clamp(dot(N, L), 0.1, 1);
     frag_color = vec4(light);
     // frag_color *= vec4(fract(worldpos), 1);
+    //frag_color = vec4(0.5, 1, 0.5, 0.1);
 }
 @end
 
