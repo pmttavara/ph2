@@ -81,8 +81,7 @@ int log_buf_index = 0;
 #include "../cld/ph2_cld.h"
 #include <io.h> // @Debug @Temporary @Remove
 
-// Shaders
-#include "main.glsl.h"
+#include "shaders.glsl.h"
 
 // sokol_glue.h
 SOKOL_API_IMPL sg_context_desc sapp_sgcontext(void) {
@@ -123,6 +122,13 @@ static double get_time(void) {
     QueryPerformanceCounter(&counter);
     return (double)counter.QuadPart * invfreq;
 }
+
+// Use the dedicated graphics card
+extern "C" {
+	__declspec(dllexport) /* DWORD */ uint32_t NvOptimusEnablement = 0x00000001;
+	__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+
 #else
 #include <time.h>
 static double get_time(void) {
@@ -144,6 +150,19 @@ struct CLD_Face_Buffer {
     sg_buffer buf = {};
     int num_vertices = 0;
 };
+
+struct MAP_Geometry_Vertex {
+	float position[3] = {};
+	float normal[3] = {};
+	uint32_t color = 0xffffffff;
+	float uv[2] = {};
+};
+struct MAP_Geometry_Buffer {
+	sg_buffer buf = {};
+	int num_vertices = 0;
+	uint32_t id = 0;
+	bool shown = true;
+};
 struct G {
     double last_time = 0;
     double t = 0;
@@ -160,7 +179,13 @@ struct G {
     
     hmm_vec3 cld_origin = {};
     sg_pipeline cld_pipeline = {};
-    CLD_Face_Buffer cld_face_buffers[4] = {};
+	enum { cld_buffers_count = 4 };
+    CLD_Face_Buffer cld_face_buffers[cld_buffers_count] = {};
+	
+	sg_pipeline map_pipeline = {};
+	enum { map_buffers_max = 16 };
+	MAP_Geometry_Buffer map_buffers[map_buffers_max] = {};
+	int map_buffers_count = 0;
 };
 
 static void cld_load(G &g, const char *filename) {
@@ -325,6 +350,16 @@ static void init(void *userdata) {
             buffer.buf = sg_make_buffer(d);
         }
     }
+	{
+		sg_buffer_desc d = {};
+		size_t MAP_MAX_VERTICES_PER_GEOMETRY = 320000;
+		size_t MAP_BUFFER_SIZE = MAP_MAX_VERTICES_PER_GEOMETRY * sizeof(MAP_Geometry_Vertex);
+		d.usage = SG_USAGE_DYNAMIC;
+		d.size = MAP_BUFFER_SIZE;
+        for (auto &buffer : g.map_buffers) {
+            buffer.buf = sg_make_buffer(d);
+        }
+	}
     {
         const char *filename = "../cld/cld/ob01.cld";
         // cld_load(g, filename);
@@ -338,17 +373,13 @@ static void init(void *userdata) {
             // char b[260 + sizeof("map/")];
             // snprintf(b, sizeof(b), "map/%s", find_data.name);
             // FILE *f = PH2CLD__fopen(b, "rb");
-            FILE *f = PH2CLD__fopen("map/ma01.map", "rb");
+            FILE *f = PH2CLD__fopen("map/ps193.map", "rb");
             assert(f);
             defer {
                 fclose(f);
             };
 
-            // @Temporary @Debug
-            static float floats_buffer[58254 * 2 * 3 * 3];
-            static const int floats_max = sizeof(floats_buffer) / sizeof(floats_buffer[0]);
-            int floats_count = 0;
-
+			// @Temporary @Debug
             static char filedata[16 * 1024 * 1024];
             uint32_t file_len = (uint32_t)fread(filedata, 1, sizeof(filedata), f);
             struct PH2MAP__Header {
@@ -411,7 +442,12 @@ static void init(void *userdata) {
                         assert(geometry_header.opaque_group_offset < geometry_header.group_size);
                         assert(geometry_header.transparent_group_offset < geometry_header.group_size);
                         assert(geometry_header.decal_group_offset < geometry_header.group_size);
+						Log("%d", geometry_header.id);
 
+						static MAP_Geometry_Vertex vertices_buffer[320000];
+						enum { vertices_max = sizeof(vertices_buffer) / sizeof(vertices_buffer[0]) };
+						int vertices_count = 0;
+						
                         ptr2 -= sizeof(geometry_header);
 
                         char *end2 = ptr2 + geometry_header.group_size;
@@ -625,9 +661,7 @@ static void init(void *userdata) {
                                             uint16_t currentIndex = GetIndex();
                                             for (int i = 2; i < inner_max; i++) {
                                                 auto get_vertex = [&] (int index) {
-                                                    struct {
-                                                        float position[3] = {};
-                                                    } result = {};
+													MAP_Geometry_Vertex result = {};
                                                     char *vertex_ptr = vertex_buffer + index * vertex_size;
                                                     switch (vertex_size) {
                                                         case 0x14: {
@@ -636,6 +670,8 @@ static void init(void *userdata) {
                                                             result.position[0] = vert.position[0];
                                                             result.position[1] = vert.position[1];
                                                             result.position[2] = vert.position[2];
+															result.uv[0] = vert.uv[0];
+															result.uv[1] = vert.uv[1];
                                                         } break;
                                                         case 0x18: {
                                                             PH2MAP__Vertex18 vert = {};
@@ -643,6 +679,9 @@ static void init(void *userdata) {
                                                             result.position[0] = vert.position[0];
                                                             result.position[1] = vert.position[1];
                                                             result.position[2] = vert.position[2];
+															result.color = vert.color;
+															result.uv[0] = vert.uv[0];
+															result.uv[1] = vert.uv[1];
                                                         } break;
                                                         case 0x20: {
                                                             PH2MAP__Vertex20 vert = {};
@@ -650,6 +689,11 @@ static void init(void *userdata) {
                                                             result.position[0] = vert.position[0];
                                                             result.position[1] = vert.position[1];
                                                             result.position[2] = vert.position[2];
+															result.normal[0] = vert.normal[0];
+															result.normal[1] = vert.normal[1];
+															result.normal[2] = vert.normal[2];
+															result.uv[0] = vert.uv[0];
+															result.uv[1] = vert.uv[1];
                                                         } break;
                                                         case 0x24: {
                                                             PH2MAP__Vertex24 vert = {};
@@ -657,6 +701,12 @@ static void init(void *userdata) {
                                                             result.position[0] = vert.position[0];
                                                             result.position[1] = vert.position[1];
                                                             result.position[2] = vert.position[2];
+															result.normal[0] = vert.normal[0];
+															result.normal[1] = vert.normal[1];
+															result.normal[2] = vert.normal[2];
+															result.color = vert.color;
+															result.uv[0] = vert.uv[0];
+															result.uv[1] = vert.uv[1];
                                                         } break;
                                                     }
                                                     return result;
@@ -669,33 +719,26 @@ static void init(void *userdata) {
                                                 auto triangle_v0 = get_vertex(memory >> 0x10);
                                                 auto triangle_v1 = get_vertex(memory & 0xffff);
                                                 auto triangle_v2 = get_vertex(currentIndex);
-                                                assert(floats_count < floats_max);
-                                                floats_buffer[floats_count++] = triangle_v0.position[0];
-                                                assert(floats_count < floats_max);
-                                                floats_buffer[floats_count++] = triangle_v0.position[1];
-                                                assert(floats_count < floats_max);
-                                                floats_buffer[floats_count++] = triangle_v0.position[2];
-                                                
-                                                assert(floats_count < floats_max);
-                                                floats_buffer[floats_count++] = triangle_v1.position[0];
-                                                assert(floats_count < floats_max);
-                                                floats_buffer[floats_count++] = triangle_v1.position[1];
-                                                assert(floats_count < floats_max);
-                                                floats_buffer[floats_count++] = triangle_v1.position[2];
-                                                
-                                                assert(floats_count < floats_max);
-                                                floats_buffer[floats_count++] = triangle_v2.position[0];
-                                                assert(floats_count < floats_max);
-                                                floats_buffer[floats_count++] = triangle_v2.position[1];
-                                                assert(floats_count < floats_max);
-                                                floats_buffer[floats_count++] = triangle_v2.position[2];
+                                                assert(vertices_count + 2 < vertices_max);
+												vertices_buffer[vertices_count++] = triangle_v0;
+												vertices_buffer[vertices_count++] = triangle_v1;
+												vertices_buffer[vertices_count++] = triangle_v2;
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                        
+						
+						if (vertices_count > 0) {
+							assert(g.map_buffers_count < g.map_buffers_max);
+							auto & map_buffer = g.map_buffers[g.map_buffers_count++];
+							sg_update_buffer(map_buffer.buf, sg_range { vertices_buffer, vertices_count * sizeof(vertices_buffer[0]) });
+							assert(vertices_count % 3 == 0);
+							map_buffer.num_vertices = vertices_count;
+							map_buffer.id = geometry_header.id;
+							//break;
+						}
                         
                         ptr2 += geometry_header.group_size;
 
@@ -724,13 +767,6 @@ static void init(void *userdata) {
             for (; ptr < end; ptr++) {
                 assert(*ptr == 0);
             }
-            if (floats_count > 0) {
-                sg_update_buffer(g.cld_face_buffers[0].buf, sg_range { floats_buffer, floats_count * sizeof(float) });
-                assert(floats_count % 3 == 0);
-                g.cld_face_buffers[0].num_vertices = (int)floats_count / 3;
-                assert(g.cld_face_buffers[0].num_vertices % 3 == 0);
-                //break;
-            }
             //if (_findnext(directory, &find_data) < 0) {
             //    if (errno == ENOENT) break;
             //    else assert(0);
@@ -742,8 +778,8 @@ static void init(void *userdata) {
 
     {
         sg_pipeline_desc d = {};
-        d.shader = sg_make_shader(main_shader_desc(sg_query_backend()));
-        d.layout.attrs[ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
+        d.shader = sg_make_shader(cld_shader_desc(sg_query_backend()));
+        d.layout.attrs[ATTR_cld_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
         d.depth.write_enabled = true;
         d.depth.compare = SG_COMPAREFUNC_GREATER;
         //d.primitive_type = SG_PRIMITIVETYPE_POINTS;
@@ -754,6 +790,19 @@ static void init(void *userdata) {
         //d.colors[0].blend.dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         g.cld_pipeline = sg_make_pipeline(d);
     }
+	{
+		sg_pipeline_desc d = {};
+		d.shader = sg_make_shader(map_shader_desc(sg_query_backend()));
+		d.layout.attrs[ATTR_map_vs_in_position].format = SG_VERTEXFORMAT_FLOAT3;
+		d.layout.attrs[ATTR_map_vs_in_normal].format = SG_VERTEXFORMAT_FLOAT3;
+		d.layout.attrs[ATTR_map_vs_in_color].format = SG_VERTEXFORMAT_UBYTE4N;
+		d.layout.attrs[ATTR_map_vs_in_uv].format = SG_VERTEXFORMAT_FLOAT2;
+		d.depth.write_enabled = true;
+		d.depth.compare = SG_COMPAREFUNC_GREATER;
+		d.cull_mode = SG_CULLMODE_BACK;
+		d.face_winding = SG_FACEWINDING_CCW;
+		g.map_pipeline = sg_make_pipeline(d);
+	}
 }
 
 static hmm_mat4 camera_rot(G &g) {
@@ -860,6 +909,12 @@ static void frame(void *userdata) {
             g.pitch = 0;
             g.yaw = 0;
         }
+		ImGui::Text("MAP Geometries:");
+		for (int i = 0; i < g.map_buffers_count; i++) {
+			ImGui::SameLine();
+			char b[32]; snprintf(b, sizeof b, "%d", g.map_buffers[i].id);
+			ImGui::Checkbox(b, &g.map_buffers[i].shown);
+		}
     }
     imgui_do_console(g);
     //if (g.changed) {
@@ -916,7 +971,6 @@ static void frame(void *userdata) {
             };
         }
         {
-            sg_apply_pipeline(g.cld_pipeline);
             vs_params_t params;
             params.cam_pos = g.cam_pos;
             params.P = perspective;
@@ -925,7 +979,9 @@ static void frame(void *userdata) {
             // We perform an inversion of the camera rotation by getting the transpose
             // (which equals the inverse in this case since it's just a rotation matrix).
             params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
-            for (int i = 0; i < 4; i++) {
+
+			sg_apply_pipeline(g.cld_pipeline);
+            for (int i = 0; i < g.cld_buffers_count; i++) {
                 {
                     // I should ask the community what they know about the units used in the game
                     const float SCALE = 0.001f * 1.75f;
@@ -938,6 +994,24 @@ static void frame(void *userdata) {
                     b.vertex_buffers[0] = g.cld_face_buffers[i].buf;
                     sg_apply_bindings(b);
                     sg_draw(0, g.cld_face_buffers[i].num_vertices, 1);
+                }
+            }
+
+			sg_apply_pipeline(g.map_pipeline);
+			for (int i = 0; i < g.map_buffers_count; i++) {
+				if (!g.map_buffers[i].shown) continue;
+                {
+                    // I should ask the community what they know about the units used in the game
+                    const float SCALE = 0.001f * 1.75f;
+                    // I should also ask the community what the coordinate system is :)
+					params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate({});
+                }
+                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
+                {
+                    sg_bindings b = {};
+                    b.vertex_buffers[0] = g.map_buffers[i].buf;
+                    sg_apply_bindings(b);
+                    sg_draw(0, g.map_buffers[i].num_vertices, 1);
                 }
             }
         }
@@ -963,15 +1037,15 @@ static void fail(const char *str) {
 G g;
 sapp_desc sokol_main(int, char **) {
     sapp_desc d = {};
-    d.width = 1900; // @Temporary
-    d.height = 1000; // @Temporary
+    d.width = 1300; // @Temporary
+    d.height = 700; // @Temporary
     d.user_data = &g;
     d.init_userdata_cb = init;
     d.event_userdata_cb = event;
     d.frame_userdata_cb = frame;
     d.cleanup_userdata_cb = cleanup;
     d.fail_cb = fail;
-    d.sample_count = 4;
+    //d.sample_count = 4;
     d.swap_interval = 0;
     d.high_dpi = true;
 #if !RELEASE
