@@ -64,6 +64,8 @@ static int assert_(const char *s) {
 #include "sokol_gfx.h"
 #include "sokol_imgui.h"
 
+#include <stdarg.h>
+
 struct LogMsg {
     unsigned int colour = IM_COL32(127,127,127,255);
     char buf[252] = {};
@@ -71,7 +73,15 @@ struct LogMsg {
 enum { LOG_MAX = 16384 };
 LogMsg log_buf[LOG_MAX] = {};
 int log_buf_index = 0;
-#define LogC(c, fmt, ...) ((log_buf[log_buf_index % LOG_MAX].colour = (c)), (snprintf(log_buf[log_buf_index++ % LOG_MAX].buf, sizeof(LogMsg::buf), (fmt), ##__VA_ARGS__)))
+void LogC(uint32_t c, const char *fmt, ...) {
+    log_buf[log_buf_index % LOG_MAX].colour = c;
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(log_buf[log_buf_index % LOG_MAX].buf, sizeof(log_buf[0].buf), fmt, args);
+    va_end(args);
+    log_buf_index++;
+}
+#define LogC(c, fmt, ...) LogC(c, fmt, ##__VA_ARGS__)
 #define Log(fmt, ...) LogC(IM_COL32(127,127,127,255), fmt, ##__VA_ARGS__)
 
 #define HANDMADE_MATH_IMPLEMENTATION
@@ -141,6 +151,11 @@ static double get_time(void) {
 // How's this done for Linux/etc?
 #define KEY(vk) ((unsigned short)GetAsyncKeyState(vk) >= 0x8000)
 
+struct Ray {
+    hmm_vec3 pos = {};
+    hmm_vec3 dir = {};
+};
+
 const float FOV_MIN = 10 * (TAU32 / 360);
 const float FOV_MAX = 179 * (TAU32 / 360);
 const float FOV_DEFAULT = 90 * (TAU32 / 360);
@@ -163,11 +178,16 @@ struct MAP_Geometry_Buffer {
 	uint32_t id = 0;
 	bool shown = true;
 };
+enum struct ControlState {
+    Normal,
+    Orbiting,
+    Dragging,
+};
 struct G {
     double last_time = 0;
     double t = 0;
 
-    bool orbiting = false;
+    ControlState control_state = {};
     float fov = FOV_DEFAULT;
 
     hmm_vec3 cam_pos = {0, 0, 0};
@@ -176,7 +196,10 @@ struct G {
     float move_speed = MOVE_SPEED_DEFAULT;
     float scroll_speed = MOVE_SPEED_DEFAULT;
     float scroll_speed_timer = 0;
+
+    Ray click_ray = {};
     
+    PH2CLD_Collision_Data cld = {};
     hmm_vec3 cld_origin = {};
     sg_pipeline cld_pipeline = {};
 	enum { cld_buffers_count = 4 };
@@ -186,19 +209,15 @@ struct G {
 	enum { map_buffers_max = 16 };
 	MAP_Geometry_Buffer map_buffers[map_buffers_max] = {};
 	int map_buffers_count = 0;
-};
 
-static void cld_load(G &g, const char *filename) {
-    Log("CLD filename is \"%s\"", filename);
-    PH2CLD_Collision_Data cld = PH2CLD_get_collision_data_from_file(filename);
-    if (!cld.valid) {
-        LogC(IM_COL32(255, 127, 127, 255), "Failed loading CLD file \"%s\"!", filename);
-        return;
-    }
-    assert(cld.valid);
-    defer {
-        PH2CLD_free_collision_data(cld);
-    };
+    sg_buffer highlight_vertex_circle_buffer = {};
+    sg_pipeline highlight_vertex_circle_pipeline = {};
+
+    bool cld_must_update = false;
+    bool subgroup_visible[16] = {true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true};
+};
+static void cld_upload(G &g) {
+    auto &cld = g.cld;
     Log("CLD origin is (%f, 0, %f)", cld.origin[0], cld.origin[1]);
     g.cld_origin = hmm_vec3 { cld.origin[0], 0, cld.origin[1] };
     for (int group = 0; group < 4; group++) {
@@ -211,10 +230,6 @@ static void cld_load(G &g, const char *filename) {
         auto max_triangles = num_faces * 2;
         auto max_vertices = max_triangles * 3;
         auto max_floats = max_vertices * 3;
-        if (!max_floats) {
-            g.cld_face_buffers[group].num_vertices = 0;
-            continue;
-        }
         auto floats = (float *)malloc(max_floats * sizeof(float));
         assert(floats);
         defer {
@@ -224,6 +239,15 @@ static void cld_load(G &g, const char *filename) {
         auto end = floats + max_floats;
         for (size_t i = 0; i < num_faces; i++) {
             PH2CLD_Face face = faces[i];
+            bool skip_face = false;
+            for (int subgroup = 0; subgroup < 16; subgroup++) {
+                if ((face.subgroups & (1 << subgroup)) && !g.subgroup_visible[subgroup]) {
+                    skip_face = true;
+                }
+            }
+            if (skip_face) {
+                continue;
+            }
             auto push_vertex = [&] (float (&vertex)[3]) {
                 *write_pointer++ = vertex[0];
                 *write_pointer++ = vertex[1];
@@ -240,11 +264,24 @@ static void cld_load(G &g, const char *filename) {
         }
         auto num_floats = (size_t)(write_pointer - floats);
         
-        sg_update_buffer(g.cld_face_buffers[group].buf, sg_range { floats, num_floats * sizeof(float) });
+        if (num_floats) {
+            sg_update_buffer(g.cld_face_buffers[group].buf, sg_range { floats, num_floats * sizeof(float) });
+        }
         assert(num_floats % 3 == 0);
         g.cld_face_buffers[group].num_vertices = (int)num_floats / 3;
         assert(g.cld_face_buffers[group].num_vertices % 3 == 0);
     }
+}
+static void cld_load(G &g, const char *filename) {
+    Log("CLD filename is \"%s\"", filename);
+    PH2CLD_free_collision_data(g.cld);
+    g.cld = PH2CLD_get_collision_data_from_file(filename);
+    if (!g.cld.valid) {
+        LogC(IM_COL32(255, 127, 127, 255), "Failed loading CLD file \"%s\"!", filename);
+        return;
+    }
+    assert(g.cld.valid);
+    cld_upload(g);
 }
 
 static void imgui_do_console(G &g) {
@@ -290,6 +327,26 @@ static void imgui_do_console(G &g) {
         }
         ImGui::SetKeyboardFocusHere(-1);
     }
+}
+
+struct Ray_Vs_Aligned_Circle_Result {
+    bool hit = false;
+    float t = 0;
+    hmm_vec3 closest_point = {};
+    float distance_to_closest_point = {};
+};
+Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(hmm_vec3 ro, hmm_vec3 rd, hmm_vec3 so, float r) {
+    Ray_Vs_Aligned_Circle_Result result = {};
+    result.t = HMM_Dot(so - ro, rd);
+    //Log("Dot %f", result.t);
+    result.closest_point = ro + rd * result.t;
+    //Log("Closest Point %f, %f, %f", result.closest_point.X, result.closest_point.Y, result.closest_point.Z);
+    result.distance_to_closest_point = HMM_Length(result.closest_point - so);
+    //Log("Distance %f (out of %f)", result.distance_to_closest_point, r);
+    if (result.distance_to_closest_point <= r) {
+        result.hit = true;
+    }
+    return result;
 }
 
 static void init(void *userdata) {
@@ -350,6 +407,26 @@ static void init(void *userdata) {
             buffer.buf = sg_make_buffer(d);
         }
     }
+    {
+        sg_buffer_desc d = {};
+        float vertices[] = {
+            -1, -1, 0,
+            +1, -1, 0,
+            -1, +1, 0,
+            -1, +1, 0,
+            +1, -1, 0,
+            +1, +1, 0,
+        };
+        d.data = SG_RANGE(vertices);
+        g.highlight_vertex_circle_buffer = sg_make_buffer(d);
+    }
+    {
+        sg_pipeline_desc d = {};
+        d.shader = sg_make_shader(highlight_vertex_circle_shader_desc(sg_query_backend()));
+        d.layout.attrs[ATTR_highlight_vertex_circle_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
+        d.alpha_to_coverage_enabled = true;
+        g.highlight_vertex_circle_pipeline = sg_make_pipeline(d);
+    }
 	{
 		sg_buffer_desc d = {};
 		size_t MAP_MAX_VERTICES_PER_GEOMETRY = 320000;
@@ -361,8 +438,8 @@ static void init(void *userdata) {
         }
 	}
     {
-        const char *filename = "../cld/cld/ob01.cld";
-        // cld_load(g, filename);
+        const char *filename = "../cld/cld/ap64.cld";
+        cld_load(g, filename);
     }
     { // @Temporary @Debug @Remove
         struct _finddata_t find_data;
@@ -373,7 +450,7 @@ static void init(void *userdata) {
             // char b[260 + sizeof("map/")];
             // snprintf(b, sizeof(b), "map/%s", find_data.name);
             // FILE *f = PH2CLD__fopen(b, "rb");
-            FILE *f = PH2CLD__fopen("map/ps193.map", "rb");
+            FILE *f = PH2CLD__fopen("map/ap64.map", "rb");
             assert(f);
             defer {
                 fclose(f);
@@ -797,6 +874,7 @@ static void init(void *userdata) {
 		d.layout.attrs[ATTR_map_vs_in_normal].format = SG_VERTEXFORMAT_FLOAT3;
 		d.layout.attrs[ATTR_map_vs_in_color].format = SG_VERTEXFORMAT_UBYTE4N;
 		d.layout.attrs[ATTR_map_vs_in_uv].format = SG_VERTEXFORMAT_FLOAT2;
+        //d.primitive_type = SG_PRIMITIVETYPE_LINES;
 		d.depth.write_enabled = true;
 		d.depth.compare = SG_COMPAREFUNC_GREATER;
 		d.cull_mode = SG_CULLMODE_BACK;
@@ -805,6 +883,10 @@ static void init(void *userdata) {
 	}
 }
 
+// I should ask the community what they know about the units used in the game
+const float SCALE = 0.001f;
+const float widget_pixel_radius = 20;
+
 static hmm_mat4 camera_rot(G &g) {
     // We pitch the camera by applying a rotation around X,
     // then yaw the camera by applying a rotation around Y.
@@ -812,6 +894,21 @@ static hmm_mat4 camera_rot(G &g) {
     auto yaw_matrix = HMM_Rotate(g.yaw * (360 / TAU32), HMM_Vec3(0, 1, 0));
     return yaw_matrix * pitch_matrix;
 }
+Ray screen_to_ray(G &g, hmm_vec2 mouse_xy) {
+    Ray ray = {};
+    ray.pos = { g.cam_pos.X, g.cam_pos.Y, g.cam_pos.Z };
+    hmm_vec2 ndc = { mouse_xy.X, mouse_xy.Y };
+    ndc.X = ndc.X / sapp_widthf() * 2 - 1;
+    ndc.Y = ndc.Y / sapp_heightf() * -2 + 1;
+    //Log("NDC %f, %f", ndc.X, ndc.Y);
+    hmm_vec4 ray_dir4 = { ndc.X, ndc.Y, -1, 0 };
+    ray_dir4.XY *= tanf(g.fov / 2);
+    ray_dir4.X *= sapp_widthf() / sapp_heightf();
+    ray_dir4 = camera_rot(g) * ray_dir4;
+    ray.dir = HMM_Normalize(ray_dir4.XYZ);
+    return ray;
+}
+
 static void event(const sapp_event *e_, void *userdata) {
     G &g = *(G *)userdata;
     simgui_handle_event(e_);
@@ -820,20 +917,110 @@ static void event(const sapp_event *e_, void *userdata) {
         return;
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
-        if (e.mouse_button & SAPP_MOUSEBUTTON_RIGHT) {
-            g.orbiting = true;
+        if (e.mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+            Ray ray = screen_to_ray(g, { e.mouse_x, e.mouse_y });
+            hmm_vec4 ray_pos = {0, 0, 0, 1};
+            ray_pos.XYZ = ray.pos;
+            hmm_vec4 ray_dir = {};
+            ray_dir.XYZ = ray.dir;
+            
+            g.click_ray = ray;
+
+            //Log("Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
+            //Log("Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
+
+            float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[0];
+            hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+            hmm_vec3 origin = -g.cld_origin;
+            
+            hmm_mat4 Tinv = HMM_Translate(-origin);
+            hmm_mat4 Sinv = HMM_Scale({1 / SCALE, 1 / -SCALE, 1 / -SCALE});
+            hmm_mat4 Minv = Tinv * Sinv;
+
+            ray_pos = Minv * ray_pos;
+            ray_dir = HMM_Normalize(Minv * ray_dir);
+
+            //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
+            //Log("Minv*Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
+
+            //Log("Vertex Pos = %f, %f, %f", vertex.X, vertex.Y, vertex.Z);
+            
+            hmm_vec3 offset = -g.cld_origin + vertex;
+            offset.X *= SCALE;
+            offset.Y *= -SCALE;
+            offset.Z *= -SCALE;
+
+            hmm_vec3 widget_pos = vertex;
+            float widget_radius = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() / SCALE;
+            
+            auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, widget_radius);
+            if (raycast.hit) {
+                g.control_state = ControlState::Dragging;
+            }
+        }
+        if (e.mouse_button == SAPP_MOUSEBUTTON_RIGHT) {
+            g.control_state = ControlState::Orbiting;
         }
     }
     if (e.type == SAPP_EVENTTYPE_UNFOCUSED) {
-        g.orbiting = false;
+        g.control_state = ControlState::Normal;
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_UP) {
-        g.orbiting = false;
+        g.control_state = ControlState::Normal;
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_MOVE) {
-        if (g.orbiting) {
+        if (g.control_state == ControlState::Orbiting) {
             g.yaw += -e.mouse_dx * 3 * (0.022f * (TAU32 / 360));
             g.pitch += -e.mouse_dy * 3 * (0.022f * (TAU32 / 360));
+        }
+        if (g.control_state == ControlState::Dragging) {
+            hmm_vec2 prev_mouse_pos = {e.mouse_x - e.mouse_dx, e.mouse_y - e.mouse_dy};
+            hmm_vec2 this_mouse_pos = {e.mouse_x, e.mouse_y};
+
+            // @Temporary: @Deduplicate.
+            float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[0];
+            hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+            hmm_vec3 origin = -g.cld_origin;
+            
+            hmm_mat4 Tinv = HMM_Translate(-origin);
+            hmm_mat4 Sinv = HMM_Scale({1 / SCALE, 1 / -SCALE, 1 / -SCALE});
+            hmm_mat4 Minv = Tinv * Sinv;
+            
+            hmm_vec3 offset = -g.cld_origin + vertex;
+            offset.X *= SCALE;
+            offset.Y *= -SCALE;
+            offset.Z *= -SCALE;
+            
+            hmm_vec3 widget_pos = vertex;
+            float widget_radius = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() / SCALE;
+
+            {
+                Ray prev_ray = screen_to_ray(g, prev_mouse_pos);
+                Ray this_ray = screen_to_ray(g, this_mouse_pos);
+                hmm_vec4 prev_ray_pos = {0, 0, 0, 1};
+                prev_ray_pos.XYZ = prev_ray.pos;
+                hmm_vec4 prev_ray_dir = {};
+                prev_ray_dir.XYZ = prev_ray.dir;
+                hmm_vec4 this_ray_pos = {0, 0, 0, 1};
+                this_ray_pos.XYZ = this_ray.pos;
+                hmm_vec4 this_ray_dir = {};
+                this_ray_dir.XYZ = this_ray.dir;
+
+                prev_ray_pos = Minv * prev_ray_pos;
+                prev_ray_dir = HMM_Normalize(Minv * prev_ray_dir);
+            
+                this_ray_pos = Minv * this_ray_pos;
+                this_ray_dir = HMM_Normalize(Minv * this_ray_dir);
+                
+                auto prev_raycast = ray_vs_aligned_circle(prev_ray_pos.XYZ, prev_ray_dir.XYZ, widget_pos, widget_radius);
+                auto this_raycast = ray_vs_aligned_circle(this_ray_pos.XYZ, this_ray_dir.XYZ, widget_pos, widget_radius);
+
+                hmm_vec3 disp = this_raycast.closest_point - prev_raycast.closest_point;
+                g.cld.group_0_faces[0].vertices[0][0] += disp.X;
+                g.cld.group_0_faces[0].vertices[0][1] += disp.Y;
+                g.cld.group_0_faces[0].vertices[0][2] += disp.Z;
+                g.cld_must_update = true;
+            }
         }
     }
     if (g.pitch > TAU32 / 4) {
@@ -867,13 +1054,13 @@ static void frame(void *userdata) {
         g.last_time = next;
     }
     simgui_new_frame(sapp_width(), sapp_height(), dt);
-    sapp_lock_mouse(g.orbiting);
+    sapp_lock_mouse(g.control_state == ControlState::Orbiting);
     g.scroll_speed_timer -= dt;
     if (g.scroll_speed_timer < 0) {
         g.scroll_speed_timer = 0;
         g.scroll_speed = 0;
     }
-    if (g.orbiting) {
+    if (g.control_state == ControlState::Orbiting) {
         float rightwards = ((float)KEY('D') - (float)KEY('A')) * dt;
         float forwards   = ((float)KEY('S') - (float)KEY('W')) * dt;
         hmm_vec4 translate = {rightwards, 0, forwards, 0};
@@ -893,7 +1080,7 @@ static void frame(void *userdata) {
         translate = camera_rot(g) * translate;
         g.cam_pos += translate.XYZ;
     }
-    if (g.orbiting) {
+    if (g.control_state != ControlState::Normal) {
         ImGui::GetStyle().Alpha = 0.333f;
     } else {
         ImGui::GetStyle().Alpha = 1;
@@ -915,6 +1102,39 @@ static void frame(void *userdata) {
 			char b[32]; snprintf(b, sizeof b, "%d", g.map_buffers[i].id);
 			ImGui::Checkbox(b, &g.map_buffers[i].shown);
 		}
+		ImGui::Text("CLD Subgroups:");
+        {
+            ImGui::PushID("CLD Subgroup Visibility Buttons");
+            defer {
+                ImGui::PopID();
+            };
+            bool all_subgroups_on = true;
+            for (int i = 0; i < 16; i++) {
+                ImGui::SameLine();
+                ImGui::PushID(i);
+                if (ImGui::Checkbox("###CLD Subgroup Visible", &g.subgroup_visible[i])) {
+                    g.cld_must_update = true;
+                }
+                if (!g.subgroup_visible[i]) {
+                    all_subgroups_on = false;
+                }
+                ImGui::PopID();
+            }
+            ImGui::SameLine();
+            if (!all_subgroups_on) {
+                if (ImGui::Button("All")) {
+                    for (int i = 0; i < 16; i++) {
+                        g.subgroup_visible[i] = true;
+                    }
+                }
+            } else {
+                if (ImGui::Button("None")) {
+                    for (int i = 0; i < 16; i++) {
+                        g.subgroup_visible[i] = false;
+                    }
+                }
+            }
+        }
     }
     imgui_do_console(g);
     //if (g.changed) {
@@ -983,8 +1203,6 @@ static void frame(void *userdata) {
 			sg_apply_pipeline(g.cld_pipeline);
             for (int i = 0; i < g.cld_buffers_count; i++) {
                 {
-                    // I should ask the community what they know about the units used in the game
-                    const float SCALE = 0.001f * 1.75f;
                     // I should also ask the community what the coordinate system is :)
                     params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate(-g.cld_origin);
                 }
@@ -1001,8 +1219,6 @@ static void frame(void *userdata) {
 			for (int i = 0; i < g.map_buffers_count; i++) {
 				if (!g.map_buffers[i].shown) continue;
                 {
-                    // I should ask the community what they know about the units used in the game
-                    const float SCALE = 0.001f * 1.75f;
                     // I should also ask the community what the coordinate system is :)
 					params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate({});
                 }
@@ -1015,9 +1231,62 @@ static void frame(void *userdata) {
                 }
             }
         }
+        {
+            highlight_vertex_circle_vs_params_t params = {};
+            params.in_color = hmm_vec4{1,1,1,1};
+            hmm_mat4 P = perspective;
+            hmm_mat4 V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
+            sg_apply_pipeline(g.highlight_vertex_circle_pipeline);
+            float screen_height = sapp_heightf();
+            hmm_mat4 R = camera_rot(g);
+            int vertices_to_render = 3;
+            PH2CLD_Face *face = &g.cld.group_0_faces[0];
+            if (face->quad) {
+                vertices_to_render = 4;
+            }
+            for (int i = 0; i < vertices_to_render; i++) {
+                float (&vertex_floats)[3] = face->vertices[i];
+                hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+                hmm_vec3 offset = -g.cld_origin + vertex;
+                offset.X *= SCALE;
+                offset.Y *= -SCALE;
+                offset.Z *= -SCALE;
+                hmm_mat4 T = HMM_Translate(offset);
+                float scale = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / screen_height;
+                hmm_mat4 S = HMM_Scale({scale, scale, scale});
+                hmm_mat4 M = T * R * S;
+                params.MVP = P * V * M;
+                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_highlight_vertex_circle_vs_params, SG_RANGE(params));
+                {
+                    sg_bindings b = {};
+                    b.vertex_buffers[0] = g.highlight_vertex_circle_buffer;
+                    sg_apply_bindings(b);
+                    sg_draw(0, 6, 1);
+                }
+            }
+            if (0) { // @Debug
+                hmm_vec3 offset = g.click_ray.pos + g.click_ray.dir;
+                hmm_mat4 T = HMM_Translate(offset);
+                float scale = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / screen_height;
+                hmm_mat4 S = HMM_Scale({scale, scale, scale});
+                hmm_mat4 M = T * R * S;
+                params.MVP = P * V * M;
+                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_highlight_vertex_circle_vs_params, SG_RANGE(params));
+                {
+                    sg_bindings b = {};
+                    b.vertex_buffers[0] = g.highlight_vertex_circle_buffer;
+                    sg_apply_bindings(b);
+                    sg_draw(0, 6, 1);
+                }
+            }
+        }
         simgui_render();
     }
     sg_commit();
+    if (g.cld_must_update) {
+        cld_upload(g);
+        g.cld_must_update = false;
+    }
 }
 
 static void cleanup(void *userdata) {
@@ -1045,7 +1314,7 @@ sapp_desc sokol_main(int, char **) {
     d.frame_userdata_cb = frame;
     d.cleanup_userdata_cb = cleanup;
     d.fail_cb = fail;
-    //d.sample_count = 4;
+    d.sample_count = 4;
     d.swap_interval = 0;
     d.high_dpi = true;
 #if !RELEASE
