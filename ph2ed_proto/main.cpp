@@ -152,6 +152,8 @@ static double get_time(void) {
 #define KEY(vk) ((unsigned short)GetAsyncKeyState(vk) >= 0x8000)
 
 struct Ray {
+    Ray() = default;
+    Ray(hmm_vec3 pos, hmm_vec3 dir) : pos{pos}, dir{dir} {}
     hmm_vec3 pos = {};
     hmm_vec3 dir = {};
 };
@@ -198,6 +200,7 @@ struct G {
     float scroll_speed_timer = 0;
 
     Ray click_ray = {};
+    hmm_vec3 widget_original_pos = {};
     
     PH2CLD_Collision_Data cld = {};
     hmm_vec3 cld_origin = {};
@@ -218,7 +221,7 @@ struct G {
 };
 static void cld_upload(G &g) {
     auto &cld = g.cld;
-    Log("CLD origin is (%f, 0, %f)", cld.origin[0], cld.origin[1]);
+    //Log("CLD origin is (%f, 0, %f)", cld.origin[0], cld.origin[1]);
     g.cld_origin = hmm_vec3 { cld.origin[0], 0, cld.origin[1] };
     for (int group = 0; group < 4; group++) {
         PH2CLD_Face *faces = cld.group_0_faces;
@@ -226,7 +229,7 @@ static void cld_upload(G &g) {
         if (group == 1) { faces = cld.group_1_faces; num_faces = cld.group_1_faces_count; }
         if (group == 2) { faces = cld.group_2_faces; num_faces = cld.group_2_faces_count; }
         if (group == 3) { faces = cld.group_3_faces; num_faces = cld.group_3_faces_count; }
-        Log("group %d has %zu faces", group, num_faces);
+        //Log("group %d has %zu faces", group, num_faces);
         auto max_triangles = num_faces * 2;
         auto max_vertices = max_triangles * 3;
         auto max_floats = max_vertices * 3;
@@ -282,6 +285,7 @@ static void cld_load(G &g, const char *filename) {
     }
     assert(g.cld.valid);
     cld_upload(g);
+    g.cld_must_update = true;
 }
 
 static void imgui_do_console(G &g) {
@@ -348,6 +352,36 @@ Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(hmm_vec3 ro, hmm_vec3 rd, hmm
     }
     return result;
 }
+
+static inline float abs(float x) { return x >= 0 ? x : -x; }
+
+struct Ray_Vs_Plane_Result {
+    bool hit = false;
+    float t = 0;
+    hmm_vec3 point = {};
+};
+Ray_Vs_Plane_Result ray_vs_plane(Ray ray, hmm_vec3 plane_point, hmm_vec3 plane_normal) {
+    Ray_Vs_Plane_Result result = {};
+
+    assert(HMM_Length(plane_normal) != 0);
+    assert(HMM_Length(ray.dir) != 0);
+    plane_normal = HMM_Normalize(plane_normal);
+    
+    hmm_vec3 displacement = plane_point - ray.pos;
+    float distance_to_origin = HMM_Dot(displacement, plane_normal);
+    float cos_theta = HMM_Dot(ray.dir, plane_normal);
+    if (abs(cos_theta) < 0.0001) {
+        result.hit = abs(distance_to_origin) < 0.0001;
+        result.t = 0;
+    } else {
+        result.t = distance_to_origin / cos_theta;
+        result.hit = result.t >= 0;
+    }
+    result.point = ray.pos + ray.dir * result.t;
+
+    return result;
+}
+
 
 static void init(void *userdata) {
     G &g = *(G *)userdata;
@@ -885,7 +919,7 @@ static void init(void *userdata) {
 
 // I should ask the community what they know about the units used in the game
 const float SCALE = 0.001f;
-const float widget_pixel_radius = 20;
+const float widget_pixel_radius = 30;
 
 static hmm_mat4 camera_rot(G &g) {
     // We pitch the camera by applying a rotation around X,
@@ -955,6 +989,7 @@ static void event(const sapp_event *e_, void *userdata) {
             
             auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, widget_radius);
             if (raycast.hit) {
+                g.widget_original_pos = widget_pos;
                 g.control_state = ControlState::Dragging;
             }
         }
@@ -992,34 +1027,63 @@ static void event(const sapp_event *e_, void *userdata) {
             offset.Z *= -SCALE;
             
             hmm_vec3 widget_pos = vertex;
-            float widget_radius = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() / SCALE;
 
             {
-                Ray prev_ray = screen_to_ray(g, prev_mouse_pos);
+                Ray click_ray = g.click_ray;
                 Ray this_ray = screen_to_ray(g, this_mouse_pos);
-                hmm_vec4 prev_ray_pos = {0, 0, 0, 1};
-                prev_ray_pos.XYZ = prev_ray.pos;
-                hmm_vec4 prev_ray_dir = {};
-                prev_ray_dir.XYZ = prev_ray.dir;
+                hmm_vec4 click_ray_pos = {0, 0, 0, 1};
+                click_ray_pos.XYZ = click_ray.pos;
+                hmm_vec4 click_ray_dir = {};
+                click_ray_dir.XYZ = click_ray.dir;
                 hmm_vec4 this_ray_pos = {0, 0, 0, 1};
                 this_ray_pos.XYZ = this_ray.pos;
                 hmm_vec4 this_ray_dir = {};
                 this_ray_dir.XYZ = this_ray.dir;
 
-                prev_ray_pos = Minv * prev_ray_pos;
-                prev_ray_dir = HMM_Normalize(Minv * prev_ray_dir);
+                click_ray_pos = Minv * click_ray_pos;
+                click_ray_dir = HMM_Normalize(Minv * click_ray_dir);
             
                 this_ray_pos = Minv * this_ray_pos;
                 this_ray_dir = HMM_Normalize(Minv * this_ray_dir);
                 
-                auto prev_raycast = ray_vs_aligned_circle(prev_ray_pos.XYZ, prev_ray_dir.XYZ, widget_pos, widget_radius);
-                auto this_raycast = ray_vs_aligned_circle(this_ray_pos.XYZ, this_ray_dir.XYZ, widget_pos, widget_radius);
-
-                hmm_vec3 disp = this_raycast.closest_point - prev_raycast.closest_point;
-                g.cld.group_0_faces[0].vertices[0][0] += disp.X;
-                g.cld.group_0_faces[0].vertices[0][1] += disp.Y;
-                g.cld.group_0_faces[0].vertices[0][2] += disp.Z;
-                g.cld_must_update = true;
+                bool aligned_with_camera = false;
+                if (aligned_with_camera) {
+                    // Remember you gotta put the plane in the coordinate space of the cld file!
+                    hmm_vec3 plane_normal = ((Sinv * camera_rot(g)) * hmm_vec4{0, 0, -1, 0}).XYZ;
+                    auto click_raycast = ray_vs_plane(Ray{click_ray_pos.XYZ, click_ray_dir.XYZ}, widget_pos, plane_normal);
+                    auto raycast = ray_vs_plane(Ray{this_ray_pos.XYZ, this_ray_dir.XYZ}, widget_pos, plane_normal);
+                    
+                    assert(click_raycast.hit); // How could it not hit if it's aligned to the camera?
+                    assert(raycast.hit);
+                    hmm_vec3 drag_offset = click_raycast.point - g.widget_original_pos;
+                    hmm_vec3 target = raycast.point - drag_offset;
+                    g.cld.group_0_faces[0].vertices[0][0] = target.X;
+                    g.cld.group_0_faces[0].vertices[0][1] = target.Y;
+                    g.cld.group_0_faces[0].vertices[0][2] = target.Z;
+                    g.cld_must_update = true;
+                } else { // @Temporary: only along XZ plane
+                    auto click_raycast = ray_vs_plane(Ray{click_ray_pos.XYZ, click_ray_dir.XYZ}, widget_pos, {0, 1, 0});
+                    auto raycast = ray_vs_plane(Ray{this_ray_pos.XYZ, this_ray_dir.XYZ}, widget_pos, {0, 1, 0});
+                    if (click_raycast.hit && raycast.hit) {
+                        // @Note: Drag-offsetting should use a screenspace offset computed when first clicked,
+                        //        rather than a new raycast, so that distant vertices don't have problems and
+                        //        so that it always looks like it is going directly to your cursor but modulo
+                        //        the little screespace offset between your cursor and the centre of the circle.
+                        //        For now, let's just have no offset so that it never has problems.
+                        hmm_vec3 drag_offset = {};
+                        // hmm_vec3 drag_offset = click_raycast.point - g.widget_original_pos;
+                        hmm_vec3 target = raycast.point - drag_offset;
+                        target.Y = g.cld.group_0_faces[0].vertices[0][1]; // Needs to be assigned for precision reasons
+                        if (e.modifiers & SAPP_MODIFIER_ALT) {
+                            for (auto &f : target.Elements) {
+                                f = roundf(f / 100) * 100;
+                            }
+                        }
+                        g.cld.group_0_faces[0].vertices[0][0] = target.X;
+                        g.cld.group_0_faces[0].vertices[0][2] = target.Z;
+                        g.cld_must_update = true;
+                    }
+                }
             }
         }
     }
@@ -1055,12 +1119,13 @@ static void frame(void *userdata) {
     }
     simgui_new_frame(sapp_width(), sapp_height(), dt);
     sapp_lock_mouse(g.control_state == ControlState::Orbiting);
+    sapp_show_mouse(g.control_state != ControlState::Dragging);
     g.scroll_speed_timer -= dt;
     if (g.scroll_speed_timer < 0) {
         g.scroll_speed_timer = 0;
         g.scroll_speed = 0;
     }
-    if (g.control_state == ControlState::Orbiting) {
+    if (g.control_state == ControlState::Orbiting || g.control_state == ControlState::Dragging) {
         float rightwards = ((float)KEY('D') - (float)KEY('A')) * dt;
         float forwards   = ((float)KEY('S') - (float)KEY('W')) * dt;
         hmm_vec4 translate = {rightwards, 0, forwards, 0};
@@ -1137,10 +1202,21 @@ static void frame(void *userdata) {
         }
     }
     imgui_do_console(g);
-    //if (g.changed) {
-    //    vertices;
-    //    sg_update_buffer(g.cld_buffer, );
-    //}
+    if (g.cld_must_update) {
+        bool can_update = true;
+        for (auto &buf : g.cld_face_buffers) {
+            auto info = sg_query_buffer_info(buf.buf);
+            uint64_t frame_count = sapp_frame_count();
+            if (info.update_frame_index >= frame_count) {
+                can_update = false;
+                break;
+            }
+        }
+        if (can_update) {
+            cld_upload(g);
+            g.cld_must_update = false;
+        }
+    }
     {
         sg_pass_action p = {};
         p.colors[0].action = SG_ACTION_CLEAR;
@@ -1233,7 +1309,6 @@ static void frame(void *userdata) {
         }
         {
             highlight_vertex_circle_vs_params_t params = {};
-            params.in_color = hmm_vec4{1,1,1,1};
             hmm_mat4 P = perspective;
             hmm_mat4 V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
             sg_apply_pipeline(g.highlight_vertex_circle_pipeline);
@@ -1245,6 +1320,22 @@ static void frame(void *userdata) {
                 vertices_to_render = 4;
             }
             for (int i = 0; i < vertices_to_render; i++) {
+                
+                float scale_factor = 1;
+                float alpha = 1;
+                if (g.control_state != ControlState::Normal) {
+                    alpha = 0.7f;
+                }
+                if (g.control_state == ControlState::Dragging) {
+                    if (i == 0) {
+                        alpha = 1;
+                        scale_factor *= 0.5f;
+                    } else {
+                        alpha = 0.3f;
+                    }
+                }
+                params.in_color = hmm_vec4{1,1,1,alpha};
+
                 float (&vertex_floats)[3] = face->vertices[i];
                 hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
                 hmm_vec3 offset = -g.cld_origin + vertex;
@@ -1252,7 +1343,7 @@ static void frame(void *userdata) {
                 offset.Y *= -SCALE;
                 offset.Z *= -SCALE;
                 hmm_mat4 T = HMM_Translate(offset);
-                float scale = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / screen_height;
+                float scale = scale_factor * HMM_Length(g.cam_pos - offset) * widget_pixel_radius / screen_height;
                 hmm_mat4 S = HMM_Scale({scale, scale, scale});
                 hmm_mat4 M = T * R * S;
                 params.MVP = P * V * M;
@@ -1267,7 +1358,7 @@ static void frame(void *userdata) {
             if (0) { // @Debug
                 hmm_vec3 offset = g.click_ray.pos + g.click_ray.dir;
                 hmm_mat4 T = HMM_Translate(offset);
-                float scale = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / screen_height;
+                float scale = 1; //HMM_Length(g.cam_pos - offset) * widget_pixel_radius / screen_height;
                 hmm_mat4 S = HMM_Scale({scale, scale, scale});
                 hmm_mat4 M = T * R * S;
                 params.MVP = P * V * M;
@@ -1283,10 +1374,6 @@ static void frame(void *userdata) {
         simgui_render();
     }
     sg_commit();
-    if (g.cld_must_update) {
-        cld_upload(g);
-        g.cld_must_update = false;
-    }
 }
 
 static void cleanup(void *userdata) {

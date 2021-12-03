@@ -120,6 +120,11 @@ out vec4 frag_color;
 void main() {
     float alpha = 1 - sqrt(uv.x * uv.x + uv.y * uv.y);
     alpha = clamp(alpha / max(fwidth(alpha), 0.0001), 0, 1);
+    {
+        float inner_alpha = 0.5 - sqrt(uv.x * uv.x + uv.y * uv.y);
+        inner_alpha = clamp(inner_alpha / max(fwidth(inner_alpha), 0.0001), 0, 1);
+        alpha -= inner_alpha;
+    }
     frag_color = color * vec4(1, 1, 1, alpha);
 }
 @end
