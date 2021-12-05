@@ -201,6 +201,9 @@ struct G {
 
     Ray click_ray = {};
     hmm_vec3 widget_original_pos = {};
+    int drag_cld_group = 0;
+    int drag_cld_index = 0;
+    int drag_cld_vertex = 0;
     
     PH2CLD_Collision_Data cld = {};
     hmm_vec3 cld_origin = {};
@@ -960,46 +963,62 @@ static void event(const sapp_event *e_, void *userdata) {
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
         if (e.mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-            Ray ray = screen_to_ray(g, { e.mouse_x, e.mouse_y });
-            hmm_vec4 ray_pos = {0, 0, 0, 1};
-            ray_pos.XYZ = ray.pos;
-            hmm_vec4 ray_dir = {};
-            ray_dir.XYZ = ray.dir;
-            
-            g.click_ray = ray;
+            g.click_ray = screen_to_ray(g, { e.mouse_x, e.mouse_y });
 
             //Log("Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
             //Log("Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
 
             if (g.cld.valid) {
-                float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[0];
-                hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-                hmm_vec3 origin = -g.cld_origin;
+                float closest_t = INFINITY;
+                int hit_vertex = 0;
+                hmm_vec3 hit_widget_pos = {};
+                int vertices_to_raycast = 3;
+                if (g.cld.group_0_faces[0].quad) {
+                    vertices_to_raycast = 4;
+                }
+                for (int vertex_index = 0; vertex_index < vertices_to_raycast; vertex_index++) {
+                    hmm_vec4 ray_pos = { 0, 0, 0, 1 };
+                    ray_pos.XYZ = g.click_ray.pos;
+                    hmm_vec4 ray_dir = {};
+                    ray_dir.XYZ = g.click_ray.dir;
 
-                hmm_mat4 Tinv = HMM_Translate(-origin);
-                hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
-                hmm_mat4 Minv = Tinv * Sinv;
+                    float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[vertex_index];
+                    hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+                    hmm_vec3 origin = -g.cld_origin;
 
-                ray_pos = Minv * ray_pos;
-                ray_dir = HMM_Normalize(Minv * ray_dir);
+                    hmm_mat4 Tinv = HMM_Translate(-origin);
+                    hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
+                    hmm_mat4 Minv = Tinv * Sinv;
 
-                //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
-                //Log("Minv*Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
+                    ray_pos = Minv * ray_pos;
+                    ray_dir = HMM_Normalize(Minv * ray_dir);
 
-                //Log("Vertex Pos = %f, %f, %f", vertex.X, vertex.Y, vertex.Z);
+                    //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
+                    //Log("Minv*Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
 
-                hmm_vec3 offset = -g.cld_origin + vertex;
-                offset.X *= SCALE;
-                offset.Y *= -SCALE;
-                offset.Z *= -SCALE;
+                    //Log("Vertex Pos = %f, %f, %f", vertex.X, vertex.Y, vertex.Z);
 
-                hmm_vec3 widget_pos = vertex;
-                float widget_radius = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() / SCALE;
+                    hmm_vec3 offset = -g.cld_origin + vertex;
+                    offset.X *= SCALE;
+                    offset.Y *= -SCALE;
+                    offset.Z *= -SCALE;
 
-                auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, widget_radius);
-                if (raycast.hit) {
-                    g.widget_original_pos = widget_pos;
+                    hmm_vec3 widget_pos = vertex;
+                    float widget_radius = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() / SCALE;
+
+                    auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, widget_radius);
+                    if (raycast.hit) {
+                        if (raycast.t < closest_t) {
+                            closest_t = raycast.t;
+                            hit_vertex = vertex_index;
+                            hit_widget_pos = widget_pos;
+                        }
+                    }
+                }
+                if (closest_t < INFINITY) {
+                    g.widget_original_pos = hit_widget_pos;
                     g.control_state = ControlState::Dragging;
+                    g.drag_cld_vertex = hit_vertex;
                 }
             }
         }
@@ -1024,7 +1043,7 @@ static void event(const sapp_event *e_, void *userdata) {
                 hmm_vec2 this_mouse_pos = { e.mouse_x, e.mouse_y };
 
                 // @Temporary: @Deduplicate.
-                float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[0];
+                float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[g.drag_cld_vertex];
                 hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
                 hmm_vec3 origin = -g.cld_origin;
 
@@ -1068,9 +1087,9 @@ static void event(const sapp_event *e_, void *userdata) {
                         assert(raycast.hit);
                         hmm_vec3 drag_offset = click_raycast.point - g.widget_original_pos;
                         hmm_vec3 target = raycast.point - drag_offset;
-                        g.cld.group_0_faces[0].vertices[0][0] = target.X;
-                        g.cld.group_0_faces[0].vertices[0][1] = target.Y;
-                        g.cld.group_0_faces[0].vertices[0][2] = target.Z;
+                        vertex_floats[0] = target.X;
+                        vertex_floats[1] = target.Y;
+                        vertex_floats[2] = target.Z;
                         g.cld_must_update = true;
                     } else { // @Temporary: only along XZ plane
                         auto click_raycast = ray_vs_plane(Ray { click_ray_pos.XYZ, click_ray_dir.XYZ }, widget_pos, { 0, 1, 0 });
@@ -1084,14 +1103,14 @@ static void event(const sapp_event *e_, void *userdata) {
                             hmm_vec3 drag_offset = {};
                             // hmm_vec3 drag_offset = click_raycast.point - g.widget_original_pos;
                             hmm_vec3 target = raycast.point - drag_offset;
-                            target.Y = g.cld.group_0_faces[0].vertices[0][1]; // Needs to be assigned for precision reasons
+                            target.Y = vertex_floats[1]; // Needs to be assigned for precision reasons
                             if (e.modifiers & SAPP_MODIFIER_ALT) {
                                 for (auto &f : target.Elements) {
                                     f = roundf(f / 100) * 100;
                                 }
                             }
-                            g.cld.group_0_faces[0].vertices[0][0] = target.X;
-                            g.cld.group_0_faces[0].vertices[0][2] = target.Z;
+                            vertex_floats[0] = target.X;
+                            vertex_floats[2] = target.Z;
                             g.cld_must_update = true;
                         }
                     }
@@ -1339,7 +1358,7 @@ static void frame(void *userdata) {
                     alpha = 0.7f;
                 }
                 if (g.control_state == ControlState::Dragging) {
-                    if (i == 0) {
+                    if (i == g.drag_cld_vertex) {
                         alpha = 1;
                         scale_factor *= 0.5f;
                     } else {
