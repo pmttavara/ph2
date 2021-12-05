@@ -45,7 +45,7 @@ static int assert_(const char *s) {
 }
 #define assert_STR_(LINE) #LINE
 #define assert_STR(LINE) assert_STR_(LINE)
-#ifndef NDEBUG
+#ifdef NDEBUG
 #define assert(ignore) ((void)0)
 #else
 #define assert(e) ((e) || assert_("At " __FILE__ ":" assert_STR(__LINE__) ":\n\n" #e "\n\nPress Retry to debug.") && (__debugbreak(), 0))
@@ -211,6 +211,8 @@ struct G {
 
     Ray click_ray = {};
     hmm_vec3 widget_original_pos = {};
+    int select_cld_group = -1;
+    int select_cld_face = -1;
     int drag_cld_group = 0;
     int drag_cld_face = 0;
     int drag_cld_vertex = 0;
@@ -415,7 +417,7 @@ static void init(void *userdata) {
     simgui_desc.no_default_font = true;
     simgui_desc.dpi_scale = sapp_dpi_scale();
     simgui_desc.sample_count = sapp_sample_count();
-#ifndef NDEBUG
+#ifdef NDEBUG
     simgui_desc.ini_filename = "imgui.ini";
 #endif
     simgui_setup(&simgui_desc);
@@ -522,7 +524,7 @@ static void init(void *userdata) {
             };
             char *ptr = filedata;
             char *end = filedata + file_len;
-#define Read(ptr, x) (assert(ptr + sizeof(x) <= end) && memcpy(&(x), ptr, sizeof(x)) && (ptr += sizeof(x)))
+#define Read(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(&(x), ptr, sizeof(x)) && (ptr += sizeof(x)))
             PH2MAP__Header header = {};
             Read(ptr, header);
             assert(header.magic == 0x20010510);
@@ -976,10 +978,17 @@ static void event(const sapp_event *e_, void *userdata) {
             //Log("Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
 
             if (g.cld.valid) {
+                const hmm_vec3 origin = -g.cld_origin;
+                const hmm_mat4 Tinv = HMM_Translate(-origin);
+                const hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
+                const hmm_mat4 Minv = Tinv * Sinv;
+                const hmm_vec4 ray_pos = Minv * hmm_vec4{ g.click_ray.pos.X, g.click_ray.pos.Y, g.click_ray.pos.Z, 1 };
+                const hmm_vec4 ray_dir = HMM_Normalize(Minv * hmm_vec4{ g.click_ray.dir.X, g.click_ray.dir.Y, g.click_ray.dir.Z, 0 });
+
                 float closest_t = INFINITY;
-                int hit_group = 0;
-                int hit_face_index = 0;
-                int hit_vertex = 0;
+                int hit_group = -1;
+                int hit_face_index = -1;
+                int hit_vertex = -1;
                 hmm_vec3 hit_widget_pos = {};
                 for (int group = 0; group < 4; group++) {
                     PH2CLD_Face *faces = g.cld.group_0_faces;
@@ -994,22 +1003,12 @@ static void event(const sapp_event *e_, void *userdata) {
                             vertices_to_raycast = 4;
                         }
                         for (int vertex_index = 0; vertex_index < vertices_to_raycast; vertex_index++) {
-                            hmm_vec4 ray_pos = { 0, 0, 0, 1 };
-                            ray_pos.XYZ = g.click_ray.pos;
-                            hmm_vec4 ray_dir = {};
-                            ray_dir.XYZ = g.click_ray.dir;
+                            if (group != g.select_cld_group || face_index != g.select_cld_face) {
+                                continue;
+                            }
 
                             float (&vertex_floats)[3] = face->vertices[vertex_index];
                             hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-                            hmm_vec3 origin = -g.cld_origin;
-
-                            hmm_mat4 Tinv = HMM_Translate(-origin);
-                            hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
-                            hmm_mat4 Minv = Tinv * Sinv;
-
-                            ray_pos = Minv * ray_pos;
-                            ray_dir = HMM_Normalize(Minv * ray_dir);
-
                             //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
                             //Log("Minv*Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
 
@@ -1034,14 +1033,49 @@ static void event(const sapp_event *e_, void *userdata) {
                                 }
                             }
                         }
+                        {
+                            hmm_vec3 a = { face->vertices[0][0], face->vertices[0][1], face->vertices[0][2] };
+                            hmm_vec3 b = { face->vertices[1][0], face->vertices[1][1], face->vertices[1][2] };
+                            hmm_vec3 c = { face->vertices[2][0], face->vertices[2][1], face->vertices[2][2] };
+                            hmm_vec3 normal = HMM_Normalize(HMM_Cross(b-a, c-a));
+                            auto raycast = ray_vs_plane( { ray_pos.XYZ, ray_dir.XYZ }, a, normal);
+                            float u = (HMM_Dot(raycast.point - a, b-a) - HMM_Dot(c-a, b-a)) / HMM_LengthSquared(b-a);
+                            float v = (HMM_Dot(raycast.point - a, c-a) - HMM_Dot(b-a, c-a)) / HMM_LengthSquared(c-a);
+                            if (face_index == 0 && group == 0) {
+                                Log("u = %f, v = %f, u + v = %f", u, v, u + v);
+                            }
+                            raycast.hit = raycast.hit && u >= 0 && v >= 0 && u + v <= 1;
+                            if (raycast.hit) {
+                                if (raycast.t < closest_t) {
+                                    closest_t = raycast.t;
+                                    hit_group = group;
+                                    hit_face_index = face_index;
+                                    hit_vertex = -1;
+                                }
+                            }
+                        }
                     }
                 }
                 if (closest_t < INFINITY) {
                     g.widget_original_pos = hit_widget_pos;
-                    g.control_state = ControlState::Dragging;
-                    g.drag_cld_group = hit_group;
-                    g.drag_cld_face = hit_face_index;
-                    g.drag_cld_vertex = hit_vertex;
+                    assert(hit_group >= 0);
+                    assert(hit_group < 4);
+                    assert(hit_face_index >= 0);
+                    assert(hit_vertex < 4);
+                    if (hit_vertex >= 0) {
+                        g.control_state = ControlState::Dragging;
+                        assert(g.select_cld_group == g.drag_cld_group);
+                        assert(g.select_cld_face == g.drag_cld_face);
+                        g.drag_cld_group = hit_group;
+                        g.drag_cld_face = hit_face_index;
+                        g.drag_cld_vertex = hit_vertex;
+                    } else {
+                        g.select_cld_group = hit_group;
+                        g.select_cld_face = hit_face_index;
+                    }
+                } else {
+                    g.select_cld_group = -1;
+                    g.select_cld_face = -1;
                 }
             }
         }
