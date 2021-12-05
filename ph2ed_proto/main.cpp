@@ -221,6 +221,13 @@ struct G {
 };
 static void cld_upload(G &g) {
     auto &cld = g.cld;
+    if (!cld.valid) {
+        g.cld_origin = {};
+        for (auto &buf : g.cld_face_buffers) {
+            buf.num_vertices = 0;
+        }
+        return;
+    }
     //Log("CLD origin is (%f, 0, %f)", cld.origin[0], cld.origin[1]);
     g.cld_origin = hmm_vec3 { cld.origin[0], 0, cld.origin[1] };
     for (int group = 0; group < 4; group++) {
@@ -281,9 +288,7 @@ static void cld_load(G &g, const char *filename) {
     g.cld = PH2CLD_get_collision_data_from_file(filename);
     if (!g.cld.valid) {
         LogC(IM_COL32(255, 127, 127, 255), "Failed loading CLD file \"%s\"!", filename);
-        return;
     }
-    assert(g.cld.valid);
     cld_upload(g);
     g.cld_must_update = true;
 }
@@ -385,7 +390,10 @@ Ray_Vs_Plane_Result ray_vs_plane(Ray ray, hmm_vec3 plane_point, hmm_vec3 plane_n
 
 static void init(void *userdata) {
     G &g = *(G *)userdata;
-    (void)g;
+    { // @Temporary @Remove
+        auto hwnd = sapp_win32_get_hwnd();
+        MoveWindow((HWND)hwnd, -1910, -300, 1900, 1000, false);
+    }
     g.last_time = get_time();
     sg_desc desc = {};
     desc.context = sapp_sgcontext();
@@ -963,34 +971,36 @@ static void event(const sapp_event *e_, void *userdata) {
             //Log("Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
             //Log("Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
 
-            float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[0];
-            hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-            hmm_vec3 origin = -g.cld_origin;
-            
-            hmm_mat4 Tinv = HMM_Translate(-origin);
-            hmm_mat4 Sinv = HMM_Scale({1 / SCALE, 1 / -SCALE, 1 / -SCALE});
-            hmm_mat4 Minv = Tinv * Sinv;
+            if (g.cld.valid) {
+                float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[0];
+                hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+                hmm_vec3 origin = -g.cld_origin;
 
-            ray_pos = Minv * ray_pos;
-            ray_dir = HMM_Normalize(Minv * ray_dir);
+                hmm_mat4 Tinv = HMM_Translate(-origin);
+                hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
+                hmm_mat4 Minv = Tinv * Sinv;
 
-            //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
-            //Log("Minv*Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
+                ray_pos = Minv * ray_pos;
+                ray_dir = HMM_Normalize(Minv * ray_dir);
 
-            //Log("Vertex Pos = %f, %f, %f", vertex.X, vertex.Y, vertex.Z);
-            
-            hmm_vec3 offset = -g.cld_origin + vertex;
-            offset.X *= SCALE;
-            offset.Y *= -SCALE;
-            offset.Z *= -SCALE;
+                //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
+                //Log("Minv*Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
 
-            hmm_vec3 widget_pos = vertex;
-            float widget_radius = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() / SCALE;
-            
-            auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, widget_radius);
-            if (raycast.hit) {
-                g.widget_original_pos = widget_pos;
-                g.control_state = ControlState::Dragging;
+                //Log("Vertex Pos = %f, %f, %f", vertex.X, vertex.Y, vertex.Z);
+
+                hmm_vec3 offset = -g.cld_origin + vertex;
+                offset.X *= SCALE;
+                offset.Y *= -SCALE;
+                offset.Z *= -SCALE;
+
+                hmm_vec3 widget_pos = vertex;
+                float widget_radius = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() / SCALE;
+
+                auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, widget_radius);
+                if (raycast.hit) {
+                    g.widget_original_pos = widget_pos;
+                    g.control_state = ControlState::Dragging;
+                }
             }
         }
         if (e.mouse_button == SAPP_MOUSEBUTTON_RIGHT) {
@@ -1009,79 +1019,81 @@ static void event(const sapp_event *e_, void *userdata) {
             g.pitch += -e.mouse_dy * 3 * (0.022f * (TAU32 / 360));
         }
         if (g.control_state == ControlState::Dragging) {
-            hmm_vec2 prev_mouse_pos = {e.mouse_x - e.mouse_dx, e.mouse_y - e.mouse_dy};
-            hmm_vec2 this_mouse_pos = {e.mouse_x, e.mouse_y};
+            if (g.cld.valid) {
+                hmm_vec2 prev_mouse_pos = { e.mouse_x - e.mouse_dx, e.mouse_y - e.mouse_dy };
+                hmm_vec2 this_mouse_pos = { e.mouse_x, e.mouse_y };
 
-            // @Temporary: @Deduplicate.
-            float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[0];
-            hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-            hmm_vec3 origin = -g.cld_origin;
-            
-            hmm_mat4 Tinv = HMM_Translate(-origin);
-            hmm_mat4 Sinv = HMM_Scale({1 / SCALE, 1 / -SCALE, 1 / -SCALE});
-            hmm_mat4 Minv = Tinv * Sinv;
-            
-            hmm_vec3 offset = -g.cld_origin + vertex;
-            offset.X *= SCALE;
-            offset.Y *= -SCALE;
-            offset.Z *= -SCALE;
-            
-            hmm_vec3 widget_pos = vertex;
+                // @Temporary: @Deduplicate.
+                float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[0];
+                hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+                hmm_vec3 origin = -g.cld_origin;
 
-            {
-                Ray click_ray = g.click_ray;
-                Ray this_ray = screen_to_ray(g, this_mouse_pos);
-                hmm_vec4 click_ray_pos = {0, 0, 0, 1};
-                click_ray_pos.XYZ = click_ray.pos;
-                hmm_vec4 click_ray_dir = {};
-                click_ray_dir.XYZ = click_ray.dir;
-                hmm_vec4 this_ray_pos = {0, 0, 0, 1};
-                this_ray_pos.XYZ = this_ray.pos;
-                hmm_vec4 this_ray_dir = {};
-                this_ray_dir.XYZ = this_ray.dir;
+                hmm_mat4 Tinv = HMM_Translate(-origin);
+                hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
+                hmm_mat4 Minv = Tinv * Sinv;
 
-                click_ray_pos = Minv * click_ray_pos;
-                click_ray_dir = HMM_Normalize(Minv * click_ray_dir);
-            
-                this_ray_pos = Minv * this_ray_pos;
-                this_ray_dir = HMM_Normalize(Minv * this_ray_dir);
-                
-                bool aligned_with_camera = false;
-                if (aligned_with_camera) {
-                    // Remember you gotta put the plane in the coordinate space of the cld file!
-                    hmm_vec3 plane_normal = ((Sinv * camera_rot(g)) * hmm_vec4{0, 0, -1, 0}).XYZ;
-                    auto click_raycast = ray_vs_plane(Ray{click_ray_pos.XYZ, click_ray_dir.XYZ}, widget_pos, plane_normal);
-                    auto raycast = ray_vs_plane(Ray{this_ray_pos.XYZ, this_ray_dir.XYZ}, widget_pos, plane_normal);
-                    
-                    assert(click_raycast.hit); // How could it not hit if it's aligned to the camera?
-                    assert(raycast.hit);
-                    hmm_vec3 drag_offset = click_raycast.point - g.widget_original_pos;
-                    hmm_vec3 target = raycast.point - drag_offset;
-                    g.cld.group_0_faces[0].vertices[0][0] = target.X;
-                    g.cld.group_0_faces[0].vertices[0][1] = target.Y;
-                    g.cld.group_0_faces[0].vertices[0][2] = target.Z;
-                    g.cld_must_update = true;
-                } else { // @Temporary: only along XZ plane
-                    auto click_raycast = ray_vs_plane(Ray{click_ray_pos.XYZ, click_ray_dir.XYZ}, widget_pos, {0, 1, 0});
-                    auto raycast = ray_vs_plane(Ray{this_ray_pos.XYZ, this_ray_dir.XYZ}, widget_pos, {0, 1, 0});
-                    if (click_raycast.hit && raycast.hit) {
-                        // @Note: Drag-offsetting should use a screenspace offset computed when first clicked,
-                        //        rather than a new raycast, so that distant vertices don't have problems and
-                        //        so that it always looks like it is going directly to your cursor but modulo
-                        //        the little screespace offset between your cursor and the centre of the circle.
-                        //        For now, let's just have no offset so that it never has problems.
-                        hmm_vec3 drag_offset = {};
-                        // hmm_vec3 drag_offset = click_raycast.point - g.widget_original_pos;
+                hmm_vec3 offset = -g.cld_origin + vertex;
+                offset.X *= SCALE;
+                offset.Y *= -SCALE;
+                offset.Z *= -SCALE;
+
+                hmm_vec3 widget_pos = vertex;
+
+                {
+                    Ray click_ray = g.click_ray;
+                    Ray this_ray = screen_to_ray(g, this_mouse_pos);
+                    hmm_vec4 click_ray_pos = { 0, 0, 0, 1 };
+                    click_ray_pos.XYZ = click_ray.pos;
+                    hmm_vec4 click_ray_dir = {};
+                    click_ray_dir.XYZ = click_ray.dir;
+                    hmm_vec4 this_ray_pos = { 0, 0, 0, 1 };
+                    this_ray_pos.XYZ = this_ray.pos;
+                    hmm_vec4 this_ray_dir = {};
+                    this_ray_dir.XYZ = this_ray.dir;
+
+                    click_ray_pos = Minv * click_ray_pos;
+                    click_ray_dir = HMM_Normalize(Minv * click_ray_dir);
+
+                    this_ray_pos = Minv * this_ray_pos;
+                    this_ray_dir = HMM_Normalize(Minv * this_ray_dir);
+
+                    bool aligned_with_camera = false;
+                    if (aligned_with_camera) {
+                        // Remember you gotta put the plane in the coordinate space of the cld file!
+                        hmm_vec3 plane_normal = ((Sinv * camera_rot(g)) * hmm_vec4 { 0, 0, -1, 0 }).XYZ;
+                        auto click_raycast = ray_vs_plane(Ray { click_ray_pos.XYZ, click_ray_dir.XYZ }, widget_pos, plane_normal);
+                        auto raycast = ray_vs_plane(Ray { this_ray_pos.XYZ, this_ray_dir.XYZ }, widget_pos, plane_normal);
+
+                        assert(click_raycast.hit); // How could it not hit if it's aligned to the camera?
+                        assert(raycast.hit);
+                        hmm_vec3 drag_offset = click_raycast.point - g.widget_original_pos;
                         hmm_vec3 target = raycast.point - drag_offset;
-                        target.Y = g.cld.group_0_faces[0].vertices[0][1]; // Needs to be assigned for precision reasons
-                        if (e.modifiers & SAPP_MODIFIER_ALT) {
-                            for (auto &f : target.Elements) {
-                                f = roundf(f / 100) * 100;
-                            }
-                        }
                         g.cld.group_0_faces[0].vertices[0][0] = target.X;
+                        g.cld.group_0_faces[0].vertices[0][1] = target.Y;
                         g.cld.group_0_faces[0].vertices[0][2] = target.Z;
                         g.cld_must_update = true;
+                    } else { // @Temporary: only along XZ plane
+                        auto click_raycast = ray_vs_plane(Ray { click_ray_pos.XYZ, click_ray_dir.XYZ }, widget_pos, { 0, 1, 0 });
+                        auto raycast = ray_vs_plane(Ray { this_ray_pos.XYZ, this_ray_dir.XYZ }, widget_pos, { 0, 1, 0 });
+                        if (click_raycast.hit && raycast.hit) {
+                            // @Note: Drag-offsetting should use a screenspace offset computed when first clicked,
+                            //        rather than a new raycast, so that distant vertices don't have problems and
+                            //        so that it always looks like it is going directly to your cursor but modulo
+                            //        the little screespace offset between your cursor and the centre of the circle.
+                            //        For now, let's just have no offset so that it never has problems.
+                            hmm_vec3 drag_offset = {};
+                            // hmm_vec3 drag_offset = click_raycast.point - g.widget_original_pos;
+                            hmm_vec3 target = raycast.point - drag_offset;
+                            target.Y = g.cld.group_0_faces[0].vertices[0][1]; // Needs to be assigned for precision reasons
+                            if (e.modifiers & SAPP_MODIFIER_ALT) {
+                                for (auto &f : target.Elements) {
+                                    f = roundf(f / 100) * 100;
+                                }
+                            }
+                            g.cld.group_0_faces[0].vertices[0][0] = target.X;
+                            g.cld.group_0_faces[0].vertices[0][2] = target.Z;
+                            g.cld_must_update = true;
+                        }
                     }
                 }
             }
@@ -1119,7 +1131,7 @@ static void frame(void *userdata) {
     }
     simgui_new_frame(sapp_width(), sapp_height(), dt);
     sapp_lock_mouse(g.control_state == ControlState::Orbiting);
-    sapp_show_mouse(g.control_state != ControlState::Dragging);
+    // sapp_show_mouse(g.control_state != ControlState::Dragging);
     g.scroll_speed_timer -= dt;
     if (g.scroll_speed_timer < 0) {
         g.scroll_speed_timer = 0;
@@ -1307,7 +1319,7 @@ static void frame(void *userdata) {
                 }
             }
         }
-        {
+        if (g.cld.valid) {
             highlight_vertex_circle_vs_params_t params = {};
             hmm_mat4 P = perspective;
             hmm_mat4 V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
@@ -1393,8 +1405,8 @@ static void fail(const char *str) {
 G g;
 sapp_desc sokol_main(int, char **) {
     sapp_desc d = {};
-    d.width = 1300; // @Temporary
-    d.height = 700; // @Temporary
+    d.width = 1900; // @Temporary
+    d.height = 1000; // @Temporary
     d.user_data = &g;
     d.init_userdata_cb = init;
     d.event_userdata_cb = event;
