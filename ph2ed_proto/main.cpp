@@ -135,8 +135,8 @@ static double get_time(void) {
 
 // Use the dedicated graphics card
 extern "C" {
-	__declspec(dllexport) /* DWORD */ uint32_t NvOptimusEnablement = 0x00000001;
-	__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+    __declspec(dllexport) /* DWORD */ uint32_t NvOptimusEnablement = 0x00000001;
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 
 #else
@@ -169,16 +169,16 @@ struct CLD_Face_Buffer {
 };
 
 struct MAP_Geometry_Vertex {
-	float position[3] = {};
-	float normal[3] = {};
-	uint32_t color = 0xffffffff;
-	float uv[2] = {};
+    float position[3] = {};
+    float normal[3] = {};
+    uint32_t color = 0xffffffff;
+    float uv[2] = {};
 };
 struct MAP_Geometry_Buffer {
-	sg_buffer buf = {};
-	int num_vertices = 0;
-	uint32_t id = 0;
-	bool shown = true;
+    sg_buffer buf = {};
+    int num_vertices = 0;
+    uint32_t id = 0;
+    bool shown = true;
 };
 enum struct ControlState {
     Normal,
@@ -202,19 +202,19 @@ struct G {
     Ray click_ray = {};
     hmm_vec3 widget_original_pos = {};
     int drag_cld_group = 0;
-    int drag_cld_index = 0;
+    int drag_cld_face = 0;
     int drag_cld_vertex = 0;
     
     PH2CLD_Collision_Data cld = {};
     hmm_vec3 cld_origin = {};
     sg_pipeline cld_pipeline = {};
-	enum { cld_buffers_count = 4 };
+    enum { cld_buffers_count = 4 };
     CLD_Face_Buffer cld_face_buffers[cld_buffers_count] = {};
-	
-	sg_pipeline map_pipeline = {};
-	enum { map_buffers_max = 16 };
-	MAP_Geometry_Buffer map_buffers[map_buffers_max] = {};
-	int map_buffers_count = 0;
+
+    sg_pipeline map_pipeline = {};
+    enum { map_buffers_max = 16 };
+    MAP_Geometry_Buffer map_buffers[map_buffers_max] = {};
+    int map_buffers_count = 0;
 
     sg_buffer highlight_vertex_circle_buffer = {};
     sg_pipeline highlight_vertex_circle_pipeline = {};
@@ -472,16 +472,16 @@ static void init(void *userdata) {
         d.alpha_to_coverage_enabled = true;
         g.highlight_vertex_circle_pipeline = sg_make_pipeline(d);
     }
-	{
-		sg_buffer_desc d = {};
-		size_t MAP_MAX_VERTICES_PER_GEOMETRY = 320000;
-		size_t MAP_BUFFER_SIZE = MAP_MAX_VERTICES_PER_GEOMETRY * sizeof(MAP_Geometry_Vertex);
-		d.usage = SG_USAGE_DYNAMIC;
-		d.size = MAP_BUFFER_SIZE;
+    {
+        sg_buffer_desc d = {};
+        size_t MAP_MAX_VERTICES_PER_GEOMETRY = 320000;
+        size_t MAP_BUFFER_SIZE = MAP_MAX_VERTICES_PER_GEOMETRY * sizeof(MAP_Geometry_Vertex);
+        d.usage = SG_USAGE_DYNAMIC;
+        d.size = MAP_BUFFER_SIZE;
         for (auto &buffer : g.map_buffers) {
             buffer.buf = sg_make_buffer(d);
         }
-	}
+    }
     {
         const char *filename = "../cld/cld/ap64.cld";
         cld_load(g, filename);
@@ -501,7 +501,7 @@ static void init(void *userdata) {
                 fclose(f);
             };
 
-			// @Temporary @Debug
+            // @Temporary @Debug
             static char filedata[16 * 1024 * 1024];
             uint32_t file_len = (uint32_t)fread(filedata, 1, sizeof(filedata), f);
             struct PH2MAP__Header {
@@ -564,12 +564,12 @@ static void init(void *userdata) {
                         assert(geometry_header.opaque_group_offset < geometry_header.group_size);
                         assert(geometry_header.transparent_group_offset < geometry_header.group_size);
                         assert(geometry_header.decal_group_offset < geometry_header.group_size);
-						Log("%d", geometry_header.id);
+                        Log("%d", geometry_header.id);
 
-						static MAP_Geometry_Vertex vertices_buffer[320000];
-						enum { vertices_max = sizeof(vertices_buffer) / sizeof(vertices_buffer[0]) };
-						int vertices_count = 0;
-						
+                        static MAP_Geometry_Vertex vertices_buffer[320000];
+                        enum { vertices_max = sizeof(vertices_buffer) / sizeof(vertices_buffer[0]) };
+                        int vertices_count = 0;
+                        
                         ptr2 -= sizeof(geometry_header);
 
                         char *end2 = ptr2 + geometry_header.group_size;
@@ -783,7 +783,7 @@ static void init(void *userdata) {
                                             uint16_t currentIndex = GetIndex();
                                             for (int i = 2; i < inner_max; i++) {
                                                 auto get_vertex = [&] (int index) {
-													MAP_Geometry_Vertex result = {};
+                                                    MAP_Geometry_Vertex result = {};
                                                     char *vertex_ptr = vertex_buffer + index * vertex_size;
                                                     switch (vertex_size) {
                                                         case 0x14: {
@@ -792,8 +792,8 @@ static void init(void *userdata) {
                                                             result.position[0] = vert.position[0];
                                                             result.position[1] = vert.position[1];
                                                             result.position[2] = vert.position[2];
-															result.uv[0] = vert.uv[0];
-															result.uv[1] = vert.uv[1];
+                                                            result.uv[0] = vert.uv[0];
+                                                            result.uv[1] = vert.uv[1];
                                                         } break;
                                                         case 0x18: {
                                                             PH2MAP__Vertex18 vert = {};
@@ -801,9 +801,9 @@ static void init(void *userdata) {
                                                             result.position[0] = vert.position[0];
                                                             result.position[1] = vert.position[1];
                                                             result.position[2] = vert.position[2];
-															result.color = vert.color;
-															result.uv[0] = vert.uv[0];
-															result.uv[1] = vert.uv[1];
+                                                            result.color = vert.color;
+                                                            result.uv[0] = vert.uv[0];
+                                                            result.uv[1] = vert.uv[1];
                                                         } break;
                                                         case 0x20: {
                                                             PH2MAP__Vertex20 vert = {};
@@ -811,11 +811,11 @@ static void init(void *userdata) {
                                                             result.position[0] = vert.position[0];
                                                             result.position[1] = vert.position[1];
                                                             result.position[2] = vert.position[2];
-															result.normal[0] = vert.normal[0];
-															result.normal[1] = vert.normal[1];
-															result.normal[2] = vert.normal[2];
-															result.uv[0] = vert.uv[0];
-															result.uv[1] = vert.uv[1];
+                                                            result.normal[0] = vert.normal[0];
+                                                            result.normal[1] = vert.normal[1];
+                                                            result.normal[2] = vert.normal[2];
+                                                            result.uv[0] = vert.uv[0];
+                                                            result.uv[1] = vert.uv[1];
                                                         } break;
                                                         case 0x24: {
                                                             PH2MAP__Vertex24 vert = {};
@@ -823,12 +823,12 @@ static void init(void *userdata) {
                                                             result.position[0] = vert.position[0];
                                                             result.position[1] = vert.position[1];
                                                             result.position[2] = vert.position[2];
-															result.normal[0] = vert.normal[0];
-															result.normal[1] = vert.normal[1];
-															result.normal[2] = vert.normal[2];
-															result.color = vert.color;
-															result.uv[0] = vert.uv[0];
-															result.uv[1] = vert.uv[1];
+                                                            result.normal[0] = vert.normal[0];
+                                                            result.normal[1] = vert.normal[1];
+                                                            result.normal[2] = vert.normal[2];
+                                                            result.color = vert.color;
+                                                            result.uv[0] = vert.uv[0];
+                                                            result.uv[1] = vert.uv[1];
                                                         } break;
                                                     }
                                                     return result;
@@ -842,25 +842,25 @@ static void init(void *userdata) {
                                                 auto triangle_v1 = get_vertex(memory & 0xffff);
                                                 auto triangle_v2 = get_vertex(currentIndex);
                                                 assert(vertices_count + 2 < vertices_max);
-												vertices_buffer[vertices_count++] = triangle_v0;
-												vertices_buffer[vertices_count++] = triangle_v1;
-												vertices_buffer[vertices_count++] = triangle_v2;
+                                                vertices_buffer[vertices_count++] = triangle_v0;
+                                                vertices_buffer[vertices_count++] = triangle_v1;
+                                                vertices_buffer[vertices_count++] = triangle_v2;
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-						
-						if (vertices_count > 0) {
-							assert(g.map_buffers_count < g.map_buffers_max);
-							auto & map_buffer = g.map_buffers[g.map_buffers_count++];
-							sg_update_buffer(map_buffer.buf, sg_range { vertices_buffer, vertices_count * sizeof(vertices_buffer[0]) });
-							assert(vertices_count % 3 == 0);
-							map_buffer.num_vertices = vertices_count;
-							map_buffer.id = geometry_header.id;
-							//break;
-						}
+                        
+                        if (vertices_count > 0) {
+                            assert(g.map_buffers_count < g.map_buffers_max);
+                            auto & map_buffer = g.map_buffers[g.map_buffers_count++];
+                            sg_update_buffer(map_buffer.buf, sg_range { vertices_buffer, vertices_count * sizeof(vertices_buffer[0]) });
+                            assert(vertices_count % 3 == 0);
+                            map_buffer.num_vertices = vertices_count;
+                            map_buffer.id = geometry_header.id;
+                            //break;
+                        }
                         
                         ptr2 += geometry_header.group_size;
 
@@ -904,33 +904,30 @@ static void init(void *userdata) {
         d.layout.attrs[ATTR_cld_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
         d.depth.write_enabled = true;
         d.depth.compare = SG_COMPAREFUNC_GREATER;
-        //d.primitive_type = SG_PRIMITIVETYPE_POINTS;
-        //d.colors[0].blend.enabled = true;
-        //d.colors[0].blend.src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA;
-        //d.colors[0].blend.dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        //d.colors[0].blend.src_factor_alpha = SG_BLENDFACTOR_SRC_ALPHA;
-        //d.colors[0].blend.dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         g.cld_pipeline = sg_make_pipeline(d);
     }
-	{
-		sg_pipeline_desc d = {};
-		d.shader = sg_make_shader(map_shader_desc(sg_query_backend()));
-		d.layout.attrs[ATTR_map_vs_in_position].format = SG_VERTEXFORMAT_FLOAT3;
-		d.layout.attrs[ATTR_map_vs_in_normal].format = SG_VERTEXFORMAT_FLOAT3;
-		d.layout.attrs[ATTR_map_vs_in_color].format = SG_VERTEXFORMAT_UBYTE4N;
-		d.layout.attrs[ATTR_map_vs_in_uv].format = SG_VERTEXFORMAT_FLOAT2;
+    {
+        sg_pipeline_desc d = {};
+        d.shader = sg_make_shader(map_shader_desc(sg_query_backend()));
+        d.layout.attrs[ATTR_map_vs_in_position].format = SG_VERTEXFORMAT_FLOAT3;
+        d.layout.attrs[ATTR_map_vs_in_normal].format = SG_VERTEXFORMAT_FLOAT3;
+        d.layout.attrs[ATTR_map_vs_in_color].format = SG_VERTEXFORMAT_UBYTE4N;
+        d.layout.attrs[ATTR_map_vs_in_uv].format = SG_VERTEXFORMAT_FLOAT2;
         //d.primitive_type = SG_PRIMITIVETYPE_LINES;
-		d.depth.write_enabled = true;
-		d.depth.compare = SG_COMPAREFUNC_GREATER;
-		d.cull_mode = SG_CULLMODE_BACK;
-		d.face_winding = SG_FACEWINDING_CCW;
-		g.map_pipeline = sg_make_pipeline(d);
-	}
+        d.depth.write_enabled = true;
+        d.depth.compare = SG_COMPAREFUNC_GREATER;
+        d.cull_mode = SG_CULLMODE_BACK;
+        d.face_winding = SG_FACEWINDING_CCW;
+        g.map_pipeline = sg_make_pipeline(d);
+    }
 }
 
 // I should ask the community what they know about the units used in the game
 const float SCALE = 0.001f;
 const float widget_pixel_radius = 30;
+static float widget_radius(G &g, hmm_vec3 offset) {
+    return HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() * tanf(g.fov / 2);
+}
 
 static hmm_mat4 camera_rot(G &g) {
     // We pitch the camera by applying a rotation around X,
@@ -939,7 +936,7 @@ static hmm_mat4 camera_rot(G &g) {
     auto yaw_matrix = HMM_Rotate(g.yaw * (360 / TAU32), HMM_Vec3(0, 1, 0));
     return yaw_matrix * pitch_matrix;
 }
-Ray screen_to_ray(G &g, hmm_vec2 mouse_xy) {
+static Ray screen_to_ray(G &g, hmm_vec2 mouse_xy) {
     Ray ray = {};
     ray.pos = { g.cam_pos.X, g.cam_pos.Y, g.cam_pos.Z };
     hmm_vec2 ndc = { mouse_xy.X, mouse_xy.Y };
@@ -970,54 +967,70 @@ static void event(const sapp_event *e_, void *userdata) {
 
             if (g.cld.valid) {
                 float closest_t = INFINITY;
+                int hit_group = 0;
+                int hit_face_index = 0;
                 int hit_vertex = 0;
                 hmm_vec3 hit_widget_pos = {};
-                int vertices_to_raycast = 3;
-                if (g.cld.group_0_faces[0].quad) {
-                    vertices_to_raycast = 4;
-                }
-                for (int vertex_index = 0; vertex_index < vertices_to_raycast; vertex_index++) {
-                    hmm_vec4 ray_pos = { 0, 0, 0, 1 };
-                    ray_pos.XYZ = g.click_ray.pos;
-                    hmm_vec4 ray_dir = {};
-                    ray_dir.XYZ = g.click_ray.dir;
+                for (int group = 0; group < 4; group++) {
+                    PH2CLD_Face *faces = g.cld.group_0_faces;
+                    size_t num_faces = g.cld.group_0_faces_count;
+                    if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
+                    if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
+                    if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
+                    for (int face_index = 0; face_index < num_faces; face_index++) {
+                        PH2CLD_Face *face = &faces[face_index];
+                        int vertices_to_raycast = 3;
+                        if (face->quad) {
+                            vertices_to_raycast = 4;
+                        }
+                        for (int vertex_index = 0; vertex_index < vertices_to_raycast; vertex_index++) {
+                            hmm_vec4 ray_pos = { 0, 0, 0, 1 };
+                            ray_pos.XYZ = g.click_ray.pos;
+                            hmm_vec4 ray_dir = {};
+                            ray_dir.XYZ = g.click_ray.dir;
 
-                    float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[vertex_index];
-                    hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-                    hmm_vec3 origin = -g.cld_origin;
+                            float (&vertex_floats)[3] = face->vertices[vertex_index];
+                            hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+                            hmm_vec3 origin = -g.cld_origin;
 
-                    hmm_mat4 Tinv = HMM_Translate(-origin);
-                    hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
-                    hmm_mat4 Minv = Tinv * Sinv;
+                            hmm_mat4 Tinv = HMM_Translate(-origin);
+                            hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
+                            hmm_mat4 Minv = Tinv * Sinv;
 
-                    ray_pos = Minv * ray_pos;
-                    ray_dir = HMM_Normalize(Minv * ray_dir);
+                            ray_pos = Minv * ray_pos;
+                            ray_dir = HMM_Normalize(Minv * ray_dir);
 
-                    //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
-                    //Log("Minv*Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
+                            //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
+                            //Log("Minv*Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
 
-                    //Log("Vertex Pos = %f, %f, %f", vertex.X, vertex.Y, vertex.Z);
+                            //Log("Vertex Pos = %f, %f, %f", vertex.X, vertex.Y, vertex.Z);
 
-                    hmm_vec3 offset = -g.cld_origin + vertex;
-                    offset.X *= SCALE;
-                    offset.Y *= -SCALE;
-                    offset.Z *= -SCALE;
+                            hmm_vec3 offset = -g.cld_origin + vertex;
+                            offset.X *= SCALE;
+                            offset.Y *= -SCALE;
+                            offset.Z *= -SCALE;
 
-                    hmm_vec3 widget_pos = vertex;
-                    float widget_radius = HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() / SCALE;
+                            hmm_vec3 widget_pos = vertex;
+                            float radius = widget_radius(g, offset) / SCALE;
 
-                    auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, widget_radius);
-                    if (raycast.hit) {
-                        if (raycast.t < closest_t) {
-                            closest_t = raycast.t;
-                            hit_vertex = vertex_index;
-                            hit_widget_pos = widget_pos;
+                            auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, radius);
+                            if (raycast.hit) {
+                                if (raycast.t < closest_t) {
+                                    closest_t = raycast.t;
+                                    hit_group = group;
+                                    hit_face_index = face_index;
+                                    hit_vertex = vertex_index;
+                                    hit_widget_pos = widget_pos;
+                                }
+                            }
                         }
                     }
                 }
                 if (closest_t < INFINITY) {
                     g.widget_original_pos = hit_widget_pos;
                     g.control_state = ControlState::Dragging;
+                    g.drag_cld_group = hit_group;
+                    g.drag_cld_face = hit_face_index;
                     g.drag_cld_vertex = hit_vertex;
                 }
             }
@@ -1041,9 +1054,17 @@ static void event(const sapp_event *e_, void *userdata) {
             if (g.cld.valid) {
                 hmm_vec2 prev_mouse_pos = { e.mouse_x - e.mouse_dx, e.mouse_y - e.mouse_dy };
                 hmm_vec2 this_mouse_pos = { e.mouse_x, e.mouse_y };
+                
+                PH2CLD_Face *faces = g.cld.group_0_faces;
+                size_t num_faces = g.cld.group_0_faces_count;
+                if (g.drag_cld_group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
+                if (g.drag_cld_group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
+                if (g.drag_cld_group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
 
+                PH2CLD_Face *face = &faces[g.drag_cld_face];
+                
                 // @Temporary: @Deduplicate.
-                float (&vertex_floats)[3] = g.cld.group_0_faces[0].vertices[g.drag_cld_vertex];
+                float (&vertex_floats)[3] = face->vertices[g.drag_cld_vertex];
                 hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
                 hmm_vec3 origin = -g.cld_origin;
 
@@ -1192,13 +1213,13 @@ static void frame(void *userdata) {
             g.pitch = 0;
             g.yaw = 0;
         }
-		ImGui::Text("MAP Geometries:");
-		for (int i = 0; i < g.map_buffers_count; i++) {
-			ImGui::SameLine();
-			char b[32]; snprintf(b, sizeof b, "%d", g.map_buffers[i].id);
-			ImGui::Checkbox(b, &g.map_buffers[i].shown);
-		}
-		ImGui::Text("CLD Subgroups:");
+        ImGui::Text("MAP Geometries:");
+        for (int i = 0; i < g.map_buffers_count; i++) {
+            ImGui::SameLine();
+            char b[32]; snprintf(b, sizeof b, "%d", g.map_buffers[i].id);
+            ImGui::Checkbox(b, &g.map_buffers[i].shown);
+        }
+        ImGui::Text("CLD Subgroups:");
         {
             ImGui::PushID("CLD Subgroup Visibility Buttons");
             defer {
@@ -1307,7 +1328,7 @@ static void frame(void *userdata) {
             // (which equals the inverse in this case since it's just a rotation matrix).
             params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
 
-			sg_apply_pipeline(g.cld_pipeline);
+            sg_apply_pipeline(g.cld_pipeline);
             for (int i = 0; i < g.cld_buffers_count; i++) {
                 {
                     // I should also ask the community what the coordinate system is :)
@@ -1322,12 +1343,12 @@ static void frame(void *userdata) {
                 }
             }
 
-			sg_apply_pipeline(g.map_pipeline);
-			for (int i = 0; i < g.map_buffers_count; i++) {
-				if (!g.map_buffers[i].shown) continue;
+            sg_apply_pipeline(g.map_pipeline);
+            for (int i = 0; i < g.map_buffers_count; i++) {
+                if (!g.map_buffers[i].shown) continue;
                 {
                     // I should also ask the community what the coordinate system is :)
-					params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate({});
+                    params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate({});
                 }
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
                 {
@@ -1345,45 +1366,55 @@ static void frame(void *userdata) {
             sg_apply_pipeline(g.highlight_vertex_circle_pipeline);
             float screen_height = sapp_heightf();
             hmm_mat4 R = camera_rot(g);
-            int vertices_to_render = 3;
-            PH2CLD_Face *face = &g.cld.group_0_faces[0];
-            if (face->quad) {
-                vertices_to_render = 4;
-            }
-            for (int i = 0; i < vertices_to_render; i++) {
+            for (int group = 0; group < 4; group++) {
+                PH2CLD_Face *faces = g.cld.group_0_faces;
+                size_t num_faces = g.cld.group_0_faces_count;
+                if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
+                if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
+                if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
                 
-                float scale_factor = 1;
-                float alpha = 1;
-                if (g.control_state != ControlState::Normal) {
-                    alpha = 0.7f;
-                }
-                if (g.control_state == ControlState::Dragging) {
-                    if (i == g.drag_cld_vertex) {
-                        alpha = 1;
-                        scale_factor *= 0.5f;
-                    } else {
-                        alpha = 0.3f;
+                for (int face_index = 0; face_index < num_faces; face_index++) {
+                    PH2CLD_Face *face = &faces[face_index];
+                    int vertices_to_render = 3;
+                    if (face->quad) {
+                        vertices_to_render = 4;
                     }
-                }
-                params.in_color = hmm_vec4{1,1,1,alpha};
+                    for (int i = 0; i < vertices_to_render; i++) {
 
-                float (&vertex_floats)[3] = face->vertices[i];
-                hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-                hmm_vec3 offset = -g.cld_origin + vertex;
-                offset.X *= SCALE;
-                offset.Y *= -SCALE;
-                offset.Z *= -SCALE;
-                hmm_mat4 T = HMM_Translate(offset);
-                float scale = scale_factor * HMM_Length(g.cam_pos - offset) * widget_pixel_radius / screen_height;
-                hmm_mat4 S = HMM_Scale({scale, scale, scale});
-                hmm_mat4 M = T * R * S;
-                params.MVP = P * V * M;
-                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_highlight_vertex_circle_vs_params, SG_RANGE(params));
-                {
-                    sg_bindings b = {};
-                    b.vertex_buffers[0] = g.highlight_vertex_circle_buffer;
-                    sg_apply_bindings(b);
-                    sg_draw(0, 6, 1);
+                        float scale_factor = 1;
+                        float alpha = 1;
+                        if (g.control_state != ControlState::Normal) {
+                            alpha = 0.7f;
+                        }
+                        if (g.control_state == ControlState::Dragging) {
+                            if (group == g.drag_cld_group && face_index == g.drag_cld_face && i == g.drag_cld_vertex) {
+                                alpha = 1;
+                                scale_factor *= 0.5f;
+                            } else {
+                                alpha = 0.3f;
+                            }
+                        }
+                        params.in_color = hmm_vec4 { 1, 1, 1, alpha };
+
+                        float (&vertex_floats)[3] = face->vertices[i];
+                        hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+                        hmm_vec3 offset = -g.cld_origin + vertex;
+                        offset.X *= SCALE;
+                        offset.Y *= -SCALE;
+                        offset.Z *= -SCALE;
+                        hmm_mat4 T = HMM_Translate(offset);
+                        float scale = scale_factor * widget_radius(g, offset);
+                        hmm_mat4 S = HMM_Scale( { scale, scale, scale });
+                        hmm_mat4 M = T * R * S;
+                        params.MVP = P * V * M;
+                        sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_highlight_vertex_circle_vs_params, SG_RANGE(params));
+                        {
+                            sg_bindings b = {};
+                            b.vertex_buffers[0] = g.highlight_vertex_circle_buffer;
+                            sg_apply_bindings(b);
+                            sg_draw(0, 6, 1);
+                        }
+                    }
                 }
             }
             if (0) { // @Debug
