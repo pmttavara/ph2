@@ -280,7 +280,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_file_with_allocator(const c
     uintmax_t checked_filesize;
     size_t file_memory_length;
     void *file_memory;
-    result.valid = PH2CLD_false;
+    memset(&result, 0, sizeof(result));
     if (!filename) {
         return result;
     }
@@ -331,7 +331,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_file_memory_with_allocator(
     PH2CLD_Collision_Data result;
     size_t collision_memory_length = 0;
     void *collision_memory;
-    result.valid = PH2CLD_false;
+    memset(&result, 0, sizeof(result));
     if (!alloc_func) {
         return result;
     }
@@ -374,7 +374,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_file_memory_and_collision_m
     size_t collision_memory_bytes_needed;
     PH2CLD__Collision_Header header;
     PH2CLD_Collision_Data result;
-    result.valid = PH2CLD_false;
+    memset(&result, 0, sizeof(result));
     if (!file_data) return result;
     if (!collision_memory) return result;
     if (PH2CLD_cast(const char *, file_data) + file_bytes > PH2CLD_cast(const char *, collision_memory) &&
