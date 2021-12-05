@@ -19,6 +19,7 @@ template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
 //      - Scale that selection (with or without axis- and plane-alignment)
 //      - Delete that selection and gracefully handle the results of that deletion (removing degenerate faces etc.)
 //      - (Remember: these all need to include cylinders somehow!)
+//      - Render the AABB of all selected things
 //  - View any surface as a solid/shaded set of triangles with a wireframe overlaid
 //  - View any surface as only solid, only shaded, only wireframe, only vertex colours etc.
 //  - Lesson learned from Happenlance editor: Definitely need a base "Transform" struct so that you aren't
