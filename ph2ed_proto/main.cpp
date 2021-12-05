@@ -12,11 +12,20 @@ template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
 #define defer auto DEFER(__LINE__) = defer_dummy{} *[&]()
 #endif // defer
 
-#ifdef NDEBUG
-#define RELEASE 1
-#else
-#undef RELEASE
-#endif
+// With editor widgets, you should probably be able to:
+//  - Box-select a group of vertices or edges
+//      - Drag that selection as a group in any direction (with or without axis- and plane-alignment)
+//      - Rotate that selection around its center of geometry (with or without plane-alignment)
+//      - Scale that selection (with or without axis- and plane-alignment)
+//      - Delete that selection and gracefully handle the results of that deletion (removing degenerate faces etc.)
+//      - (Remember: these all need to include cylinders somehow!)
+//  - View any surface as a solid/shaded set of triangles with a wireframe overlaid
+//  - View any surface as only solid, only shaded, only wireframe, only vertex colours etc.
+//  - Lesson learned from Happenlance editor: Definitely need a base "Transform" struct so that you aren't
+//    reimplementing the same logic for N different "widget kinds" (in happenlance editor this was
+//    a huge pain because objects, sprites, particle emitters etc. all had scattered transform data.
+//    Unity Engine and friends absolutely make the right decision to have Transforms be fundamental bases to all
+//    editable things!)
 
 #define WIN32_LEAN_AND_MEAN
 #define VC_EXTRALEAN
@@ -35,7 +44,7 @@ static int assert_(const char *s) {
 }
 #define assert_STR_(LINE) #LINE
 #define assert_STR(LINE) assert_STR_(LINE)
-#ifdef RELEASE
+#ifndef NDEBUG
 #define assert(ignore) ((void)0)
 #else
 #define assert(e) ((e) || assert_("At " __FILE__ ":" assert_STR(__LINE__) ":\n\n" #e "\n\nPress Retry to debug.") && (__debugbreak(), 0))
@@ -405,7 +414,7 @@ static void init(void *userdata) {
     simgui_desc.no_default_font = true;
     simgui_desc.dpi_scale = sapp_dpi_scale();
     simgui_desc.sample_count = sapp_sample_count();
-#if RELEASE
+#ifndef NDEBUG
     simgui_desc.ini_filename = "imgui.ini";
 #endif
     simgui_setup(&simgui_desc);
@@ -1466,7 +1475,7 @@ sapp_desc sokol_main(int, char **) {
     d.sample_count = 4;
     d.swap_interval = 0;
     d.high_dpi = true;
-#if !RELEASE
+#ifndef NDEBUG
     d.win32_console_create = true;
 #endif
     d.html5_ask_leave_site = true;
