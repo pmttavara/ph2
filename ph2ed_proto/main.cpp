@@ -213,9 +213,9 @@ struct G {
     hmm_vec3 widget_original_pos = {};
     int select_cld_group = -1;
     int select_cld_face = -1;
-    int drag_cld_group = 0;
-    int drag_cld_face = 0;
-    int drag_cld_vertex = 0;
+    int drag_cld_group = -1;
+    int drag_cld_face = -1;
+    int drag_cld_vertex = -1;
     
     PH2CLD_Collision_Data cld = {};
     hmm_vec3 cld_origin = {};
@@ -401,7 +401,29 @@ Ray_Vs_Plane_Result ray_vs_plane(Ray ray, hmm_vec3 plane_point, hmm_vec3 plane_n
 
     return result;
 }
-
+Ray_Vs_Plane_Result ray_vs_triangle(Ray ray, hmm_vec3 a, hmm_vec3 b, hmm_vec3 c) {
+    hmm_vec3 normal = HMM_Normalize(HMM_Cross(b-a, c-a));
+    auto raycast = ray_vs_plane(ray, a, normal);
+    hmm_vec3 p = raycast.point;
+    hmm_vec3 ba = a - b;
+    hmm_vec3 ca = a - c;
+    hmm_vec3 bp = p - b;
+    hmm_vec3 cp = p - c;
+    float beta = 0;
+    {
+        hmm_vec3 v = ba - HMM_Dot(ba, ca) / HMM_LengthSquared(ca) * ca;
+        beta = 1 - HMM_Dot(v, bp) / HMM_Dot(v, ba);
+    }
+    float gamma = 0;
+    {
+        hmm_vec3 v = ca - HMM_Dot(ca, ba) / HMM_LengthSquared(ba) * ba;
+        gamma = 1 - HMM_Dot(v, cp) / HMM_Dot(v, ca);
+    }
+    float u = beta;
+    float v = gamma;
+    raycast.hit = raycast.hit && u >= 0 && v >= 0 && u + v <= 1;
+    return raycast;
+}
 
 static void init(void *userdata) {
     G &g = *(G *)userdata;
@@ -991,22 +1013,27 @@ static void event(const sapp_event *e_, void *userdata) {
                 int hit_vertex = -1;
                 hmm_vec3 hit_widget_pos = {};
                 for (int group = 0; group < 4; group++) {
+                    if (group != g.select_cld_group) {
+                        continue;
+                    }
+
                     PH2CLD_Face *faces = g.cld.group_0_faces;
                     size_t num_faces = g.cld.group_0_faces_count;
                     if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
                     if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
                     if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
                     for (int face_index = 0; face_index < num_faces; face_index++) {
+                        if (face_index != g.select_cld_face) {
+                            continue;
+                        }
+
                         PH2CLD_Face *face = &faces[face_index];
                         int vertices_to_raycast = 3;
                         if (face->quad) {
                             vertices_to_raycast = 4;
                         }
-                        for (int vertex_index = 0; vertex_index < vertices_to_raycast; vertex_index++) {
-                            if (group != g.select_cld_group || face_index != g.select_cld_face) {
-                                continue;
-                            }
 
+                        for (int vertex_index = 0; vertex_index < vertices_to_raycast; vertex_index++) {
                             float (&vertex_floats)[3] = face->vertices[vertex_index];
                             hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
                             //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
@@ -1033,27 +1060,6 @@ static void event(const sapp_event *e_, void *userdata) {
                                 }
                             }
                         }
-                        {
-                            hmm_vec3 a = { face->vertices[0][0], face->vertices[0][1], face->vertices[0][2] };
-                            hmm_vec3 b = { face->vertices[1][0], face->vertices[1][1], face->vertices[1][2] };
-                            hmm_vec3 c = { face->vertices[2][0], face->vertices[2][1], face->vertices[2][2] };
-                            hmm_vec3 normal = HMM_Normalize(HMM_Cross(b-a, c-a));
-                            auto raycast = ray_vs_plane( { ray_pos.XYZ, ray_dir.XYZ }, a, normal);
-                            float u = (HMM_Dot(raycast.point - a, b-a) - HMM_Dot(c-a, b-a)) / HMM_LengthSquared(b-a);
-                            float v = (HMM_Dot(raycast.point - a, c-a) - HMM_Dot(b-a, c-a)) / HMM_LengthSquared(c-a);
-                            if (face_index == 0 && group == 0) {
-                                Log("u = %f, v = %f, u + v = %f", u, v, u + v);
-                            }
-                            raycast.hit = raycast.hit && u >= 0 && v >= 0 && u + v <= 1;
-                            if (raycast.hit) {
-                                if (raycast.t < closest_t) {
-                                    closest_t = raycast.t;
-                                    hit_group = group;
-                                    hit_face_index = face_index;
-                                    hit_vertex = -1;
-                                }
-                            }
-                        }
                     }
                 }
                 if (closest_t < INFINITY) {
@@ -1061,21 +1067,63 @@ static void event(const sapp_event *e_, void *userdata) {
                     assert(hit_group >= 0);
                     assert(hit_group < 4);
                     assert(hit_face_index >= 0);
+                    assert(hit_vertex >= 0);
                     assert(hit_vertex < 4);
-                    if (hit_vertex >= 0) {
-                        g.control_state = ControlState::Dragging;
-                        assert(g.select_cld_group == g.drag_cld_group);
-                        assert(g.select_cld_face == g.drag_cld_face);
-                        g.drag_cld_group = hit_group;
-                        g.drag_cld_face = hit_face_index;
-                        g.drag_cld_vertex = hit_vertex;
-                    } else {
+                    assert(g.select_cld_group == hit_group);
+                    assert(g.select_cld_face == hit_face_index);
+                    g.control_state = ControlState::Dragging;
+                    g.drag_cld_group = hit_group;
+                    g.drag_cld_face = hit_face_index;
+                    g.drag_cld_vertex = hit_vertex;
+                } else {
+                    for (int group = 0; group < 4; group++) {
+                        PH2CLD_Face *faces = g.cld.group_0_faces;
+                        size_t num_faces = g.cld.group_0_faces_count;
+                        if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
+                        if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
+                        if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
+                        for (int face_index = 0; face_index < num_faces; face_index++) {
+                            PH2CLD_Face *face = &faces[face_index];
+                            int vertices_to_raycast = 3;
+                            if (face->quad) {
+                                vertices_to_raycast = 4;
+                            }
+                            {
+                                hmm_vec3 a = { face->vertices[0][0], face->vertices[0][1], face->vertices[0][2] };
+                                hmm_vec3 b = { face->vertices[1][0], face->vertices[1][1], face->vertices[1][2] };
+                                hmm_vec3 c = { face->vertices[2][0], face->vertices[2][1], face->vertices[2][2] };
+                                Ray ray = { ray_pos.XYZ, ray_dir.XYZ };
+                                auto raycast = ray_vs_triangle(ray, a, b, c);
+                                if (!raycast.hit) {
+                                    if (face->quad) {
+                                        hmm_vec3 d = { face->vertices[3][0], face->vertices[3][1], face->vertices[3][2] };
+                                        raycast = ray_vs_triangle(ray, a, c, d);
+                                    }
+                                }
+                                if (raycast.hit) {
+                                    if (raycast.t < closest_t) {
+                                        closest_t = raycast.t;
+                                        hit_group = group;
+                                        hit_face_index = face_index;
+                                        hit_vertex = -1;
+                                        Log("hit %d, %d", hit_group, hit_face_index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    assert(hit_vertex == -1);
+                    if (closest_t < INFINITY) {
                         g.select_cld_group = hit_group;
                         g.select_cld_face = hit_face_index;
+                    } else {
+                        g.select_cld_group = -1;
+                        g.select_cld_face = -1;
                     }
-                } else {
-                    g.select_cld_group = -1;
-                    g.select_cld_face = -1;
+                    g.control_state = ControlState::Normal;
+                    g.drag_cld_group = -1;
+                    g.drag_cld_face = -1;
+                    g.drag_cld_vertex = -1;
                 }
             }
         }
@@ -1141,7 +1189,7 @@ static void event(const sapp_event *e_, void *userdata) {
                     this_ray_pos = Minv * this_ray_pos;
                     this_ray_dir = HMM_Normalize(Minv * this_ray_dir);
 
-                    bool aligned_with_camera = false;
+                    bool aligned_with_camera = true;
                     if (aligned_with_camera) {
                         // Remember you gotta put the plane in the coordinate space of the cld file!
                         hmm_vec3 plane_normal = ((Sinv * camera_rot(g)) * hmm_vec4 { 0, 0, -1, 0 }).XYZ;
@@ -1411,6 +1459,10 @@ static void frame(void *userdata) {
             float screen_height = sapp_heightf();
             hmm_mat4 R = camera_rot(g);
             for (int group = 0; group < 4; group++) {
+                if (group != g.select_cld_group) {
+                    continue;
+                }
+
                 PH2CLD_Face *faces = g.cld.group_0_faces;
                 size_t num_faces = g.cld.group_0_faces_count;
                 if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
@@ -1418,6 +1470,10 @@ static void frame(void *userdata) {
                 if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
                 
                 for (int face_index = 0; face_index < num_faces; face_index++) {
+                    if (face_index != g.select_cld_face) {
+                        continue;
+                    }
+
                     PH2CLD_Face *face = &faces[face_index];
                     int vertices_to_render = 3;
                     if (face->quad) {
