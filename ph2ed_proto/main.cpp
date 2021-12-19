@@ -3,6 +3,10 @@
 // Parts of this code come from the Sokol libraries by Andre Weissflog
 // which are licensed under zlib/libpng license.
 // Dear Imgui is licensed under MIT License. https://github.com/ocornut/imgui/blob/master/LICENSE.txt
+
+#define _CRT_SECURE_NO_WARNINGS
+#define _NO_CRT_STDIO_INLINE
+
 #ifndef defer
 struct defer_dummy {};
 template <class F> struct deferrer { F f; ~deferrer() { f(); } };
@@ -66,15 +70,12 @@ static int assert_(const char *s) {
 #include "imgui.h"
 
 // Sokol libraries
-#define SOKOL_IMPL
-//#define SOKOL_LOG(s) Log("%s", s)
-#define SOKOL_D3D11
-//#define SOKOL_GLCORE33
 #include "sokol_app.h"
 #include "sokol_gfx.h"
 #include "sokol_imgui.h"
 
 #include <stdarg.h>
+#include <stdio.h>
 
 struct LogMsg {
     unsigned int colour = IM_COL32(127,127,127,255);
@@ -94,7 +95,6 @@ void LogC(uint32_t c, const char *fmt, ...) {
 #define LogC(c, fmt, ...) LogC(c, fmt, ##__VA_ARGS__)
 #define Log(fmt, ...) LogC(IM_COL32(127,127,127,255), fmt, ##__VA_ARGS__)
 
-#define HANDMADE_MATH_IMPLEMENTATION
 #include "HandmadeMath.h"
 
 #define PH2CLD_IMPLEMENTATION
@@ -103,34 +103,11 @@ void LogC(uint32_t c, const char *fmt, ...) {
 
 #include "shaders.glsl.h"
 
-// sokol_glue.h
-SOKOL_API_IMPL sg_context_desc sapp_sgcontext(void) {
-    sg_context_desc desc;
-    memset(&desc, 0, sizeof(desc));
-    desc.color_format = (sg_pixel_format) sapp_color_format();
-    desc.depth_format = (sg_pixel_format) sapp_depth_format();
-    desc.sample_count = sapp_sample_count();
-    desc.gl.force_gles2 = sapp_gles2();
-    desc.metal.device = sapp_metal_get_device();
-    desc.metal.renderpass_descriptor_cb = sapp_metal_get_renderpass_descriptor;
-    desc.metal.drawable_cb = sapp_metal_get_drawable;
-    desc.d3d11.device = sapp_d3d11_get_device();
-    desc.d3d11.device_context = sapp_d3d11_get_device_context();
-    desc.d3d11.render_target_view_cb = sapp_d3d11_get_render_target_view;
-    desc.d3d11.depth_stencil_view_cb = sapp_d3d11_get_depth_stencil_view;
-    desc.wgpu.device = sapp_wgpu_get_device();
-    desc.wgpu.render_view_cb = sapp_wgpu_get_render_view;
-    desc.wgpu.resolve_view_cb = sapp_wgpu_get_resolve_view;
-    desc.wgpu.depth_stencil_view_cb = sapp_wgpu_get_depth_stencil_view;
-    return desc;
-}
+sg_context_desc sapp_sgcontext(void);
 
 #ifdef _WIN32
 #pragma warning(disable : 4255)
 #pragma warning(disable : 4668)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Windows.h>
 static double get_time(void) {
     LARGE_INTEGER counter;
     static double invfreq;

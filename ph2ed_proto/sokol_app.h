@@ -1708,7 +1708,7 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
         #endif
     #endif
     #include <stdio.h>  /* freopen_s() */
-    #include <wchar.h>  /* wcslen() */
+    /* #include <wchar.h> */  /* wcslen() */ /* @Note: ASan has a broken wcslen() so we reimplement it */
 
     #pragma comment (lib, "kernel32")
     #pragma comment (lib, "user32")
@@ -6702,7 +6702,9 @@ _SOKOL_PRIVATE char** _sapp_win32_command_line_to_utf8_argv(LPWSTR w_command_lin
     if (w_argv == NULL) {
         _sapp_fail("Win32: failed to parse command line");
     } else {
-        size_t size = wcslen(w_command_line) * 4;
+        /* size_t size = wcslen(w_command_line) * 4; */ /* @Note: ASan has a broken wcslen() so we reimplement it */
+        size_t size = 0;
+        while (w_command_line[size]) size++;
         argv = (char**) SOKOL_CALLOC(1, ((size_t)argc + 1) * sizeof(char*) + size);
         SOKOL_ASSERT(argv);
         args = (char*) &argv[argc + 1];
