@@ -787,11 +787,14 @@ static void init(void *userdata) {
                                             outer_max = mesh_part.strip_length;
                                             inner_max = mesh_part.strip_count;
                                         }
-#define GetIndex() (assert(indices_index < indices_count), indices[indices_index++])
+                                        auto get_index = [&] {
+                                            assert(indices_index < indices_count);
+                                            return indices[indices_index++];
+                                        };
                                         for (int strip_index = 0; strip_index < outer_max; strip_index++) {
-                                            int memory = GetIndex() << 0x10;
+                                            int memory = get_index() << 0x10;
                                             int mask = 0xFFFF0000;
-                                            uint16_t currentIndex = GetIndex();
+                                            uint16_t currentIndex = get_index();
                                             for (int i = 2; i < inner_max; i++) {
                                                 auto get_vertex = [&] (int index) {
                                                     MAP_Geometry_Vertex result = {};
@@ -847,7 +850,7 @@ static void init(void *userdata) {
                                                 memory = (memory & mask) + (currentIndex << (0x10 & mask));
                                                 mask ^= 0xFFFFFFFF;
                                                 
-                                                currentIndex = GetIndex();
+                                                currentIndex = get_index();
                                                 
                                                 auto triangle_v0 = get_vertex(memory >> 0x10);
                                                 auto triangle_v1 = get_vertex(memory & 0xffff);
@@ -891,7 +894,91 @@ static void init(void *userdata) {
                     assert(ptr2 == ptr);
                 } else if (subfile_header.type == 2) { // Texture subfile
                     assert(ptr + subfile_header.length <= end);
-                    ptr += subfile_header.length;
+                    auto end = ptr + subfile_header.length;
+                    struct PH2MAP__Texture_Subfile_Header {
+                        uint32_t magic;
+                        uint32_t pad[2];
+                        uint32_t always1;
+                    };
+                    PH2MAP__Texture_Subfile_Header texture_subfile_header = {};
+                    Read(ptr, texture_subfile_header);
+                    assert(texture_subfile_header.magic == 0x19990901);
+                    assert(texture_subfile_header.pad[0] == 0);
+                    assert(texture_subfile_header.pad[1] == 0);
+                    assert(texture_subfile_header.always1 == 1);
+                    for (;;) {
+                        {
+                            // "read until the first int of the line is 0, and then skip that line"
+                            assert(ptr + 16 <= end);
+                            auto ptr2 = ptr;
+                            uint32_t line_check = 0;
+                            Read(ptr2, line_check);
+                            if (line_check == 0) {
+                                ptr += 16;
+                                break;
+                            }
+                        }
+                        struct PH2MAP__BC_Texture_Header {
+                            uint32_t id;
+                            uint16_t width;
+                            uint16_t height;
+                            uint16_t width2;
+                            uint16_t height2;
+                            uint32_t sprite_count;
+                            uint16_t unknown;
+                            uint16_t id2;
+                            uint32_t pad[3];
+                        };
+                        PH2MAP__BC_Texture_Header bc_texture_header = {};
+                        Read(ptr, bc_texture_header);
+                        assert(bc_texture_header.id <= 0xffff);
+                        assert(bc_texture_header.width == bc_texture_header.width2);
+                        assert(bc_texture_header.height == bc_texture_header.height2);
+                        // @Note: the docs say id2 == id, but it looks like sometimes id2 == 1 etc. :(
+                        // assert(bc_texture_header.id == bc_texture_header.id2);
+                        assert((bc_texture_header.unknown >= 0x1 && bc_texture_header.unknown <= 0x10) ||
+                            bc_texture_header.unknown == 0x28);
+                        assert(bc_texture_header.pad[0] == 0);
+                        assert(bc_texture_header.pad[1] == 0);
+                        assert(bc_texture_header.pad[2] == 0);
+                        for (size_t sprite_index = 0; sprite_index < bc_texture_header.sprite_count; sprite_index++) {
+                            struct PH2MAP__Sprite_Header {
+                                uint32_t id;
+                                uint16_t x;
+                                uint16_t y;
+                                uint16_t width;
+                                uint16_t height;
+                                uint32_t format;
+                            };
+                            struct PH2MAP__Sprite_Pixel_Header {
+                                uint32_t data_length;
+                                uint32_t data_length_plus_header;
+                                uint32_t pad;
+                                uint32_t always0x99000000;
+                            };
+                            PH2MAP__Sprite_Header sprite_header = {};
+                            PH2MAP__Sprite_Pixel_Header pixel_header = {};
+                            Read(ptr, sprite_header);
+                            Read(ptr, pixel_header);
+
+                            assert(sprite_header.id <= 0xffff);
+                            assert(sprite_header.format == 0x100 ||
+                                sprite_header.format == 0x102 || 
+                                sprite_header.format == 0x103 || 
+                                sprite_header.format == 0x104);
+
+                            assert(pixel_header.data_length + sizeof(PH2MAP__Sprite_Pixel_Header) == pixel_header.data_length_plus_header);
+                            assert(pixel_header.pad == 0);
+                            assert(pixel_header.always0x99000000 == 0x99000000);
+
+                            auto pixels_data = ptr; 
+                            size_t pixels_len = pixel_header.data_length;
+                            auto pixels_end = pixels_data + pixels_len;
+                            assert(pixels_end <= end);
+                            ptr = pixels_end;
+                        }
+                    }
+                    ptr = end; // @Temporary
                 } else {
                     assert(0);
                 }
