@@ -429,7 +429,7 @@ static void init(void *userdata) {
     G &g = *(G *)userdata;
     { // @Temporary @Remove
         auto hwnd = sapp_win32_get_hwnd();
-        MoveWindow((HWND)hwnd, -1910, -300, 1900, 1000, false);
+        MoveWindow((HWND)hwnd, -1910, 0, 1900, 1000, false);
     }
     g.last_time = get_time();
     sg_desc desc = {};
@@ -517,7 +517,7 @@ static void init(void *userdata) {
         }
     }
     {
-        const char *filename = "../cld/cld/ap64.cld";
+        const char *filename = "../cld/cld/ob01.cld";
         cld_load(g, filename);
     }
     { // @Temporary @Debug @Remove
@@ -1200,6 +1200,38 @@ static void event(const sapp_event *e_, void *userdata) {
                         assert(raycast.hit);
                         hmm_vec3 drag_offset = click_raycast.point - g.widget_original_pos;
                         hmm_vec3 target = raycast.point - drag_offset;
+                        if (e.modifiers & SAPP_MODIFIER_ALT) {
+                            for (int group = 0; group < 4; group++) {
+                                PH2CLD_Face *faces = g.cld.group_0_faces;
+                                size_t num_faces = g.cld.group_0_faces_count;
+                                if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
+                                if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
+                                if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
+                                for (int face_index = 0; face_index < num_faces; face_index++) {
+                                    if (group == g.drag_cld_group && face_index == g.drag_cld_face) {
+                                        continue;
+                                    }
+
+                                    PH2CLD_Face *face = &faces[face_index];
+                                    int vertices_to_snap = 3;
+                                    if (face->quad) {
+                                        vertices_to_snap = 4;
+                                    }
+
+                                    for (int vertex_index = 0; vertex_index < vertices_to_snap; vertex_index++) {
+                                        float (&vertex_floats)[3] = face->vertices[vertex_index];
+                                        hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+
+                                        hmm_vec3 disp = vertex - target;
+                                        float dist = HMM_Length(disp);
+                                        if (dist < 150) {
+                                            target = vertex;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         vertex_floats[0] = target.X;
                         vertex_floats[1] = target.Y;
                         vertex_floats[2] = target.Z;
@@ -1342,6 +1374,42 @@ static void frame(void *userdata) {
                         g.subgroup_visible[i] = false;
                     }
                 }
+            }
+        }
+        {
+            PH2CLD_Face *face = nullptr;
+            bool is_quad = false;
+            if (g.select_cld_group >= 0 && g.select_cld_face >= 0) {
+                PH2CLD_Face *faces = g.cld.group_0_faces;
+                size_t num_faces = g.cld.group_0_faces_count;
+                if (g.select_cld_group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
+                if (g.select_cld_group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
+                if (g.select_cld_group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
+
+                face = &faces[g.select_cld_face];
+                is_quad = face->quad;
+            }
+            if (!face) {
+                ImGui::BeginDisabled();
+            }
+            defer {
+                if (!face) {
+                    ImGui::EndDisabled();
+                }
+            };
+            if (ImGui::Checkbox("Quad", &is_quad)) {
+                face->quad = is_quad;
+                if (face->quad) {
+                    // Build a parallelogram out of vertices v0, v1, and v2. v3 = v2 + (v0 - v1)
+                    face->vertices[3][0] = face->vertices[2][0] + face->vertices[0][0] - face->vertices[1][0];
+                    face->vertices[3][1] = face->vertices[2][1] + face->vertices[0][1] - face->vertices[1][1];
+                    face->vertices[3][2] = face->vertices[2][2] + face->vertices[0][2] - face->vertices[1][2];
+                } else {
+                    face->vertices[3][0] = 0;
+                    face->vertices[3][1] = 0;
+                    face->vertices[3][2] = 0;
+                }
+                g.cld_must_update = true;
             }
         }
     }

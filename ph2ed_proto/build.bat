@@ -7,6 +7,6 @@ set "INCLUDE=%vctoolsdir%\include;%winkits10include%\ucrt;%winkits8dir%\include\
 set "LIB=%vctoolsdir%\lib\amd64;%winkits8dir%\lib\winv6.3\um\x64;%winkits10lib%\ucrt\x64;"
 set "PATH=%vctoolsdir%\bin\amd64;%PATH%"
 sokol-shdc -i shaders.glsl -o shaders.glsl.h --slang hlsl5:glsl330 --bytecode || exit /b 1
-cl -Od -Z7 -nologo -W4 -WX -wd4189 -EHsc- main.cpp -c -Fomain.obj || exit /b 1
-cl -Od -Z7 -nologo -W4 -WX -wd4189 -EHsc- imgui_full.cpp -c -Foimgui_full.obj || exit /b 1
+cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4800 -EHa- main.cpp -c -Fomain.obj || exit /b 1
+cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4800 -EHa- imgui_full.cpp -c -Foimgui_full.obj || exit /b 1
 link -debug -nologo main.obj imgui_full.obj /out:ph2ed_proto.exe || exit /b 1

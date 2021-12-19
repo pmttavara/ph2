@@ -86,7 +86,7 @@ void main() {
     float light = clamp(dot(N, L), 0, 1);
     frag_color.rgb = color.rgb;
     frag_color.a = 1;
-    // frag_color += vec4(light);
+    frag_color.rgb *= vec3(light);
     // frag_color = vec4((uv + 1) / 3, 0, 1);
     // frag_color = vec4(uv, 0, 1);
     // frag_color = color;
