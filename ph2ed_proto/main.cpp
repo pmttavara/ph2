@@ -208,6 +208,9 @@ struct G {
     sg_buffer highlight_vertex_circle_buffer = {};
     sg_pipeline highlight_vertex_circle_pipeline = {};
 
+    sg_image textures[65536] = {};
+    int texture_ui_selected = 0;
+
     bool cld_must_update = false;
     bool subgroup_visible[16] = {true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true};
 };
@@ -506,7 +509,7 @@ static void init(void *userdata) {
             // char b[260 + sizeof("map/")];
             // snprintf(b, sizeof(b), "map/%s", find_data.name);
             // FILE *f = PH2CLD__fopen(b, "rb");
-            FILE *f = PH2CLD__fopen("map/ap64.map", "rb");
+            FILE *f = PH2CLD__fopen("map/ob01.map", "rb");
             assert(f);
             defer {
                 fclose(f);
@@ -974,6 +977,25 @@ static void init(void *userdata) {
                             auto pixels_data = ptr; 
                             size_t pixels_len = pixel_header.data_length;
                             auto pixels_end = pixels_data + pixels_len;
+                            if (pixels_len) { // @Temporary
+                                // @Temporary
+                                assert(g.textures[bc_texture_header.id].id == 0);
+                                sg_image_desc d = {};
+                                d.width = sprite_header.width;
+                                d.height = sprite_header.height;
+                                if (sprite_header.format == 0x100 || sprite_header.format == 0x103) {
+                                    d.pixel_format = SG_PIXELFORMAT_BC1_RGBA;
+                                } else if (sprite_header.format == 0x102 || sprite_header.format == 0x104) {
+                                    d.pixel_format = SG_PIXELFORMAT_BC2_RGBA;
+                                } else {
+                                    assert(false);
+                                }
+                                d.min_filter = SG_FILTER_LINEAR;
+                                d.mag_filter = SG_FILTER_LINEAR;
+                                d.data.subimage[0][0] = { pixels_data, pixels_len };
+                                g.textures[bc_texture_header.id] = sg_make_image(d);
+                                assert(g.textures[bc_texture_header.id].id);
+                            }
                             assert(pixels_end <= end);
                             ptr = pixels_end;
                         }
@@ -1474,6 +1496,55 @@ static void frame(void *userdata) {
                     face->vertices[3][2] = 0;
                 }
                 g.cld_must_update = true;
+            }
+        }
+    }
+    {
+        ImGui::SetNextWindowPos(ImVec2 { 60, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(256, 256), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Textures");
+        defer {
+            ImGui::End();
+        };
+        auto size = ImGui::GetWindowSize();
+        {
+            ImGui::BeginChild("texture_list", ImVec2(80, size.y - 50));
+            defer {
+                ImGui::EndChild();
+            };
+            for (int i = 0; i < 65536; i++) {
+                if (g.textures[i].id) {
+                    char b[16]; snprintf(b, sizeof b, "ID %d", i);
+                    if (ImGui::Selectable(b, g.texture_ui_selected == i)) {
+                        if (g.texture_ui_selected == i) {
+                            g.texture_ui_selected = 0;
+                        } else {
+                            g.texture_ui_selected = i;
+                        }
+                    }
+                }
+            }
+        }
+        ImGui::SameLine(0,-1);
+        if (g.texture_ui_selected != 0) {
+            ImGui::BeginChild("texture_panel");
+            defer {
+                ImGui::EndChild();
+            };
+            sg_image_info info = sg_query_image_info(g.textures[g.texture_ui_selected]);
+            float w = (float)info.width; 
+            float h = (float)info.height;
+            float aspect = w / h;
+            if (w > size.x - 100) {
+                w = size.x - 100;
+                h = w / aspect;
+            }
+            if (h > size.y - 50) {
+                h = size.y - 50;
+                w = h * aspect;
+            }
+            if (w > 0 && h > 0) {
+                ImGui::Image((ImTextureID)(uintptr_t)g.textures[g.texture_ui_selected].id, ImVec2(w, h));
             }
         }
     }
