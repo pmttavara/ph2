@@ -16,6 +16,8 @@ template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
 #define defer auto DEFER(__LINE__) = defer_dummy{} *[&]()
 #endif // defer
 
+#define countof(x) (sizeof(x) / sizeof(*(x)))
+
 // With editor widgets, you should probably be able to:
 //  - Box-select a group of vertices or edges
 //      - Drag that selection as a group in any direction (with or without axis- and plane-alignment)
@@ -287,229 +289,22 @@ static void cld_load(G &g, const char *filename) {
     cld_upload(g);
     g.cld_must_update = true;
 }
-
-static void imgui_do_console(G &g) {
-    ImGui::SetNextWindowPos(ImVec2 { sapp_width() * 0.66f, sapp_height() * 0.66f }, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2 { sapp_width() * 0.32f, sapp_height() * 0.32f }, ImGuiCond_FirstUseEver);
-    ImGui::Begin("Console");
-    defer {
-        ImGui::End();
-    };
-    {
-        ImGui::BeginChild("scrolling", ImVec2(0, -24 * ImGui::GetIO().FontGlobalScale), false, ImGuiWindowFlags_HorizontalScrollbar);
-        // @Hack: For some reason pushing the item width as wrap pos wraps at 2/3rds the window width, so just multiply by 1.5 :)
-        ImGui::PushTextWrapPos(ImGui::CalcItemWidth() * 3.0f / 2);
-        defer {
-            ImGui::PopTextWrapPos();
-            ImGui::EndChild();
-        };
-        int log_start = (int)log_buf_index - LOG_MAX;
-        if (log_start < 0) {
-            log_start = 0;
-        }
-        for (int i = log_start; i < log_buf_index; i++) {
-            ImGui::PushStyleColor(ImGuiCol_Text, log_buf[i % LOG_MAX].colour);
-            ImGui::TextWrapped("%s", log_buf[i % LOG_MAX].buf);
-            ImGui::PopStyleColor();
-        }
-        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
-            ImGui::SetScrollHereY(1.0f);
+static void map_load(G &g, const char *filename) {
+    //for (int i = 0; i < g.map_buffers_count; i++) {
+        //sg_destroy_buffer(g.map_buffers[i].buf);
+        //g.map_buffers[i] = {};
+    //}
+    g.map_buffers_count = 0;
+    for (int i = 0; i < countof(g.textures); i++) {
+        if (g.textures[i].id) {
+            sg_destroy_image(g.textures[i]);
+            g.textures[i].id = 0;
         }
     }
-    char buf[sizeof(LogMsg::buf)] = {};
-    ImGui::Text("Command:");
-    ImGui::SameLine();
-    if (ImGui::InputText("###console input", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
-        // Process buf
-        LogC(IM_COL32_WHITE, "> %s", buf);
-        if (memcmp("load ", buf, 5) == 0) {
-            char *p = buf + 5;
-            while (isspace(*p)) p++;
-            cld_load(g, p);
-        } else {
-            Log("Unkown command :)");
-        }
-        ImGui::SetKeyboardFocusHere(-1);
-    }
-}
-
-struct Ray_Vs_Aligned_Circle_Result {
-    bool hit = false;
-    float t = 0;
-    hmm_vec3 closest_point = {};
-    float distance_to_closest_point = {};
-};
-Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(hmm_vec3 ro, hmm_vec3 rd, hmm_vec3 so, float r) {
-    Ray_Vs_Aligned_Circle_Result result = {};
-    result.t = HMM_Dot(so - ro, rd);
-    //Log("Dot %f", result.t);
-    result.closest_point = ro + rd * result.t;
-    //Log("Closest Point %f, %f, %f", result.closest_point.X, result.closest_point.Y, result.closest_point.Z);
-    result.distance_to_closest_point = HMM_Length(result.closest_point - so);
-    //Log("Distance %f (out of %f)", result.distance_to_closest_point, r);
-    if (result.distance_to_closest_point <= r) {
-        result.hit = true;
-    }
-    return result;
-}
-
-static inline float abs(float x) { return x >= 0 ? x : -x; }
-
-struct Ray_Vs_Plane_Result {
-    bool hit = false;
-    float t = 0;
-    hmm_vec3 point = {};
-};
-Ray_Vs_Plane_Result ray_vs_plane(Ray ray, hmm_vec3 plane_point, hmm_vec3 plane_normal) {
-    Ray_Vs_Plane_Result result = {};
-
-    assert(HMM_Length(plane_normal) != 0);
-    assert(HMM_Length(ray.dir) != 0);
-    plane_normal = HMM_Normalize(plane_normal);
-    
-    hmm_vec3 displacement = plane_point - ray.pos;
-    float distance_to_origin = HMM_Dot(displacement, plane_normal);
-    float cos_theta = HMM_Dot(ray.dir, plane_normal);
-    if (abs(cos_theta) < 0.0001) {
-        result.hit = abs(distance_to_origin) < 0.0001;
-        result.t = 0;
-    } else {
-        result.t = distance_to_origin / cos_theta;
-        result.hit = result.t >= 0;
-    }
-    result.point = ray.pos + ray.dir * result.t;
-
-    return result;
-}
-Ray_Vs_Plane_Result ray_vs_triangle(Ray ray, hmm_vec3 a, hmm_vec3 b, hmm_vec3 c) {
-    hmm_vec3 normal = HMM_Normalize(HMM_Cross(b-a, c-a));
-    auto raycast = ray_vs_plane(ray, a, normal);
-    hmm_vec3 p = raycast.point;
-    hmm_vec3 ba = a - b;
-    hmm_vec3 ca = a - c;
-    hmm_vec3 bp = p - b;
-    hmm_vec3 cp = p - c;
-    float beta = 0;
+    g.texture_ui_selected = 0;
     {
-        hmm_vec3 v = ba - HMM_Dot(ba, ca) / HMM_LengthSquared(ca) * ca;
-        beta = 1 - HMM_Dot(v, bp) / HMM_Dot(v, ba);
-    }
-    float gamma = 0;
-    {
-        hmm_vec3 v = ca - HMM_Dot(ca, ba) / HMM_LengthSquared(ba) * ba;
-        gamma = 1 - HMM_Dot(v, cp) / HMM_Dot(v, ca);
-    }
-    float u = beta;
-    float v = gamma;
-    raycast.hit = raycast.hit && u >= 0 && v >= 0 && u + v <= 1;
-    return raycast;
-}
-
-static void init(void *userdata) {
-    G &g = *(G *)userdata;
-    { // @Temporary @Remove
-        auto hwnd = sapp_win32_get_hwnd();
-        MoveWindow((HWND)hwnd, -1910, 0, 1900, 1000, false);
-    }
-    g.last_time = get_time();
-    sg_desc desc = {};
-    desc.context = sapp_sgcontext();
-    sg_setup(&desc);
-    simgui_desc_t simgui_desc = {};
-    simgui_desc.no_default_font = true;
-    simgui_desc.dpi_scale = sapp_dpi_scale();
-    simgui_desc.sample_count = sapp_sample_count();
-#ifdef NDEBUG
-    simgui_desc.ini_filename = "imgui.ini";
-#endif
-    simgui_setup(&simgui_desc);
-    {
-        ImGuiIO &io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-
-        ImFontConfig fontCfg;
-        fontCfg.FontDataOwnedByAtlas = false;
-        fontCfg.OversampleH = 2;
-        fontCfg.OversampleV = 2;
-        fontCfg.RasterizerMultiply = 1.5f;
-        io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/consola.ttf", 16, &fontCfg);
-        
-        // create font texture for the custom font
-        unsigned char* font_pixels;
-        int font_width, font_height;
-        io.Fonts->GetTexDataAsRGBA32(&font_pixels, &font_width, &font_height);
-        sg_image_desc img_desc = {};
-        img_desc.width = font_width;
-        img_desc.height = font_height;
-        img_desc.pixel_format = SG_PIXELFORMAT_RGBA8;
-        img_desc.wrap_u = SG_WRAP_CLAMP_TO_EDGE;
-        img_desc.wrap_v = SG_WRAP_CLAMP_TO_EDGE;
-        img_desc.min_filter = SG_FILTER_LINEAR;
-        img_desc.mag_filter = SG_FILTER_LINEAR;
-        img_desc.data.subimage[0][0].ptr = font_pixels;
-        img_desc.data.subimage[0][0].size = font_width * font_height * 4;
-        io.Fonts->TexID = (ImTextureID)(uintptr_t) sg_make_image(&img_desc).id;
-    }
-    {
-        sg_buffer_desc d = {};
-
-        // @Note: 58254 is >2x all CLD faces in all SH2 rooms combined
-        // and yields a 4MB buffer per group.
-        size_t CLD_MAX_FACES_PER_GROUP = 58254;
-        size_t CLD_MAX_TRIANGLES_PER_GROUP = CLD_MAX_FACES_PER_GROUP * 2;
-        size_t CLD_MAX_VERTICES_PER_GROUP = CLD_MAX_TRIANGLES_PER_GROUP * 3;
-        size_t CLD_MAX_FLOATS_PER_GROUP = CLD_MAX_VERTICES_PER_GROUP * 3;
-        size_t CLD_GROUP_BUFFER_SIZE = CLD_MAX_FLOATS_PER_GROUP * sizeof(float);
-        d.usage = SG_USAGE_DYNAMIC;
-        d.size = CLD_GROUP_BUFFER_SIZE;
-        for (auto &buffer : g.cld_face_buffers) {
-            buffer.buf = sg_make_buffer(d);
-        }
-    }
-    {
-        sg_buffer_desc d = {};
-        float vertices[] = {
-            -1, -1, 0,
-            +1, -1, 0,
-            -1, +1, 0,
-            -1, +1, 0,
-            +1, -1, 0,
-            +1, +1, 0,
-        };
-        d.data = SG_RANGE(vertices);
-        g.highlight_vertex_circle_buffer = sg_make_buffer(d);
-    }
-    {
-        sg_pipeline_desc d = {};
-        d.shader = sg_make_shader(highlight_vertex_circle_shader_desc(sg_query_backend()));
-        d.layout.attrs[ATTR_highlight_vertex_circle_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
-        d.alpha_to_coverage_enabled = true;
-        g.highlight_vertex_circle_pipeline = sg_make_pipeline(d);
-    }
-    {
-        sg_buffer_desc d = {};
-        size_t MAP_MAX_VERTICES_PER_GEOMETRY = 320000;
-        size_t MAP_BUFFER_SIZE = MAP_MAX_VERTICES_PER_GEOMETRY * sizeof(MAP_Geometry_Vertex);
-        d.usage = SG_USAGE_DYNAMIC;
-        d.size = MAP_BUFFER_SIZE;
-        for (auto &buffer : g.map_buffers) {
-            buffer.buf = sg_make_buffer(d);
-        }
-    }
-    {
-        const char *filename = "../cld/cld/ob01.cld";
-        cld_load(g, filename);
-    }
-    { // @Temporary @Debug @Remove
-        struct _finddata_t find_data;
-        intptr_t directory = _findfirst("map/*.map", &find_data);
-        assert(directory >= 0);
-        // while (1)
         {
-            // char b[260 + sizeof("map/")];
-            // snprintf(b, sizeof(b), "map/%s", find_data.name);
-            // FILE *f = PH2CLD__fopen(b, "rb");
-            FILE *f = PH2CLD__fopen("map/ob01.map", "rb");
+            FILE *f = PH2CLD__fopen(filename, "rb");
             assert(f);
             defer {
                 fclose(f);
@@ -1009,14 +804,243 @@ static void init(void *userdata) {
             for (; ptr < end; ptr++) {
                 assert(*ptr == 0);
             }
-            //if (_findnext(directory, &find_data) < 0) {
-            //    if (errno == ENOENT) break;
-            //    else assert(0);
-            //}
         }
-        _findclose(directory);
-        fflush(stdout);
     }
+}
+static void test_all_maps(G &g) {
+    struct _finddata_t find_data;
+    intptr_t directory = _findfirst("map/*.map", &find_data);
+    assert(directory >= 0);
+    while (1) {
+        char b[260 + sizeof("map/")];
+        snprintf(b, sizeof(b), "map/%s", find_data.name);
+        map_load(g, b);
+        if (_findnext(directory, &find_data) < 0) {
+            if (errno == ENOENT) break;
+            else assert(0);
+        }
+    }
+    _findclose(directory);
+    fflush(stdout);
+}
+
+static void imgui_do_console(G &g) {
+    ImGui::SetNextWindowPos(ImVec2 { sapp_width() * 0.66f, sapp_height() * 0.66f }, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2 { sapp_width() * 0.32f, sapp_height() * 0.32f }, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Console");
+    defer {
+        ImGui::End();
+    };
+    {
+        ImGui::BeginChild("scrolling", ImVec2(0, -24 * ImGui::GetIO().FontGlobalScale), false, ImGuiWindowFlags_HorizontalScrollbar);
+        // @Hack: For some reason pushing the item width as wrap pos wraps at 2/3rds the window width, so just multiply by 1.5 :)
+        ImGui::PushTextWrapPos(ImGui::CalcItemWidth() * 3.0f / 2);
+        defer {
+            ImGui::PopTextWrapPos();
+            ImGui::EndChild();
+        };
+        int log_start = (int)log_buf_index - LOG_MAX;
+        if (log_start < 0) {
+            log_start = 0;
+        }
+        for (int i = log_start; i < log_buf_index; i++) {
+            ImGui::PushStyleColor(ImGuiCol_Text, log_buf[i % LOG_MAX].colour);
+            ImGui::TextWrapped("%s", log_buf[i % LOG_MAX].buf);
+            ImGui::PopStyleColor();
+        }
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+            ImGui::SetScrollHereY(1.0f);
+        }
+    }
+    char buf[sizeof(LogMsg::buf)] = {};
+    ImGui::Text("Command:");
+    ImGui::SameLine();
+    if (ImGui::InputText("###console input", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+        // Process buf
+        LogC(IM_COL32_WHITE, "> %s", buf);
+        if (memcmp("cld_load ", buf, sizeof("cld_load ") - 1) == 0) {
+            char *p = buf + sizeof("cld_load ") - 1;
+            while (isspace(*p)) p++;
+            cld_load(g, p);
+        } else if (memcmp("map_load ", buf, sizeof("map_load ") - 1) == 0) {
+            char *p = buf + sizeof("map_load ") - 1;
+            while (isspace(*p)) p++;
+            map_load(g, p);
+        } else {
+            Log("Unkown command :)");
+        }
+        ImGui::SetKeyboardFocusHere(-1);
+    }
+}
+
+struct Ray_Vs_Aligned_Circle_Result {
+    bool hit = false;
+    float t = 0;
+    hmm_vec3 closest_point = {};
+    float distance_to_closest_point = {};
+};
+Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(hmm_vec3 ro, hmm_vec3 rd, hmm_vec3 so, float r) {
+    Ray_Vs_Aligned_Circle_Result result = {};
+    result.t = HMM_Dot(so - ro, rd);
+    //Log("Dot %f", result.t);
+    result.closest_point = ro + rd * result.t;
+    //Log("Closest Point %f, %f, %f", result.closest_point.X, result.closest_point.Y, result.closest_point.Z);
+    result.distance_to_closest_point = HMM_Length(result.closest_point - so);
+    //Log("Distance %f (out of %f)", result.distance_to_closest_point, r);
+    if (result.distance_to_closest_point <= r) {
+        result.hit = true;
+    }
+    return result;
+}
+
+static inline float abs(float x) { return x >= 0 ? x : -x; }
+
+struct Ray_Vs_Plane_Result {
+    bool hit = false;
+    float t = 0;
+    hmm_vec3 point = {};
+};
+Ray_Vs_Plane_Result ray_vs_plane(Ray ray, hmm_vec3 plane_point, hmm_vec3 plane_normal) {
+    Ray_Vs_Plane_Result result = {};
+
+    assert(HMM_Length(plane_normal) != 0);
+    assert(HMM_Length(ray.dir) != 0);
+    plane_normal = HMM_Normalize(plane_normal);
+    
+    hmm_vec3 displacement = plane_point - ray.pos;
+    float distance_to_origin = HMM_Dot(displacement, plane_normal);
+    float cos_theta = HMM_Dot(ray.dir, plane_normal);
+    if (abs(cos_theta) < 0.0001) {
+        result.hit = abs(distance_to_origin) < 0.0001;
+        result.t = 0;
+    } else {
+        result.t = distance_to_origin / cos_theta;
+        result.hit = result.t >= 0;
+    }
+    result.point = ray.pos + ray.dir * result.t;
+
+    return result;
+}
+Ray_Vs_Plane_Result ray_vs_triangle(Ray ray, hmm_vec3 a, hmm_vec3 b, hmm_vec3 c) {
+    hmm_vec3 normal = HMM_Normalize(HMM_Cross(b-a, c-a));
+    auto raycast = ray_vs_plane(ray, a, normal);
+    hmm_vec3 p = raycast.point;
+    hmm_vec3 ba = a - b;
+    hmm_vec3 ca = a - c;
+    hmm_vec3 bp = p - b;
+    hmm_vec3 cp = p - c;
+    float beta = 0;
+    {
+        hmm_vec3 v = ba - HMM_Dot(ba, ca) / HMM_LengthSquared(ca) * ca;
+        beta = 1 - HMM_Dot(v, bp) / HMM_Dot(v, ba);
+    }
+    float gamma = 0;
+    {
+        hmm_vec3 v = ca - HMM_Dot(ca, ba) / HMM_LengthSquared(ba) * ba;
+        gamma = 1 - HMM_Dot(v, cp) / HMM_Dot(v, ca);
+    }
+    float u = beta;
+    float v = gamma;
+    raycast.hit = raycast.hit && u >= 0 && v >= 0 && u + v <= 1;
+    return raycast;
+}
+
+static void init(void *userdata) {
+    G &g = *(G *)userdata;
+    { // @Temporary @Remove
+        auto hwnd = sapp_win32_get_hwnd();
+        MoveWindow((HWND)hwnd, -1910, 0, 1900, 1000, false);
+    }
+    g.last_time = get_time();
+    sg_desc desc = {};
+    desc.context = sapp_sgcontext();
+    sg_setup(&desc);
+    simgui_desc_t simgui_desc = {};
+    simgui_desc.no_default_font = true;
+    simgui_desc.dpi_scale = sapp_dpi_scale();
+    simgui_desc.sample_count = sapp_sample_count();
+#ifdef NDEBUG
+    simgui_desc.ini_filename = "imgui.ini";
+#endif
+    simgui_setup(&simgui_desc);
+    {
+        ImGuiIO &io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+        ImFontConfig fontCfg;
+        fontCfg.FontDataOwnedByAtlas = false;
+        fontCfg.OversampleH = 2;
+        fontCfg.OversampleV = 2;
+        fontCfg.RasterizerMultiply = 1.5f;
+        io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/consola.ttf", 16, &fontCfg);
+        
+        // create font texture for the custom font
+        unsigned char* font_pixels;
+        int font_width, font_height;
+        io.Fonts->GetTexDataAsRGBA32(&font_pixels, &font_width, &font_height);
+        sg_image_desc img_desc = {};
+        img_desc.width = font_width;
+        img_desc.height = font_height;
+        img_desc.pixel_format = SG_PIXELFORMAT_RGBA8;
+        img_desc.wrap_u = SG_WRAP_CLAMP_TO_EDGE;
+        img_desc.wrap_v = SG_WRAP_CLAMP_TO_EDGE;
+        img_desc.min_filter = SG_FILTER_LINEAR;
+        img_desc.mag_filter = SG_FILTER_LINEAR;
+        img_desc.data.subimage[0][0].ptr = font_pixels;
+        img_desc.data.subimage[0][0].size = font_width * font_height * 4;
+        io.Fonts->TexID = (ImTextureID)(uintptr_t) sg_make_image(&img_desc).id;
+    }
+    {
+        sg_buffer_desc d = {};
+
+        // @Note: 58254 is >2x all CLD faces in all SH2 rooms combined
+        // and yields a 4MB buffer per group.
+        size_t CLD_MAX_FACES_PER_GROUP = 58254;
+        size_t CLD_MAX_TRIANGLES_PER_GROUP = CLD_MAX_FACES_PER_GROUP * 2;
+        size_t CLD_MAX_VERTICES_PER_GROUP = CLD_MAX_TRIANGLES_PER_GROUP * 3;
+        size_t CLD_MAX_FLOATS_PER_GROUP = CLD_MAX_VERTICES_PER_GROUP * 3;
+        size_t CLD_GROUP_BUFFER_SIZE = CLD_MAX_FLOATS_PER_GROUP * sizeof(float);
+        d.usage = SG_USAGE_DYNAMIC;
+        d.size = CLD_GROUP_BUFFER_SIZE;
+        for (auto &buffer : g.cld_face_buffers) {
+            buffer.buf = sg_make_buffer(d);
+        }
+    }
+    {
+        sg_buffer_desc d = {};
+        float vertices[] = {
+            -1, -1, 0,
+            +1, -1, 0,
+            -1, +1, 0,
+            -1, +1, 0,
+            +1, -1, 0,
+            +1, +1, 0,
+        };
+        d.data = SG_RANGE(vertices);
+        g.highlight_vertex_circle_buffer = sg_make_buffer(d);
+    }
+    {
+        sg_pipeline_desc d = {};
+        d.shader = sg_make_shader(highlight_vertex_circle_shader_desc(sg_query_backend()));
+        d.layout.attrs[ATTR_highlight_vertex_circle_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
+        d.alpha_to_coverage_enabled = true;
+        g.highlight_vertex_circle_pipeline = sg_make_pipeline(d);
+    }
+    {
+        sg_buffer_desc d = {};
+        size_t MAP_MAX_VERTICES_PER_GEOMETRY = 320000;
+        size_t MAP_BUFFER_SIZE = MAP_MAX_VERTICES_PER_GEOMETRY * sizeof(MAP_Geometry_Vertex);
+        d.usage = SG_USAGE_DYNAMIC;
+        d.size = MAP_BUFFER_SIZE;
+        for (auto &buffer : g.map_buffers) {
+            buffer.buf = sg_make_buffer(d);
+        }
+    }
+    {
+        cld_load(g, "../cld/cld/ob01.cld");
+        map_load(g, "map/ob01.map");
+    }
+    if (0) test_all_maps(g);
 
     {
         sg_pipeline_desc d = {};
@@ -1453,12 +1477,14 @@ static void frame(void *userdata) {
                     for (int i = 0; i < 16; i++) {
                         g.subgroup_visible[i] = true;
                     }
+                    g.cld_must_update = true;
                 }
             } else {
                 if (ImGui::Button("None")) {
                     for (int i = 0; i < 16; i++) {
                         g.subgroup_visible[i] = false;
                     }
+                    g.cld_must_update = true;
                 }
             }
         }
@@ -1512,7 +1538,7 @@ static void frame(void *userdata) {
             defer {
                 ImGui::EndChild();
             };
-            for (int i = 0; i < 65536; i++) {
+            for (int i = 0; i < countof(g.textures); i++) {
                 if (g.textures[i].id) {
                     char b[16]; snprintf(b, sizeof b, "ID %d", i);
                     if (ImGui::Selectable(b, g.texture_ui_selected == i)) {
