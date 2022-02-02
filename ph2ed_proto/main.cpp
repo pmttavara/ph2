@@ -305,6 +305,10 @@ static void map_load(G &g, const char *filename) {
     {
         {
             FILE *f = PH2CLD__fopen(filename, "rb");
+            if (!f) {
+                LogC(IM_COL32(255, 127, 127, 255), "Failed loading MAP file \"%s\"!", filename);
+                return;
+            }
             assert(f);
             defer {
                 fclose(f);
