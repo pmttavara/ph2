@@ -1,6 +1,5 @@
 
-#define _CRT_SECURE_NO_WARNINGS
-#define _NO_CRT_STDIO_INLINE
+#include "common.hpp"
 
 #define HANDMADE_MATH_IMPLEMENTATION
 #include "HandmadeMath.h"
