@@ -1365,6 +1365,7 @@ static void frame(void *userdata) {
         g.last_time = next;
     }
     simgui_new_frame(sapp_width(), sapp_height(), dt);
+    imgui_do_console(g);
     sapp_lock_mouse(g.control_state == ControlState::Orbiting);
     // sapp_show_mouse(g.control_state != ControlState::Dragging);
     g.scroll_speed_timer -= dt;
@@ -1535,7 +1536,6 @@ static void frame(void *userdata) {
             }
         }
     }
-    imgui_do_console(g);
     if (g.cld_must_update) {
         bool can_update = true;
         for (auto &buf : g.cld_face_buffers) {
