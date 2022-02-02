@@ -523,6 +523,8 @@ static void map_load(G &g, const char *filename) {
                                     // assert(mesh_part_group_header.material_index <= );
                                     assert(mesh_part_group_header.section_index < 4);
 
+                                    Log("MeshPartGroup index #%d", mesh_part_group_index);
+
                                     for (uint32_t mesh_part_index = 0; mesh_part_index < mesh_part_group_header.mesh_part_count; mesh_part_index++) {
                                         struct PH2MAP__Mesh_Part {
                                             uint16_t strip_length;
@@ -667,13 +669,19 @@ static void map_load(G &g, const char *filename) {
                     assert(texture_subfile_header.always1 == 1);
                     for (;;) {
                         {
-                            // "read until the first int of the line is 0, and then skip that line"
-                            assert(ptr + 16 <= end);
                             auto ptr2 = ptr;
-                            uint32_t line_check = 0;
-                            Read(ptr2, line_check);
-                            if (line_check == 0) {
-                                ptr += 16;
+                            // "read until the first int of the line is 0, and then skip that line"
+                            struct PH2MAP__BC_End_Sentinel {
+                                uint32_t line_check;
+                                uint32_t zero[3];
+                            };
+                            PH2MAP__BC_End_Sentinel bc_end_sentinel = {};
+                            Read(ptr2, bc_end_sentinel);
+                            if (bc_end_sentinel.line_check == 0) {
+                                assert(bc_end_sentinel.zero[0] == 0);
+                                assert(bc_end_sentinel.zero[1] == 0);
+                                assert(bc_end_sentinel.zero[2] == 0);
+                                ptr = ptr2;
                                 break;
                             }
                         }
@@ -1018,8 +1026,8 @@ static void init(void *userdata) {
         d.layout.attrs[ATTR_map_vs_in_normal].format = SG_VERTEXFORMAT_FLOAT3;
         d.layout.attrs[ATTR_map_vs_in_color].format = SG_VERTEXFORMAT_UBYTE4N;
         d.layout.attrs[ATTR_map_vs_in_uv].format = SG_VERTEXFORMAT_FLOAT2;
-        //d.primitive_type = SG_PRIMITIVETYPE_LINES;
         d.depth.write_enabled = true;
+        d.alpha_to_coverage_enabled = true;
         d.depth.compare = SG_COMPAREFUNC_GREATER;
         d.cull_mode = SG_CULLMODE_BACK;
         d.face_winding = SG_FACEWINDING_CCW;
@@ -1626,6 +1634,15 @@ static void frame(void *userdata) {
             }
 
             sg_apply_pipeline(g.map_pipeline);
+            sg_image tex = {};
+            for (int i = 0; i < countof(g.textures); i++) {
+                if (g.textures[i].id) {
+                    tex = g.textures[i];
+                    if (g.texture_ui_selected == i) {
+                        break;
+                    }
+                }
+            }
             for (int i = 0; i < g.map_buffers_count; i++) {
                 if (!g.map_buffers[i].shown) continue;
                 {
@@ -1636,6 +1653,7 @@ static void frame(void *userdata) {
                 {
                     sg_bindings b = {};
                     b.vertex_buffers[0] = g.map_buffers[i].buf;
+                    b.fs_images[0] = tex;
                     sg_apply_bindings(b);
                     sg_draw(0, g.map_buffers[i].num_vertices, 1);
                 }

@@ -77,16 +77,18 @@ in vec3 normal;
 in vec4 color;
 in vec2 uv;
 out vec4 frag_color;
+uniform sampler2D tex;
 void main() {
     vec3 N = normal; 
     if (length(N) == 0) {
         N = normalize(cross(dFdx(cam_relative_pos.xyz), dFdy(cam_relative_pos.xyz)));
     }
-    vec3 L = normalize(vec3(-1, -10, -4));
-    float light = clamp(dot(N, L), 0, 1);
-    frag_color.rgb = color.rgb;
-    frag_color.a = 1;
-    frag_color.rgb *= vec3(light);
+    //vec3 L = normalize(vec3(-1, -10, -4));
+    //float light = clamp(dot(N, L), 0, 1);
+    frag_color.rgba = texture(tex, uv);
+    frag_color.a = (frag_color.a - 0.5) / max(fwidth(frag_color.a), 0.0001) + 0.5;
+    frag_color.rgb *= color.rgb;
+    //frag_color.rgb *= vec3(light);
     // frag_color = vec4((uv + 1) / 3, 0, 1);
     // frag_color = vec4(uv, 0, 1);
     // frag_color = color;
