@@ -125,6 +125,7 @@ struct MAP_Geometry_Buffer {
     int num_vertices = 0;
     uint32_t id = 0;
     bool shown = true;
+    uint16_t material_index = 0;
 };
 enum struct ControlState {
     Normal,
@@ -160,15 +161,20 @@ struct G {
     CLD_Face_Buffer cld_face_buffers[cld_buffers_count] = {};
 
     sg_pipeline map_pipeline = {};
-    enum { map_buffers_max = 16 };
+    enum { map_buffers_max = 64 };
     MAP_Geometry_Buffer map_buffers[map_buffers_max] = {};
     int map_buffers_count = 0;
 
     sg_buffer highlight_vertex_circle_buffer = {};
     sg_pipeline highlight_vertex_circle_pipeline = {};
 
+    sg_image missing_texture = {};
     sg_image textures[65536] = {};
     int texture_ui_selected = 0;
+
+    enum { materials_max = 64 };
+    uint16_t materials[materials_max] = {}; // @Todo: swap uint16_t here with MAP_Material (just the in-file data verbatim)
+    int materials_count = 0;
 
     bool cld_must_update = false;
     bool subgroup_visible[16] = {true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true};
@@ -247,11 +253,8 @@ static void cld_load(G &g, const char *filename) {
     g.cld_must_update = true;
 }
 static void map_load(G &g, const char *filename) {
-    //for (int i = 0; i < g.map_buffers_count; i++) {
-        //sg_destroy_buffer(g.map_buffers[i].buf);
-        //g.map_buffers[i] = {};
-    //}
     g.map_buffers_count = 0;
+    g.materials_count = 0;
     for (int i = 0; i < countof(g.textures); i++) {
         if (g.textures[i].id) {
             sg_destroy_image(g.textures[i]);
@@ -336,10 +339,6 @@ static void map_load(G &g, const char *filename) {
                         assert(geometry_header.decal_group_offset < geometry_header.group_size);
                         Log("%d", geometry_header.id);
 
-                        static MAP_Geometry_Vertex vertices_buffer[320000];
-                        enum { vertices_max = sizeof(vertices_buffer) / sizeof(vertices_buffer[0]) };
-                        int vertices_count = 0;
-                        
                         ptr2 -= sizeof(geometry_header);
 
                         char *end2 = ptr2 + geometry_header.group_size;
@@ -523,7 +522,11 @@ static void map_load(G &g, const char *filename) {
                                     // assert(mesh_part_group_header.material_index <= );
                                     assert(mesh_part_group_header.section_index < 4);
 
-                                    Log("MeshPartGroup index #%d", mesh_part_group_index);
+                                    // Log("MeshPartGroup index #%d", mesh_part_group_index);
+
+                                    static MAP_Geometry_Vertex vertices_buffer[320000];
+                                    enum { vertices_max = countof(vertices_buffer) };
+                                    int vertices_count = 0;
 
                                     for (uint32_t mesh_part_index = 0; mesh_part_index < mesh_part_group_header.mesh_part_count; mesh_part_index++) {
                                         struct PH2MAP__Mesh_Part {
@@ -623,18 +626,21 @@ static void map_load(G &g, const char *filename) {
                                             }
                                         }
                                     }
+                                    
+                                    if (vertices_count > 0) {
+                                        assert(g.map_buffers_count < g.map_buffers_max);
+                                        auto & map_buffer = g.map_buffers[g.map_buffers_count++];
+                                        sg_update_buffer(map_buffer.buf, sg_range { vertices_buffer, vertices_count * sizeof(vertices_buffer[0]) });
+                                        assert(vertices_count % 3 == 0);
+                                        map_buffer.num_vertices = vertices_count;
+                                        map_buffer.id = geometry_header.id;
+                                        assert(mesh_part_group_header.material_index >= 0);
+                                        assert(mesh_part_group_header.material_index < 65536);
+                                        map_buffer.material_index = (uint16_t)mesh_part_group_header.material_index;
+                                        //break;
+                                    }
                                 }
                             }
-                        }
-                        
-                        if (vertices_count > 0) {
-                            assert(g.map_buffers_count < g.map_buffers_max);
-                            auto & map_buffer = g.map_buffers[g.map_buffers_count++];
-                            sg_update_buffer(map_buffer.buf, sg_range { vertices_buffer, vertices_count * sizeof(vertices_buffer[0]) });
-                            assert(vertices_count % 3 == 0);
-                            map_buffer.num_vertices = vertices_count;
-                            map_buffer.id = geometry_header.id;
-                            //break;
                         }
                         
                         ptr2 += geometry_header.group_size;
@@ -651,6 +657,8 @@ static void map_load(G &g, const char *filename) {
                         PH2MAP__Material material = {};
                         Read(ptr2, material);
                         assert(PH2CLD__sanity_check_float(material.specularity));
+                        assert(g.materials_count < g.materials_max);
+                        g.materials[g.materials_count++] = material.texture_id;
                     }
                     assert(ptr2 == ptr);
                 } else if (subfile_header.type == 2) { // Texture subfile
@@ -754,8 +762,11 @@ static void map_load(G &g, const char *filename) {
                                 } else {
                                     assert(false);
                                 }
-                                d.min_filter = SG_FILTER_LINEAR;
-                                d.mag_filter = SG_FILTER_LINEAR;
+                                d.wrap_u = SG_WRAP_CLAMP_TO_EDGE;
+                                d.wrap_v = SG_WRAP_CLAMP_TO_EDGE;
+                                d.min_filter = SG_FILTER_NEAREST;
+                                d.mag_filter = SG_FILTER_NEAREST;
+                                d.max_anisotropy = 16;
                                 d.data.subimage[0][0] = { pixels_data, pixels_len };
                                 g.textures[bc_texture_header.id] = sg_make_image(d);
                                 assert(g.textures[bc_texture_header.id].id);
@@ -1006,8 +1017,9 @@ static void init(void *userdata) {
         }
     }
     {
-        cld_load(g, "../cld/cld/ob01.cld");
-        map_load(g, "map/ob01.map");
+        // cld_load(g, "../cld/cld/ob01.cld");
+        // map_load(g, "map/ob01.map");
+        map_load(g, "map/ap01.map");
     }
     if (0) test_all_maps(g);
 
@@ -1032,6 +1044,25 @@ static void init(void *userdata) {
         d.cull_mode = SG_CULLMODE_BACK;
         d.face_winding = SG_FACEWINDING_CCW;
         g.map_pipeline = sg_make_pipeline(d);
+    }
+
+    {
+        sg_image_desc d = {};
+        enum { N = 1024 };
+        enum { M = 32 };
+        static uint32_t pixels[N][N] = {};
+        for (int y = 0; y < N; y++) {
+            for (int x = 0; x < N; x++) {
+                pixels[y][x] = (((x * M / N) ^ (y * M / N)) & 1) ? 0xffff00ff : 0xff000000;
+            }
+        }
+        d.width = N;
+        d.height = N;
+        d.min_filter = SG_FILTER_LINEAR_MIPMAP_LINEAR;
+        d.mag_filter = SG_FILTER_LINEAR_MIPMAP_LINEAR;
+        d.max_anisotropy = 16;
+        d.data.subimage[0][0] = SG_RANGE(pixels);
+        g.missing_texture = sg_make_image(d);
     }
 }
 
@@ -1419,9 +1450,13 @@ static void frame(void *userdata) {
         }
         ImGui::Text("MAP Geometries:");
         for (int i = 0; i < g.map_buffers_count; i++) {
+            ImGui::PushID("MAP Mesh Visibility Buttons");
             ImGui::SameLine();
+            ImGui::PushID(i);
             char b[32]; snprintf(b, sizeof b, "%d", g.map_buffers[i].id);
             ImGui::Checkbox(b, &g.map_buffers[i].shown);
+            ImGui::PopID();
+            ImGui::PopID();
         }
         ImGui::Text("CLD Subgroups:");
         {
@@ -1612,7 +1647,7 @@ static void frame(void *userdata) {
             vs_params_t params;
             params.cam_pos = g.cam_pos;
             params.P = perspective;
-            
+
             // The view matrix is the inverse of the camera's model matrix (aka the camera's transform matrix).
             // We perform an inversion of the camera rotation by getting the transpose
             // (which equals the inverse in this case since it's just a rotation matrix).
@@ -1622,7 +1657,7 @@ static void frame(void *userdata) {
             for (int i = 0; i < g.cld_buffers_count; i++) {
                 {
                     // I should also ask the community what the coordinate system is :)
-                    params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate(-g.cld_origin);
+                    params.M = HMM_Scale( { 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate(-g.cld_origin);
                 }
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
                 {
@@ -1632,17 +1667,13 @@ static void frame(void *userdata) {
                     sg_draw(0, g.cld_face_buffers[i].num_vertices, 1);
                 }
             }
-
+        }
+        {
+            map_vs_params_t params;
+            params.cam_pos = g.cam_pos;
+            params.P = perspective;
+            params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
             sg_apply_pipeline(g.map_pipeline);
-            sg_image tex = {};
-            for (int i = 0; i < countof(g.textures); i++) {
-                if (g.textures[i].id) {
-                    tex = g.textures[i];
-                    if (g.texture_ui_selected == i) {
-                        break;
-                    }
-                }
-            }
             for (int i = 0; i < g.map_buffers_count; i++) {
                 if (!g.map_buffers[i].shown) continue;
                 {
@@ -1650,6 +1681,22 @@ static void frame(void *userdata) {
                     params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate({});
                 }
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
+                sg_image tex = {};
+                assert(g.map_buffers[i].material_index >= 0);
+                assert(g.map_buffers[i].material_index < g.materials_count);
+                assert(g.materials[g.map_buffers[i].material_index] >= 0);
+                assert(g.materials[g.map_buffers[i].material_index] < 65536);
+                if (g.materials[g.map_buffers[i].material_index] == 0) {
+                    // @Todo: how do we render a mesh with no valid texture ID?
+                    tex = g.missing_texture;
+                } else if (g.textures[g.materials[g.map_buffers[i].material_index]].id == 0) {
+                    // @Todo: how do we render a mesh with a texture ID that references a nonexistent texture in the file?
+                    // Does that texture ID refer to some external information in another file, such as a non-numbered map file?
+                    tex = g.missing_texture;
+                } else {
+                    assert(g.textures[g.materials[g.map_buffers[i].material_index]].id);
+                    tex = g.textures[g.materials[g.map_buffers[i].material_index]];
+                }
                 {
                     sg_bindings b = {};
                     b.vertex_buffers[0] = g.map_buffers[i].buf;
