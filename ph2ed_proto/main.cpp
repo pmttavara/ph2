@@ -1025,10 +1025,14 @@ static void map_load(G &g, const char *filename) {
                                 sg_image_desc d = {};
                                 d.width = sprite_header.width;
                                 d.height = sprite_header.height;
-                                if (sprite_header.format == 0x100 || sprite_header.format == 0x103) {
+                                if (sprite_header.format == 0x100) {
                                     d.pixel_format = SG_PIXELFORMAT_BC1_RGBA;
-                                } else if (sprite_header.format == 0x102 || sprite_header.format == 0x104) {
+                                } else if (sprite_header.format == 0x102) {
                                     d.pixel_format = SG_PIXELFORMAT_BC2_RGBA;
+                                } else if (sprite_header.format == 0x103) {
+                                    d.pixel_format = SG_PIXELFORMAT_BC3_RGBA;
+                                } else if (sprite_header.format == 0x104) {
+                                    d.pixel_format = SG_PIXELFORMAT_BC3_RGBA;
                                 } else {
                                     assert(false);
                                 }
@@ -1856,6 +1860,8 @@ static void frame(void *userdata) {
             float w = (float)info.width; 
             float h = (float)info.height;
             float aspect = w / h;
+            w = size.x - 99; // yucky hack
+            h = size.y - 49; // yucky hack
             if (w > size.x - 100) {
                 w = size.x - 100;
                 h = w / aspect;
