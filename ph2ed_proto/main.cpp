@@ -49,6 +49,8 @@ void LogC(uint32_t c, const char *fmt, ...) {
     va_start(args, fmt);
     vsnprintf(log_buf[log_buf_index % LOG_MAX].buf, sizeof(log_buf[0].buf), fmt, args);
     va_end(args);
+    printf("%.*s\n", (int)sizeof(log_buf[0].buf), log_buf[log_buf_index % LOG_MAX].buf);
+    fflush(stdout);
     log_buf_index++;
 }
 #define LogC(c, fmt, ...) LogC(c, fmt, ##__VA_ARGS__)
@@ -571,17 +573,54 @@ static void map_load_mesh_group(G &g, PH2MAP__Geometry_Header geometry_header, c
         }
     }
 }
-static void map_load(G &g, const char *filename) {
-    g.map_buffers_count = 0;
-    g.decal_buffers_count = 0;
-    g.materials_count = 0;
-    for (int i = 0; i < countof(g.textures); i++) {
-        if (g.textures[i].id) {
-            sg_destroy_image(g.textures[i]);
-            g.textures[i].id = 0;
+static void map_load(G &g, const char *filename, bool clear = true) {
+    if (clear) {
+        g.map_buffers_count = 0;
+        g.decal_buffers_count = 0;
+        g.materials_count = 0;
+        for (int i = 0; i < countof(g.textures); i++) {
+            if (g.textures[i].id) {
+                sg_destroy_image(g.textures[i]);
+                g.textures[i].id = 0;
+            }
+        }
+        g.texture_ui_selected = 0;
+    }
+    { // Semi-garbage code.
+        char *non_numbered = _strdup(filename);
+        assert(non_numbered);
+        if (non_numbered) {
+            defer {
+                free(non_numbered);
+            };
+            int len = (int)strlen(non_numbered);
+            int i = len - 1;
+            for (; i >= 0; i--) {
+                if (non_numbered[i] == '/' || non_numbered[i] == '\\') {
+                    break;
+                }
+            }
+            if (i + 3 < len) {
+                i += 3;
+                if (non_numbered[i] >= '0' && non_numbered[i] <= '9') {
+                    non_numbered[i] = 0;
+                    int n = snprintf(nullptr, 0, "%s.map", non_numbered) + 1;
+                    char *mem = (char *)malloc(n);
+                    assert(mem);
+                    if (mem) {
+                        defer {
+                            free(mem);
+                        };
+                        snprintf(mem, n, "%s.map", non_numbered);
+                        if (strcmp(filename, mem) != 0) {
+                            Log("Loading \"%s\" for base textures", mem);
+                            map_load(g, mem, false);
+                        }
+                    }
+                }
+            }
         }
     }
-    g.texture_ui_selected = 0;
     {
         {
             FILE *f = PH2CLD__fopen(filename, "rb");
@@ -670,7 +709,7 @@ static void map_load(G &g, const char *filename) {
                             char *ptr3 = decal_group_header;
                             uint32_t decal_count = 0;
                             Read(ptr3, decal_count);
-                            Log("%s has %d decals", filename, decal_count);
+                            // Log("%s has %d decals", filename, decal_count);
                             uint32_t prev_off = 0;
                             char *decals[1024] = {};
                             assert(decal_count < countof(decals));
@@ -1069,12 +1108,9 @@ static void test_all_maps(G &g) {
     assert(directory >= 0);
     while (1) {
         char b[260 + sizeof("map/")];
-        // Non-numbered maps are formatted differently from numbered maps, and we don't support their format yet,
-        // so we'll skip them. They should be supported later!
-        if (find_data.name[3] >= '0' && find_data.name[3] <= '9') {
-            snprintf(b, sizeof(b), "map/%s", find_data.name);
-            map_load(g, b);
-        }
+        snprintf(b, sizeof(b), "map/%s", find_data.name);
+        Log("Loading map \"%s\"", b);
+        map_load(g, b);
         if (_findnext(directory, &find_data) < 0) {
             if (errno == ENOENT) break;
             else assert(0);
