@@ -162,9 +162,14 @@ struct G {
     CLD_Face_Buffer cld_face_buffers[cld_buffers_count] = {};
 
     sg_pipeline map_pipeline = {};
-    enum { map_buffers_max = 128 };
+    enum { map_buffers_max = 64 };
     MAP_Geometry_Buffer map_buffers[map_buffers_max] = {};
     int map_buffers_count = 0;
+
+    sg_pipeline decal_pipeline = {};
+    enum { decal_buffers_max = 64 };
+    MAP_Geometry_Buffer decal_buffers[decal_buffers_max] = {};
+    int decal_buffers_count = 0;
 
     sg_buffer highlight_vertex_circle_buffer = {};
     sg_pipeline highlight_vertex_circle_pipeline = {};
@@ -568,6 +573,7 @@ static void map_load_mesh_group(G &g, PH2MAP__Geometry_Header geometry_header, c
 }
 static void map_load(G &g, const char *filename) {
     g.map_buffers_count = 0;
+    g.decal_buffers_count = 0;
     g.materials_count = 0;
     for (int i = 0; i < countof(g.textures); i++) {
         if (g.textures[i].id) {
@@ -890,17 +896,17 @@ static void map_load(G &g, const char *filename) {
                                     }
 
                                     if (vertices_count > 0) {
-                                        assert(g.map_buffers_count < g.map_buffers_max);
-                                        auto & map_buffer = g.map_buffers[g.map_buffers_count++];
+                                        assert(g.decal_buffers_count < g.decal_buffers_max);
+                                        auto & decal_buffer = g.decal_buffers[g.decal_buffers_count++];
                                         //Log("%d", vertices_count);
-                                        memcpy(map_buffer.vertices, vertices_buffer, vertices_count * sizeof(vertices_buffer[0]));
-                                        assert(vertices_count < countof(map_buffer.vertices));
+                                        memcpy(decal_buffer.vertices, vertices_buffer, vertices_count * sizeof(vertices_buffer[0]));
+                                        assert(vertices_count < countof(decal_buffer.vertices));
                                         assert(vertices_count % 3 == 0);
-                                        map_buffer.num_vertices = vertices_count;
-                                        map_buffer.id = geometry_header.id;
+                                        decal_buffer.num_vertices = vertices_count;
+                                        decal_buffer.id = 0;
                                         assert(sub_decals[sub_decal_index].material_index >= 0);
                                         assert(sub_decals[sub_decal_index].material_index < 65536);
-                                        map_buffer.material_index = (uint16_t)sub_decals[sub_decal_index].material_index;
+                                        decal_buffer.material_index = (uint16_t)sub_decals[sub_decal_index].material_index;
                                         //break;
                                     }
                                 }
@@ -1288,6 +1294,9 @@ static void init(void *userdata) {
         for (auto &buffer : g.map_buffers) {
             buffer.buf = sg_make_buffer(d);
         }
+        for (auto &buffer : g.decal_buffers) {
+            buffer.buf = sg_make_buffer(d);
+        }
     }
     {
         // cld_load(g, "../cld/cld/ob01.cld");
@@ -1317,6 +1326,12 @@ static void init(void *userdata) {
         d.cull_mode = SG_CULLMODE_BACK;
         d.face_winding = SG_FACEWINDING_CCW;
         g.map_pipeline = sg_make_pipeline(d);
+        d.depth.write_enabled = false;
+        d.alpha_to_coverage_enabled = false;
+        d.colors[0].blend.enabled = true;
+        d.colors[0].blend.src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA;
+        d.colors[0].blend.dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        g.decal_pipeline = sg_make_pipeline(d);
     }
 
     {
@@ -1885,6 +1900,10 @@ static void frame(void *userdata) {
                 auto &buf = g.map_buffers[i];
                 sg_update_buffer(buf.buf, sg_range { buf.vertices, buf.num_vertices * sizeof(buf.vertices[0]) });
             }
+            for (int i = 0; i < g.decal_buffers_count; i++) {
+                auto &buf = g.decal_buffers[i];
+                sg_update_buffer(buf.buf, sg_range { buf.vertices, buf.num_vertices * sizeof(buf.vertices[0]) });
+            }
             g.map_must_update = false;
         }
     }
@@ -1967,6 +1986,7 @@ static void frame(void *userdata) {
             map_fs_params_t fs_params = {};
             fs_params.textured = g.textured;
             fs_params.lit = g.lit;
+            fs_params.do_a2c_sharpening = true;
             vs_params.cam_pos = g.cam_pos;
             vs_params.P = perspective;
             vs_params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
@@ -2001,6 +2021,40 @@ static void frame(void *userdata) {
                     b.fs_images[0] = tex;
                     sg_apply_bindings(b);
                     sg_draw(0, g.map_buffers[i].num_vertices, 1);
+                }
+            }
+            fs_params.do_a2c_sharpening = false;
+            sg_apply_pipeline(g.decal_pipeline);
+            for (int i = 0; i < g.decal_buffers_count; i++) {
+                if (!g.decal_buffers[i].shown) continue;
+                {
+                    // I should also ask the community what the coordinate system is :)
+                    vs_params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate({});
+                }
+                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
+                sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
+                sg_image tex = {};
+                assert(g.decal_buffers[i].material_index >= 0);
+                assert(g.decal_buffers[i].material_index < g.materials_count);
+                assert(g.materials[g.decal_buffers[i].material_index] >= 0);
+                assert(g.materials[g.decal_buffers[i].material_index] < 65536);
+                if (g.materials[g.decal_buffers[i].material_index] == 0) {
+                    // @Todo: how do we render a mesh with no valid texture ID?
+                    tex = g.missing_texture;
+                } else if (g.textures[g.materials[g.decal_buffers[i].material_index]].id == 0) {
+                    // @Todo: how do we render a mesh with a texture ID that references a nonexistent texture in the file?
+                    // Does that texture ID refer to some external information in another file, such as a non-numbered map file?
+                    tex = g.missing_texture;
+                } else {
+                    assert(g.textures[g.materials[g.decal_buffers[i].material_index]].id);
+                    tex = g.textures[g.materials[g.decal_buffers[i].material_index]];
+                }
+                {
+                    sg_bindings b = {};
+                    b.vertex_buffers[0] = g.decal_buffers[i].buf;
+                    b.fs_images[0] = tex;
+                    sg_apply_bindings(b);
+                    sg_draw(0, g.decal_buffers[i].num_vertices, 1);
                 }
             }
         }

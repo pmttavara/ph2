@@ -74,6 +74,7 @@ void main() {
 uniform map_fs_params {
     float textured;
     float lit;
+    float do_a2c_sharpening;
 };
 in vec3 worldpos;
 in vec3 cam_relative_pos;
@@ -102,7 +103,9 @@ void main() {
     }
     if (textured != 0) {
         frag_color.rgba = texture(tex, uv);
-        frag_color.a = (frag_color.a - 0.5) / max(fwidth(frag_color.a), 0.0001) + 0.5;
+        if (do_a2c_sharpening != 0) {
+            frag_color.a = (frag_color.a - 0.5) / max(fwidth(frag_color.a), 0.0001) + 0.5;
+        }
     }
     if (lit != 0) {
         frag_color.rgb *= color.rgb;
