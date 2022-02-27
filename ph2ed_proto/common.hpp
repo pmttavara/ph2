@@ -53,3 +53,116 @@ static int assert_(const char *s) {
 
 #define IM_ASSERT assert
 #define SOKOL_ASSERT assert
+
+#include <stdint.h>
+
+template <class T> struct Array {
+    int64_t count = 0;
+    int64_t capacity = 0;
+    T *data = nullptr;
+
+    Array(int64_t count = 0, int64_t capacity = 0, T *data = nullptr) : count { count }, capacity { capacity }, data { data } {}
+    void invariants() const {
+        assert(count >= 0);
+        assert(count <= capacity);
+        if (data) {
+            assert(capacity);
+        } else {
+            assert(!capacity);
+        }
+    }
+    T &operator[](int64_t i) {
+        invariants();
+        assert(i >= 0);
+        assert(i < count);
+        return data[i];
+    }
+    const T &operator[](int64_t i) const {
+        invariants();
+        assert(i >= 0);
+        assert(i < count);
+        return data[i];
+    }
+    void clear() {
+        invariants();
+        count = 0;
+    }
+    void release() {
+        invariants();
+        free(data);
+        data = nullptr;
+        capacity = 0;
+        count = 0;
+    }
+    void amortize(int64_t new_count) {
+        invariants();
+        if (new_count > capacity) {
+            if (capacity < 16) capacity = 16;
+            while (new_count > capacity) capacity = capacity * 3 / 2;
+            data = (T *)realloc(data, capacity * sizeof(T));
+            assert(data); // Yucky!
+        }
+    }
+    void reserve(int64_t new_capacity) {
+        invariants();
+        assert(new_capacity >= 0);
+        amortize(new_capacity);
+    }
+    void resize(int64_t new_count, T value = {}) {
+        invariants();
+        amortize(new_count);
+        for (int64_t i = count; count < new_count; i += 1) data[i] = value;
+        count = new_count;
+    }
+    Array copy() {
+        invariants();
+        Array result = {};
+        if (count) {
+            result.amortize(count);
+            memcpy(result.data, data, count * sizeof(T));
+        }
+        result.count = count;
+        return result;
+    }
+    T *push(T value = {}) {
+        invariants();
+        amortize(count + 1);
+        count += 1;
+        data[count - 1] = value;
+        return &data[count - 1];
+    }
+    void pop() {
+        invariants();
+        assert(count > 0);
+        count -= 1;
+    }
+    T *insert(int64_t index, T value = {}) {
+        invariants();
+        assert(index < count);
+        amortize(count + 1);
+        memmove(data[index + 1], data[index], (count - index - 1) * sizeof(T));
+        count += 1;
+        data[index] = value;
+        return &data[index];
+    }
+    void remove(int64_t index) {
+        invariants();
+        assert(index < count);
+        data[index] = data[count - 1];
+        count -= 1;
+    }
+    void remove_ordered(int64_t index) {
+        invariants();
+        assert(index < count);
+        memmove(data[index], data[index + 1], (count - index - 1) * sizeof(T));
+        count -= 1;
+    }
+    T *begin() {
+        invariants();
+        return data;
+    }
+    T *end() {
+        invariants();
+        return data + count;
+    }
+};
