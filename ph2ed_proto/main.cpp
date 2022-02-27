@@ -359,8 +359,8 @@ Array<MAP_Geometry_Vertex> map_destrip_mesh_part_group(int &indices_index, const
             return mesh.indices[indices_index++];
         };
         for (int strip_index = 0; strip_index < outer_max; strip_index++) {
-            int memory = get_index() << 0x10;
-            int mask = 0xFFFF0000;
+            unsigned int memory = get_index() << 0x10;
+            unsigned int mask = 0xFFFF0000;
             uint16_t currentIndex = get_index();
             for (int i = 2; i < inner_max; i++) {
                 auto get_vertex = [&] (int index) {
