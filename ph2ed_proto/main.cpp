@@ -1347,7 +1347,7 @@ static void init(void *userdata) {
     G &g = *(G *)userdata;
     { // @Temporary @Remove
         auto hwnd = sapp_win32_get_hwnd();
-        MoveWindow((HWND)hwnd, -1910, 0, 1900, 1000, false);
+        MoveWindow((HWND)hwnd, -1910, 0, 1000, 500, false);
     }
     g.last_time = get_time();
     sg_desc desc = {};
@@ -1356,7 +1356,7 @@ static void init(void *userdata) {
     sg_setup(&desc);
     simgui_desc_t simgui_desc = {};
     simgui_desc.no_default_font = true;
-    simgui_desc.dpi_scale = sapp_dpi_scale();
+    simgui_desc.dpi_scale = 1.0f; //sapp_dpi_scale(); // @Todo: What to do here?
     simgui_desc.sample_count = sapp_sample_count();
 #ifdef NDEBUG
     simgui_desc.ini_filename = "imgui.ini";
@@ -2300,8 +2300,6 @@ static void fail(const char *str) {
 G g;
 sapp_desc sokol_main(int, char **) {
     sapp_desc d = {};
-    d.width = 1900; // @Temporary
-    d.height = 1000; // @Temporary
     d.user_data = &g;
     d.init_userdata_cb = init;
     d.event_userdata_cb = event;
