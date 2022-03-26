@@ -154,6 +154,11 @@ struct MAP_Mesh {
             mesh_part_group.mesh_parts.release();
         }
         mesh_part_groups.release();
+        for (MAP_Mesh_Vertex_Buffer & vertex_buffer : vertex_buffers) {
+            if (vertex_buffer.data) {
+                free(vertex_buffer.data);
+            }
+        }
         vertex_buffers.release();
         indices.release();
     }
