@@ -334,6 +334,11 @@ struct PH2MAP__Vertex_Section_Header {
 };
 Array<MAP_Geometry_Vertex> map_destrip_mesh_part_group(int &indices_index, const MAP_Mesh &mesh, MAP_Mesh_Part_Group mesh_part_group) {
     Array<MAP_Geometry_Vertex> vertices = {};
+    int vertices_reserve = 0;
+    for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
+        vertices_reserve += 3 * mesh_part.strip_count * mesh_part.strip_length;
+    }
+    vertices.reserve(vertices_reserve);
     for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
         int vertex_size = mesh.vertex_buffers[mesh_part_group.section_index].bytes_per_vertex;
         char *vertex_buffer = mesh.vertex_buffers[mesh_part_group.section_index].data;
@@ -424,6 +429,7 @@ static void map_load_mesh_group(Array<MAP_Mesh> *meshes, char *mesh_group_header
     char *ptr3 = mesh_group_header;
     uint32_t map_mesh_count = 0;
     Read(ptr3, map_mesh_count);
+    meshes->reserve(map_mesh_count);
     for (uint32_t offset_index = 0; offset_index < map_mesh_count; offset_index++) {
         int32_t map_mesh_offset = 0;
         Read(ptr3, map_mesh_offset);
@@ -469,6 +475,7 @@ static void map_load_mesh_group(Array<MAP_Mesh> *meshes, char *mesh_group_header
         assert(vertex_sections_header.vertex_section_count <= 4);
         char *ptr5 = ptr4 + vertex_sections_header.vertex_section_count * sizeof(PH2MAP__Vertex_Section_Header);
         char *end_of_previous_section = ptr5;
+        mesh.vertex_buffers.reserve(vertex_sections_header.vertex_section_count);
         for (int32_t vertex_section_index = 0; vertex_section_index < vertex_sections_header.vertex_section_count; vertex_section_index++) {
             PH2MAP__Vertex_Section_Header vertex_section_header = {};
             Read(ptr4, vertex_section_header);
@@ -554,13 +561,17 @@ static void map_load_mesh_group(Array<MAP_Mesh> *meshes, char *mesh_group_header
         }
         assert(end_of_previous_section == mapmesh_header_base + mapmesh_header.indices_offset);
         ptr4 = end_of_previous_section;
-        for (int indices_index = 0; indices_index < mapmesh_header.indices_length / sizeof(uint16_t); indices_index++) {
+        assert(mapmesh_header.indices_length % sizeof(uint16_t) == 0);
+        int indices_count = mapmesh_header.indices_length / sizeof(uint16_t);
+        mesh.indices.reserve(indices_count);
+        for (int indices_index = 0; indices_index < indices_count; indices_index++) {
             uint16_t index = 0;
             Read(ptr4, index);
             mesh.indices.push(index);
         }
         ptr4 = mapmesh_header_base + sizeof(PH2MAP__Mapmesh_Header);
         int indices_index = 0;
+        mesh.mesh_part_groups.reserve(mapmesh_header.mesh_part_group_count);
         for (int mesh_part_group_index = 0; mesh_part_group_index < mapmesh_header.mesh_part_group_count; mesh_part_group_index++) {
             struct PH2MAP__Mesh_Part_Group_Header {
                 uint32_t material_index;
@@ -581,6 +592,7 @@ static void map_load_mesh_group(Array<MAP_Mesh> *meshes, char *mesh_group_header
             mesh_part_group.material_index = mesh_part_group_header.material_index;
             mesh_part_group.section_index = mesh_part_group_header.section_index;
 
+            mesh_part_group.mesh_parts.reserve(mesh_part_group_header.mesh_part_count);
             for (uint32_t mesh_part_index = 0; mesh_part_index < mesh_part_group_header.mesh_part_count; mesh_part_index++) {
                 struct PH2MAP__Mesh_Part {
                     uint16_t strip_length;
@@ -774,6 +786,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                 // We could sanity check these values as well.
                                 decals[decal_index] = decal_group_header + offset;
                             }
+                            g.decal_meshes.reserve(decal_count);
                             for (uint32_t decal_index = 0; decal_index < decal_count; decal_index++) {
                                 ptr3 = decals[decal_index];
                                 
@@ -811,6 +824,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                 assert(vertex_sections_header.vertex_section_count <= 4);
                                 char *ptr4 = ptr3 + vertex_sections_header.vertex_section_count * sizeof(PH2MAP__Vertex_Section_Header);
                                 char *end_of_previous_section = ptr4;
+                                mesh.vertex_buffers.reserve(vertex_sections_header.vertex_section_count);
                                 for (int32_t vertex_section_index = 0; vertex_section_index < vertex_sections_header.vertex_section_count; vertex_section_index++) {
                                     PH2MAP__Vertex_Section_Header vertex_section_header = {};
                                     Read(ptr3, vertex_section_header);
@@ -896,12 +910,15 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                 }
                                 assert(end_of_previous_section == decals[decal_index] + decal_header.indices_offset);
                                 ptr3 = end_of_previous_section;
-                                for (int indices_index = 0; indices_index < decal_header.indices_length / sizeof(uint16_t); indices_index++) {
+                                int indices_count = decal_header.indices_length / sizeof(uint16_t);
+                                mesh.indices.reserve(indices_count);
+                                for (int indices_index = 0; indices_index < indices_count; indices_index++) {
                                     uint16_t index = 0;
                                     Read(ptr3, index);
                                     mesh.indices.push(index);
                                 }
                                 int indices_index = 0;
+                                mesh.mesh_part_groups.reserve(decal_header.sub_decal_count);
                                 for (uint32_t sub_decal_index = 0; sub_decal_index < decal_header.sub_decal_count; sub_decal_index++) {
                                     // push sub decal to the map mesh part group array in question
                                     MAP_Mesh_Part_Group mesh_part_group = {};
@@ -910,6 +927,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                     };
                                     mesh_part_group.material_index = sub_decals[sub_decal_index].material_index;
                                     mesh_part_group.section_index = sub_decals[sub_decal_index].section_index;
+                                    mesh_part_group.mesh_parts.reserve(1);
                                     MAP_Mesh_Part part = {};
                                     defer {
                                         mesh_part_group.mesh_parts.push(part);
@@ -926,6 +944,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                         ptr2 += geometry_header.group_size;
 
                     }
+                    g.materials.reserve(geometry_subfile_header.material_count);
                     for (uint32_t material_index = 0; material_index < geometry_subfile_header.material_count; material_index++) {
                         struct PH2MAP__Material {
                             int16_t mode;
