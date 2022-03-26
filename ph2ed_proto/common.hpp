@@ -56,6 +56,7 @@ static int assert_(const char *s) {
 
 #include <stdint.h>
 
+extern int num_array_resizes;
 template <class T> struct Array {
     int64_t count = 0;
     int64_t capacity = 0;
@@ -101,6 +102,7 @@ template <class T> struct Array {
             while (new_count > capacity) capacity = capacity * 3 / 2;
             data = (T *)realloc(data, capacity * sizeof(T));
             assert(data); // Yucky!
+            ++num_array_resizes;
         }
     }
     void reserve(int64_t new_capacity) {

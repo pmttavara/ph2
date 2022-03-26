@@ -6,6 +6,8 @@
 
 #include "common.hpp"
 
+int num_array_resizes = 0;
+
 // With editor widgets, you should probably be able to:
 //  - Box-select a group of vertices or edges
 //      - Drag that selection as a group in any direction (with or without axis- and plane-alignment)
@@ -693,6 +695,10 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
             }
         }
     }
+    int prev_num_array_resizes = num_array_resizes;
+    defer {
+        Log("%d array resizes", num_array_resizes - prev_num_array_resizes);
+    };
     {
         {
             FILE *f = PH2CLD__fopen(filename, "rb");
