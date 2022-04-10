@@ -12,8 +12,9 @@
 		<BuildFileCommand></BuildFileCommand>
 		<CleanCommand></CleanCommand>
 		<RunCommand></RunCommand>
-		<DebugCommand>$(WorkspaceDirectory)\remedybg.exe start-debugging</DebugCommand>
+		<DebugCommand>$(WorkspaceDirectory)\remedybg.exe -g -q ph2ed_proto.exe</DebugCommand>
 		<ExePathCommand></ExePathCommand>
+		<DebugSln></DebugSln>
 		<Configurations>
 			<Configuration>Debug</Configuration>
 			<Configuration>Release</Configuration>
@@ -23,12 +24,21 @@
 			<Platform>Win32</Platform>
 		</Platforms>
 		<AdditionalIncludePaths></AdditionalIncludePaths>
+		<Defines></Defines>
 		<ConfigProperties>
-			<Configuration>
+			<ConfigAndPlatform>
 				<Name>Debug:x64</Name>
 				<Defines></Defines>
 				<ForceIncludes></ForceIncludes>
-			</Configuration>
+			</ConfigAndPlatform>
+			<Config>
+				<Name>Debug</Name>
+				<Defines></Defines>
+			</Config>
+			<Platform>
+				<Name>x64</Name>
+				<Defines></Defines>
+			</Platform>
 		</ConfigProperties>
 		<Children></Children>
 	</Workspace>

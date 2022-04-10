@@ -39,11 +39,11 @@ int num_array_resizes = 0;
 #include <stdio.h>
 
 struct LogMsg {
-    unsigned int colour = IM_COL32(127,127,127,255);
-    char buf[252] = {};
+    unsigned int colour;// = IM_COL32(127, 127, 127, 255);
+    char buf[252];// = {};
 };
 enum { LOG_MAX = 16384 };
-LogMsg log_buf[LOG_MAX] = {};
+LogMsg log_buf[LOG_MAX];
 int log_buf_index = 0;
 void LogC(uint32_t c, const char *fmt, ...) {
     log_buf[log_buf_index % LOG_MAX].colour = c;
@@ -71,7 +71,7 @@ sg_context_desc sapp_sgcontext(void);
 #ifdef _WIN32
 #pragma warning(disable : 4255)
 #pragma warning(disable : 4668)
-static double get_time(void) {
+static inline double get_time(void) {
     LARGE_INTEGER counter;
     static double invfreq;
     if (invfreq == 0) {
@@ -91,7 +91,7 @@ extern "C" {
 
 #else
 #include <time.h>
-static double get_time(void) {
+static inline double get_time(void) {
     timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
@@ -205,12 +205,12 @@ struct G {
 
     sg_pipeline map_pipeline = {};
     enum { map_buffers_max = 64 };
-    MAP_Geometry_Buffer map_buffers[map_buffers_max] = {};
+    MAP_Geometry_Buffer map_buffers[map_buffers_max];// = {};
     int map_buffers_count = 0;
 
     sg_pipeline decal_pipeline = {};
     enum { decal_buffers_max = 64 };
-    MAP_Geometry_Buffer decal_buffers[decal_buffers_max] = {};
+    MAP_Geometry_Buffer decal_buffers[decal_buffers_max];// = {};
     int decal_buffers_count = 0;
 
     sg_buffer highlight_vertex_circle_buffer = {};

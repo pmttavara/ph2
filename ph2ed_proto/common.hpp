@@ -32,7 +32,7 @@ template<typename T, size_t N> constexpr size_t countof(T (&)[N]) {
 #ifdef __cplusplus
 extern "C" {
 #endif
-static int assert_(const char *s) {
+static inline int assert_(const char *s) {
     int x = MessageBoxA(0, s, "Assertion Failed", MB_ABORTRETRYIGNORE | MB_ICONERROR | MB_SYSTEMMODAL);
     if (x == 3) ExitProcess(1);
     return x == 4;
