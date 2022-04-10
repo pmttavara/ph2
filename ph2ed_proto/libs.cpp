@@ -1,4 +1,5 @@
 
+#define STB_LEAKCHECK_IMPLEMENTATION
 #include "common.hpp"
 
 #define HANDMADE_MATH_IMPLEMENTATION

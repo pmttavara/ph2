@@ -126,11 +126,14 @@ struct MAP_Geometry_Vertex {
 };
 struct MAP_Geometry_Buffer {
     sg_buffer buf = {};
-    int num_vertices = 0;
+    Array<MAP_Geometry_Vertex> vertices = {};
     uint32_t id = 0;
     bool shown = true;
     uint16_t material_index = 0;
-    MAP_Geometry_Vertex vertices[1 << 18];
+    void release() {
+        sg_destroy_buffer(buf);
+        vertices.release();
+    }
 };
 struct MAP_Mesh_Vertex_Buffer {
     int bytes_per_vertex;
@@ -228,6 +231,39 @@ struct G {
 
     bool textured = true;
     bool lit = true;
+
+    void release() {
+        PH2CLD_free_collision_data(cld);
+        sg_destroy_pipeline(cld_pipeline);
+        for (auto &buf : cld_face_buffers) {
+            sg_destroy_buffer(buf.buf);
+        }
+        for (auto &mesh : opaque_meshes) {
+            mesh.release();
+        }
+        for (auto &mesh : transparent_meshes) {
+            mesh.release();
+        }
+        for (auto &mesh : decal_meshes) {
+            mesh.release();
+        }
+        sg_destroy_pipeline(map_pipeline);
+        for (auto &buf : map_buffers) {
+            buf.release();
+        }
+        sg_destroy_pipeline(decal_pipeline);
+        for (auto &buf : decal_buffers) {
+            buf.release();
+        }
+        sg_destroy_buffer(highlight_vertex_circle_buffer);
+        sg_destroy_pipeline(highlight_vertex_circle_pipeline);
+        sg_destroy_image(missing_texture);
+        for (auto &tex : textures) {
+            sg_destroy_image(tex);
+        }
+        materials.release();
+        *this = {};
+    }
 };
 static void cld_upload(G &g) {
     auto &cld = g.cld;
@@ -339,8 +375,8 @@ struct PH2MAP__Vertex_Section_Header {
     int32_t bytes_per_vertex;
     int32_t section_length;
 };
-Array<MAP_Geometry_Vertex> map_destrip_mesh_part_group(int &indices_index, const MAP_Mesh &mesh, MAP_Mesh_Part_Group mesh_part_group) {
-    Array<MAP_Geometry_Vertex> vertices = {};
+void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indices_index, const MAP_Mesh &mesh, MAP_Mesh_Part_Group mesh_part_group) {
+    vertices.clear();
     int vertices_reserve = 0;
     for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
         vertices_reserve += 3 * mesh_part.strip_count * mesh_part.strip_length;
@@ -430,7 +466,6 @@ Array<MAP_Geometry_Vertex> map_destrip_mesh_part_group(int &indices_index, const
             }
         }
     }
-    return vertices;
 }
 static void map_load_mesh_group(Array<MAP_Mesh> *meshes, char *mesh_group_header, char *end) {
     char *ptr3 = mesh_group_header;
@@ -661,13 +696,16 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
         g.texture_ui_selected = 0;
     }
     { // Semi-garbage code.
-        char *non_numbered = _strdup(filename);
+        int len = (int)strlen(filename);
+        char *non_numbered = (char *) malloc(len + 1);
         assert(non_numbered);
         if (non_numbered) {
             defer {
                 free(non_numbered);
             };
-            int len = (int)strlen(non_numbered);
+            
+            strncpy(non_numbered, filename, len);
+            non_numbered[len] = '\0';
             int i = len - 1;
             for (; i >= 0; i--) {
                 if (non_numbered[i] == '/' || non_numbered[i] == '\\') {
@@ -1104,67 +1142,40 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
         int indices_index = 0;
         // Log("about to upload %d mesh part groups", (int)mesh.mesh_part_groups.count);
         for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-            Array<MAP_Geometry_Vertex> vertices = map_destrip_mesh_part_group(indices_index, mesh, mesh_part_group);
-            defer {
-                vertices.release();
-            };
-            if (vertices.count > 0) {
-                assert(g.map_buffers_count < g.map_buffers_max);
-                auto & map_buffer = g.map_buffers[g.map_buffers_count++];
-                //Log("%d", vertices_count);
-                memcpy(map_buffer.vertices, vertices.data, vertices.count * sizeof(vertices[0]));
-                assert(vertices.count < (int64_t)countof(map_buffer.vertices));
-                assert(vertices.count % 3 == 0);
-                map_buffer.num_vertices = (int)vertices.count;
-                // map_buffer.id = geometry_header.id; // @Temporary! We need to retain this info eventually!
-                assert(mesh_part_group.material_index >= 0);
-                assert(mesh_part_group.material_index < 65536);
-                map_buffer.material_index = (uint16_t)mesh_part_group.material_index;
-            }
+            assert(g.map_buffers_count < g.map_buffers_max);
+            auto & map_buffer = g.map_buffers[g.map_buffers_count++];
+            map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
+            assert(map_buffer.vertices.count % 3 == 0);
+            // map_buffer.id = geometry_header.id; // @Temporary! We need to retain this info eventually!
+            assert(mesh_part_group.material_index >= 0);
+            assert(mesh_part_group.material_index < 65536);
+            map_buffer.material_index = (uint16_t)mesh_part_group.material_index;
         }
     }
     for (MAP_Mesh &mesh : g.transparent_meshes) {
         int indices_index = 0;
         for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-            Array<MAP_Geometry_Vertex> vertices = map_destrip_mesh_part_group(indices_index, mesh, mesh_part_group);
-            defer {
-                vertices.release();
-            };
-            if (vertices.count > 0) {
-                assert(g.decal_buffers_count < g.decal_buffers_max);
-                auto & decal_buffer = g.decal_buffers[g.decal_buffers_count++];
-                //Log("%d", vertices_count);
-                memcpy(decal_buffer.vertices, vertices.data, vertices.count * sizeof(vertices[0]));
-                assert(vertices.count < (int64_t)countof(decal_buffer.vertices));
-                assert(vertices.count % 3 == 0);
-                decal_buffer.num_vertices = (int)vertices.count;
-                // decal_buffer.id = geometry_header.id;
-                assert(mesh_part_group.material_index >= 0);
-                assert(mesh_part_group.material_index < 65536);
-                decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
-            }
+            assert(g.decal_buffers_count < g.decal_buffers_max);
+            auto & decal_buffer = g.decal_buffers[g.decal_buffers_count++];
+            map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
+            assert(decal_buffer.vertices.count % 3 == 0);
+            // decal_buffer.id = geometry_header.id;
+            assert(mesh_part_group.material_index >= 0);
+            assert(mesh_part_group.material_index < 65536);
+            decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
         }
     }
     for (MAP_Mesh &mesh : g.decal_meshes) {
         int indices_index = 0;
         for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-            Array<MAP_Geometry_Vertex> vertices = map_destrip_mesh_part_group(indices_index, mesh, mesh_part_group);
-            defer {
-                vertices.release();
-            };
-            if (vertices.count > 0) {
-                assert(g.decal_buffers_count < g.decal_buffers_max);
-                auto & decal_buffer = g.decal_buffers[g.decal_buffers_count++];
-                //Log("%d", vertices_count);
-                memcpy(decal_buffer.vertices, vertices.data, vertices.count * sizeof(vertices[0]));
-                assert(vertices.count < (int64_t)countof(decal_buffer.vertices));
-                assert(vertices.count % 3 == 0);
-                decal_buffer.num_vertices = (int)vertices.count;
-                // decal_buffer.id = geometry_header.id;
-                assert(mesh_part_group.material_index >= 0);
-                assert(mesh_part_group.material_index < 65536);
-                decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
-            }
+            assert(g.decal_buffers_count < g.decal_buffers_max);
+            auto & decal_buffer = g.decal_buffers[g.decal_buffers_count++];
+            map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
+            assert(decal_buffer.vertices.count % 3 == 0);
+            // decal_buffer.id = geometry_header.id;
+            assert(mesh_part_group.material_index >= 0);
+            assert(mesh_part_group.material_index < 65536);
+            decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
         }
     }
     g.map_must_update = true;
@@ -1311,12 +1322,15 @@ Ray_Vs_Plane_Result ray_vs_triangle(Ray ray, hmm_vec3 a, hmm_vec3 b, hmm_vec3 c)
     return raycast;
 }
 
+void *operator new(size_t, void *ptr) { return ptr; }
 static void init(void *userdata) {
+    double init_time = -get_time();
+    defer {
+        init_time += get_time();
+        Log("Init() took %f seconds.", init_time);
+    };
     G &g = *(G *)userdata;
-    if (0) { // @Temporary @Remove
-        auto hwnd = sapp_win32_get_hwnd();
-        MoveWindow((HWND)hwnd, -1910, 0, 1000, 500, false);
-    }
+    new (userdata) G{};
     g.last_time = get_time();
     sg_desc desc = {};
     desc.context = sapp_sgcontext();
@@ -1335,10 +1349,10 @@ static void init(void *userdata) {
 
         ImFontConfig fontCfg;
         fontCfg.FontDataOwnedByAtlas = false;
-        fontCfg.OversampleH = 2;
-        fontCfg.OversampleV = 2;
+        fontCfg.OversampleH = 4;
+        fontCfg.OversampleV = 4;
         fontCfg.RasterizerMultiply = 1.5f;
-        io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/consola.ttf", 16, &fontCfg);
+        io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/consola.ttf", 14, &fontCfg);
         
         // create font texture for the custom font
         unsigned char* font_pixels;
@@ -2007,11 +2021,11 @@ static void frame(void *userdata) {
         if (can_update) {
             for (int i = 0; i < g.map_buffers_count; i++) {
                 auto &buf = g.map_buffers[i];
-                sg_update_buffer(buf.buf, sg_range { buf.vertices, buf.num_vertices * sizeof(buf.vertices[0]) });
+                sg_update_buffer(buf.buf, sg_range { buf.vertices.data, buf.vertices.count * sizeof(buf.vertices[0]) });
             }
             for (int i = 0; i < g.decal_buffers_count; i++) {
                 auto &buf = g.decal_buffers[i];
-                sg_update_buffer(buf.buf, sg_range { buf.vertices, buf.num_vertices * sizeof(buf.vertices[0]) });
+                sg_update_buffer(buf.buf, sg_range { buf.vertices.data, buf.vertices.count * sizeof(buf.vertices[0]) });
             }
             g.map_must_update = false;
         }
@@ -2127,7 +2141,7 @@ static void frame(void *userdata) {
                     b.vertex_buffers[0] = g.map_buffers[i].buf;
                     b.fs_images[0] = tex;
                     sg_apply_bindings(b);
-                    sg_draw(0, g.map_buffers[i].num_vertices, 1);
+                    sg_draw(0, (int)g.map_buffers[i].vertices.count, 1);
                 }
             }
             fs_params.do_a2c_sharpening = false;
@@ -2159,7 +2173,7 @@ static void frame(void *userdata) {
                     b.vertex_buffers[0] = g.decal_buffers[i].buf;
                     b.fs_images[0] = tex;
                     sg_apply_bindings(b);
-                    sg_draw(0, g.decal_buffers[i].num_vertices, 1);
+                    sg_draw(0, (int)g.decal_buffers[i].vertices.count, 1);
                 }
             }
         }
@@ -2252,9 +2266,10 @@ static void frame(void *userdata) {
 
 static void cleanup(void *userdata) {
     G &g = *(G *)userdata;
-    (void)g;
+    g.release();
     simgui_shutdown();
     sg_shutdown();
+    stb_leakcheck_dumpmem();
 }
 
 static void fail(const char *str) {
@@ -2264,10 +2279,10 @@ static void fail(const char *str) {
     MessageBoxA(0, b, "Fatal Error", MB_OK | MB_ICONERROR | MB_SYSTEMMODAL);
 }
 
-G g;
+char g_[sizeof(G)];
 sapp_desc sokol_main(int, char **) {
     sapp_desc d = {};
-    d.user_data = &g;
+    d.user_data = &g_;
     d.init_userdata_cb = init;
     d.event_userdata_cb = event;
     d.frame_userdata_cb = frame;

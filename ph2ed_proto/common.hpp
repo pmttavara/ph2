@@ -9,6 +9,19 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define _NO_CRT_STDIO_INLINE
 
+#include <string.h>
+
+#include "stb_leakcheck.h"
+static inline void *stb_leakcheck_calloc(size_t n, size_t s, const char *file, int line) {
+    size_t bytes = n * s;
+    void *result = stb_leakcheck_malloc(bytes, file, line);
+    if (result) {
+        memset(result, 0, bytes);
+    }
+    return result;
+}
+#define calloc(n, s) stb_leakcheck_calloc(n, s, __FILE__, __LINE__)
+
 #define WIN32_LEAN_AND_MEAN
 #define VC_EXTRALEAN
 #define NOMINMAX
@@ -39,6 +52,7 @@ static inline int assert_(const char *s) {
 }
 #define assert_STR_(LINE) #LINE
 #define assert_STR(LINE) assert_STR_(LINE)
+#undef assert
 #ifdef NDEBUG
 #define assert(ignore) ((void)0)
 #else
