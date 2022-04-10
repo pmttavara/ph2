@@ -12,7 +12,7 @@
 		<BuildFileCommand></BuildFileCommand>
 		<CleanCommand></CleanCommand>
 		<RunCommand></RunCommand>
-		<DebugCommand>$(WorkspaceDirectory)\remedybg.exe -g -q ph2ed_proto.exe</DebugCommand>
+		<DebugCommand>$(WorkspaceDirectory)\remedybg.exe start-debugging</DebugCommand>
 		<ExePathCommand></ExePathCommand>
 		<DebugSln></DebugSln>
 		<Configurations>

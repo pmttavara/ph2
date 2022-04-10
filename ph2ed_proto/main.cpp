@@ -1313,7 +1313,7 @@ Ray_Vs_Plane_Result ray_vs_triangle(Ray ray, hmm_vec3 a, hmm_vec3 b, hmm_vec3 c)
 
 static void init(void *userdata) {
     G &g = *(G *)userdata;
-    { // @Temporary @Remove
+    if (0) { // @Temporary @Remove
         auto hwnd = sapp_win32_get_hwnd();
         MoveWindow((HWND)hwnd, -1910, 0, 1000, 500, false);
     }
@@ -1324,7 +1324,6 @@ static void init(void *userdata) {
     sg_setup(&desc);
     simgui_desc_t simgui_desc = {};
     simgui_desc.no_default_font = true;
-    simgui_desc.dpi_scale = 1.0f; //sapp_dpi_scale(); // @Todo: What to do here?
     simgui_desc.sample_count = sapp_sample_count();
 #ifdef NDEBUG
     simgui_desc.ini_filename = "imgui.ini";
@@ -1799,7 +1798,7 @@ static void frame(void *userdata) {
         dt = (float)(next - g.last_time);
         g.last_time = next;
     }
-    simgui_new_frame(sapp_width(), sapp_height(), dt);
+    simgui_new_frame({ sapp_width(), sapp_height(), dt, sapp_dpi_scale() });
     imgui_do_console(g);
     sapp_lock_mouse(g.control_state == ControlState::Orbiting);
     // sapp_show_mouse(g.control_state != ControlState::Dragging);
