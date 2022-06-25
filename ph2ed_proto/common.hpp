@@ -127,7 +127,7 @@ template <class T> struct Array {
     void resize(int64_t new_count, T value = {}) {
         invariants();
         amortize(new_count);
-        for (int64_t i = count; count < new_count; i += 1) data[i] = value;
+        for (int64_t i = count; i < new_count; i += 1) data[i] = value;
         count = new_count;
     }
     Array copy() {
