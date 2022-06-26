@@ -121,7 +121,7 @@ struct CLD_Face_Buffer {
 // Texture subfiles can be empty, so they can't be implicitly encoded by indices in MAP_Texture.
 struct MAP_Texture_Subfile {
     bool came_from_non_numbered_dependency = false; // @Temporary! (maybe? Yuck!)
-    uint32_t texture_count = 0;
+    int texture_count = 0;
 };
 
 // Geometries can be empty, so they can't be implicitly encoded by indices in MAP_Mesh.
@@ -902,9 +902,9 @@ static void map_write_struct(Array<uint8_t> *result, const void *px, size_t size
 static void map_write_to_memory(G &g, Array<uint8_t> *result, uint32_t temp_delete_me_prescient_file_length) {
     WriteLit(uint32_t, 0x20010510);
     Write(temp_delete_me_prescient_file_length); // @Todo: don't use prescient knowledge of the file length; backpatch it or prepass it instead.
+    int num_tex_subfiles = 0;
+    int num_geo_subfiles = 0;
     { // @Temporary: don't prepass(!!!); backpatch instead.
-        int num_tex_subfiles = 0;
-        int num_geo_subfiles = 0;
         for (auto &sub : g.texture_subfiles) {
             if (!sub.came_from_non_numbered_dependency) { // @Temporary i hope!
                 ++num_tex_subfiles;
@@ -923,12 +923,74 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, uint32_t temp_dele
         Write(subfile_count);
     }
     WriteLit(uint32_t, 0);
+    int rolling_texture_index = 0;
     for (auto &sub : g.texture_subfiles) {
-        if (sub.came_from_non_numbered_dependency) {
+        defer {
+            rolling_texture_index += sub.texture_count;
+        };
+        if (sub.came_from_non_numbered_dependency) { // @Temporary i hope!
             continue;
         }
         WriteLit(uint32_t, 2);
-        return;
+
+        int subfile_length = 0;
+        subfile_length += sizeof(PH2MAP__Texture_Subfile_Header);
+        // @Note: could be backpatched?
+        for (int texture_index = rolling_texture_index; texture_index < rolling_texture_index + sub.texture_count; texture_index++) {
+            subfile_length += sizeof(PH2MAP__BC_Texture_Header);
+            MAP_Texture &tex = g.textures[texture_index];
+            for (int sprite_index = 0; sprite_index < tex.sprite_count; sprite_index++) {
+                subfile_length += sizeof(PH2MAP__Sprite_Header);
+                // in theory, sprite pixels byte len would be added here, but it should always be 0 except the last
+            }
+            subfile_length += tex.pixel_bytes; // pixels byte len of the last sprite
+        }
+        subfile_length += 16; // textures are read until the first int of the line is 0, and then that line is skipped - hence, we add this terminator sentinel line here
+        Write(subfile_length);
+        // Log("Subfile %d is %d bytes", (int)(&sub - g.texture_subfiles.data) - (g.texture_subfiles.count - num_tex_subfiles), subfile_length);
+
+        WriteLit(uint32_t, 0);
+        WriteLit(uint32_t, 0);
+
+        WriteLit(uint32_t, 0x19990901);
+        WriteLit(uint32_t, 0);
+        WriteLit(uint32_t, 0);
+        WriteLit(uint32_t, 1);
+
+        for (int texture_index = rolling_texture_index; texture_index < rolling_texture_index + sub.texture_count; texture_index++) {
+            MAP_Texture &tex = g.textures[texture_index];
+            // Log("texture index is %d, id is %d", (int)texture_index, (int)tex.id);
+            PH2MAP__BC_Texture_Header bc_texture_header = {};
+            bc_texture_header.id = tex.id;
+            bc_texture_header.width = tex.width;
+            bc_texture_header.height = tex.height;
+            bc_texture_header.width2 = tex.width;
+            bc_texture_header.height2 = tex.height;
+            bc_texture_header.sprite_count = tex.sprite_count;
+            bc_texture_header.material = tex.material;
+            bc_texture_header.material2 = tex.material;
+            Write(bc_texture_header);
+        
+            for (int sprite_index = 0; sprite_index < tex.sprite_count; sprite_index++) {
+                PH2MAP__Sprite_Header sprite_header = {};
+                sprite_header.id = tex.sprite_metadata[sprite_index].id;
+                sprite_header.width = bc_texture_header.width;
+                sprite_header.height = bc_texture_header.height;
+                sprite_header.format = tex.sprite_metadata[sprite_index].format;
+                if (sprite_index == tex.sprite_count - 1) {
+                    sprite_header.data_length = tex.pixel_bytes;
+                } else {
+                    sprite_header.data_length = 0;
+                }
+                sprite_header.data_length_plus_header = sprite_header.data_length + 16;
+                sprite_header.always0x99000000 = 0x99000000;
+                Write(sprite_header);
+            }
+            map_write_struct(result, tex.pixel_data, tex.pixel_bytes);
+        }
+        { // textures are read until the first int of the line is 0, and then that line is skipped - hence, we add this terminator sentinel line here
+            WriteLit(PH2MAP__BC_End_Sentinel, PH2MAP__BC_End_Sentinel{});
+        }
     }
 }
 static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture> textures, uint32_t id) {
@@ -1004,7 +1066,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     enum { MAP_FILE_DATA_LENGTH_MAX = 16 * 1024 * 1024 }; // @Temporary?    
     static char filedata_do_not_modify_me_please[MAP_FILE_DATA_LENGTH_MAX]; // @Temporary
     uint32_t file_len_do_not_modify_me_please = 0;
-
     {
         {
             FILE *f = PH2CLD__fopen(filename, "rb");
@@ -1107,6 +1168,9 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                     assert(!has_ever_seen_geometry_subfile);
                     assert(ptr + subfile_header.length <= end);
                     auto end = ptr + subfile_header.length;
+                    if (!is_non_numbered_dependency) {
+                        // Log("Subfile %d is %d bytes", subfile_index, subfile_header.length);
+                    }
                     PH2MAP__Texture_Subfile_Header texture_subfile_header = {};
                     Read(ptr, texture_subfile_header);
                     assert(texture_subfile_header.magic == 0x19990901);
@@ -1155,6 +1219,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         tex.material = (uint8_t)bc_texture_header.material;
                         tex.sprite_count = (uint8_t)bc_texture_header.sprite_count;
 
+                        // Log("texture index is %d, id is %d", (int)g.textures.count - 1, (int)tex.id);
+
                         for (size_t sprite_index = 0; sprite_index < bc_texture_header.sprite_count; sprite_index++) {
                             PH2MAP__Sprite_Header sprite_header = {};
                             Read(ptr, sprite_header);
@@ -1166,8 +1232,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
 
                             assert(sprite_header.id <= 0xffff);
                             assert(sprite_header.format == 0x100 ||
-                                sprite_header.format == 0x102 || 
-                                sprite_header.format == 0x103 || 
+                                sprite_header.format == 0x102 ||
+                                sprite_header.format == 0x103 ||
                                 sprite_header.format == 0x104);
 
                             assert(sprite_header.data_length + 16 == sprite_header.data_length_plus_header);
@@ -1208,7 +1274,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                             ptr = pixels_end;
                         }
                     }
-                    ptr = end; // @Temporary
+                    assert(ptr == end);
                 } else {
                     assert(0);
                 }
