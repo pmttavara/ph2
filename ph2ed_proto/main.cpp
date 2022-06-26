@@ -149,6 +149,10 @@ struct MAP_Mesh_Part_Group {
     uint32_t section_index;
     Array<MAP_Mesh_Part> mesh_parts = {};
 };
+// @Note: Geometries can be empty -- contain 0 mesh groups (no opaque, no transparent, no decal).
+//        This means you can't just store tree nesting structure implicitly on the map meshes, you need
+//        explicit metadata if you want to preserve bit-for-bit roundtrippability.
+//        Geometry subfiles CANNOT be empty (I'm asserting geometry_count >= 1 as of writing). -p 2022-06-25
 struct MAP_Mesh {
     Array<MAP_Mesh_Part_Group> mesh_part_groups = {};
     Array<MAP_Mesh_Vertex_Buffer> vertex_buffers = {};
@@ -177,6 +181,9 @@ enum MAP_Texture_Format {
     MAP_Texture_Format_BC2,
     MAP_Texture_Format_BC3,
 };
+// @Note: Texture subfiles can be empty -- contain 0 textures.
+//        This means you can't just store tree nesting structure implicitly on the textures, you need
+//        explicit metadata if you want to preserve bit-for-bit roundtrippability. -p 2022-06-25
 struct MAP_Texture {
     sg_image image = {};
     uint16_t id = 0;
@@ -255,7 +262,7 @@ struct G {
 
     sg_image missing_texture = {};
     Array<MAP_Texture> textures = {};
-    int texture_ui_selected = 0;
+    int texture_ui_selected = -1;
 
     Array<uint16_t> materials = {}; // @Todo: swap uint16_t here with MAP_Material (just the in-file data verbatim)
 
@@ -811,6 +818,14 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, uint32_t temp_dele
 
     (void)g;
 }
+static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture> textures, uint32_t id) {
+    for (auto &tex : textures) {
+        if (tex.id == id) {
+            return &tex;
+        }
+    }
+    return nullptr;
+}
 static void map_load(G &g, const char *filename, bool clear_materials = true) {
     g.map_buffers_count = 0;
     g.decal_buffers_count = 0;
@@ -822,10 +837,11 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
     g.decal_meshes.clear();
     if (clear_materials) {
         g.materials.clear();
-        for (int i = 0; i < g.textures.count; i++) {
-            g.textures[i].release();
+        for (auto &tex : g.textures) {
+            tex.release();
         }
-        g.texture_ui_selected = 0;
+        g.textures.release();
+        g.texture_ui_selected = -1;
     }
     { // Semi-garbage code.
         int len = (int)strlen(filename);
@@ -893,7 +909,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                 uint32_t magic; // should be 0x20010510
                 uint32_t file_length;
                 uint32_t subfile_count;
-                uint32_t padding0;
+                uint32_t padding0; // always 0
             };
             PH2MAP__Header header = {};
             {
@@ -907,6 +923,8 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                 assert(header.file_length == file_len);
                 assert(header.padding0 == 0);
             }
+            // Log("Map \"%s\" has %u subfiles.", filename, header.subfile_count);
+            bool has_ever_seen_geometry_subfile = false;
             for (uint32_t subfile_index = 0; subfile_index < header.subfile_count; subfile_index++) {
                 struct PH2MAP__Subfile_Header {
                     uint32_t type; // 1 == Geometry; 2 == Texture
@@ -920,6 +938,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                 assert(subfile_header.padding0 == 0);
                 assert(subfile_header.padding1 == 0);
                 if (subfile_header.type == 1) { // Geometry subfile
+                    has_ever_seen_geometry_subfile = true;
                     auto ptr2 = ptr;
 
                     assert(ptr + subfile_header.length <= end);
@@ -985,6 +1004,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                     }
                     assert(ptr2 == ptr);
                 } else if (subfile_header.type == 2) { // Texture subfile
+                    assert(!has_ever_seen_geometry_subfile);
                     assert(ptr + subfile_header.length <= end);
                     auto end = ptr + subfile_header.length;
                     struct PH2MAP__Texture_Subfile_Header {
@@ -1040,7 +1060,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                         assert(bc_texture_header.pad[1] == 0);
                         assert(bc_texture_header.pad[2] == 0);
 
-                        MAP_Texture &tex = g.textures[bc_texture_header.id];
+                        MAP_Texture &tex = *g.textures.push(); // @Cleanup: replace ref with ptr here
                         tex.id = (uint16_t)bc_texture_header.id;
                         tex.width = bc_texture_header.width;
                         tex.height = bc_texture_header.height;
@@ -1097,7 +1117,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                 assert(tex.pixel_data);
                                 memcpy(tex.pixel_data, pixels_data, tex.pixel_bytes);
 
-                                assert(g.textures[bc_texture_header.id].image.id == 0);
+                                assert(tex.image.id == 0);
                                 if (tex.sprite_metadata[sprite_index].format == 0x100) {
                                     tex.format = MAP_Texture_Format_BC1;
                                 } else if (tex.sprite_metadata[sprite_index].format == 0x102) {
@@ -1130,6 +1150,9 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
 
     {
         Array<uint8_t> round_trip = {};
+        defer {
+            round_trip.release();
+        };
         map_write_to_memory(g, &round_trip, file_len_do_not_modify_me_please);
         assert(round_trip.count <= file_len_do_not_modify_me_please);
         // @Todo: assert(round_trip.count == file_len_do_not_modify_me_please);
@@ -1180,9 +1203,6 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
     // upload textures IFF this is a top-level map file
     if (clear_materials) {
         for (auto &tex : g.textures) {
-            if (!tex.id) {
-                continue;
-            }
             sg_image_desc d = {};
             d.width = tex.width;
             d.height = tex.height;
@@ -1355,7 +1375,6 @@ static void init(void *userdata) {
     };
     G &g = *(G *)userdata;
     new (userdata) G{};
-    g.textures.resize(65536);
     g.last_time = get_time();
     sg_desc desc = {};
     desc.context = sapp_sgcontext();
@@ -1980,27 +1999,25 @@ static void frame(void *userdata) {
                 ImGui::EndChild();
             };
             for (int i = 0; i < g.textures.count; i++) {
-                if (g.textures[i].image.id) {
-                    char b[16]; snprintf(b, sizeof b, "ID %d", i);
-                    if (ImGui::Selectable(b, g.texture_ui_selected == i)) {
-                        if (g.texture_ui_selected == i) {
-                            g.texture_ui_selected = 0;
-                        } else {
-                            g.texture_ui_selected = i;
-                        }
+                char b[16]; snprintf(b, sizeof b, "ID %d", g.textures[i].id);
+                if (ImGui::Selectable(b, g.texture_ui_selected == i)) {
+                    if (g.texture_ui_selected == i) {
+                        g.texture_ui_selected = -1;
+                    } else {
+                        g.texture_ui_selected = i;
                     }
                 }
             }
         }
-        ImGui::SameLine(0,-1);
-        if (g.texture_ui_selected != 0) {
+        ImGui::SameLine(0, -1);
+        if (g.texture_ui_selected != -1) {
             ImGui::BeginChild("texture_panel");
             defer {
                 ImGui::EndChild();
             };
-            sg_image_info info = sg_query_image_info(g.textures[g.texture_ui_selected].image);
-            float w = (float)info.width; 
-            float h = (float)info.height;
+            auto &tex = g.textures[g.texture_ui_selected];
+            float w = (float)tex.width; 
+            float h = (float)tex.height;
             float aspect = w / h;
             w = size.x - 99; // yucky hack
             h = size.y - 49; // yucky hack
@@ -2013,7 +2030,7 @@ static void frame(void *userdata) {
                 w = h * aspect;
             }
             if (w > 0 && h > 0) {
-                ImGui::Image((ImTextureID)(uintptr_t)g.textures[g.texture_ui_selected].image.id, ImVec2(w, h));
+                ImGui::Image((ImTextureID)(uintptr_t)tex.image.id, ImVec2(w, h));
             }
         }
     }
@@ -2150,16 +2167,17 @@ static void frame(void *userdata) {
                 sg_image tex = {};
                 assert(g.materials[g.map_buffers[i].material_index] >= 0);
                 assert(g.materials[g.map_buffers[i].material_index] < 65536);
+                auto map_tex = map_get_texture_by_id(g.textures, g.materials[g.map_buffers[i].material_index]);
                 if (g.materials[g.map_buffers[i].material_index] == 0) {
                     // @Todo: how do we render a mesh with no valid texture ID?
                     tex = g.missing_texture;
-                } else if (g.textures[g.materials[g.map_buffers[i].material_index]].image.id == 0) {
+                } else if (!map_tex) {
                     // @Todo: how do we render a mesh with a texture ID that references a nonexistent texture in the file?
                     // Does that texture ID refer to some external information in another file, such as a non-numbered map file?
                     tex = g.missing_texture;
                 } else {
-                    assert(g.textures[g.materials[g.map_buffers[i].material_index]].image.id);
-                    tex = g.textures[g.materials[g.map_buffers[i].material_index]].image;
+                    assert(map_tex->image.id);
+                    tex = map_tex->image;
                 }
                 {
                     sg_bindings b = {};
@@ -2182,16 +2200,17 @@ static void frame(void *userdata) {
                 sg_image tex = {};
                 assert(g.materials[g.decal_buffers[i].material_index] >= 0);
                 assert(g.materials[g.decal_buffers[i].material_index] < 65536);
+                auto map_tex = map_get_texture_by_id(g.textures, g.materials[g.decal_buffers[i].material_index]);
                 if (g.materials[g.decal_buffers[i].material_index] == 0) {
                     // @Todo: how do we render a mesh with no valid texture ID?
                     tex = g.missing_texture;
-                } else if (g.textures[g.materials[g.decal_buffers[i].material_index]].image.id == 0) {
+                } else if (!map_tex) {
                     // @Todo: how do we render a mesh with a texture ID that references a nonexistent texture in the file?
                     // Does that texture ID refer to some external information in another file, such as a non-numbered map file?
                     tex = g.missing_texture;
                 } else {
-                    assert(g.textures[g.materials[g.decal_buffers[i].material_index]].image.id);
-                    tex = g.textures[g.materials[g.decal_buffers[i].material_index]].image;
+                    assert(map_tex->image.id);
+                    tex = map_tex->image;
                 }
                 {
                     sg_bindings b = {};
