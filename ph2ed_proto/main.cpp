@@ -797,6 +797,20 @@ static void map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, const ch
         }
     }
 }
+static void map_write_struct(Array<uint8_t> *result, const void *px, size_t sizeof_x) {
+    result->resize(result->count + (int64_t)sizeof_x);
+    assert(result->data);
+    assert(result->count >= (int64_t)sizeof_x);
+    memcpy(&(*result)[result->count - (int64_t)sizeof_x], px, sizeof_x);
+}
+static void map_write_to_memory(G &g, Array<uint8_t> *result, uint32_t temp_delete_me_prescient_file_length) {
+    uint32_t magic = 0x20010510;
+#define Write(x) map_write_struct(result, &(x), sizeof(x))
+    Write(magic);
+    Write(temp_delete_me_prescient_file_length); // @Todo: don't use prescient knowledge of the file length; backpatch it instead.
+
+    (void)g;
+}
 static void map_load(G &g, const char *filename, bool clear_materials = true) {
     g.map_buffers_count = 0;
     g.decal_buffers_count = 0;
@@ -855,6 +869,11 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
     defer {
         Log("%d array resizes", num_array_resizes - prev_num_array_resizes);
     };
+    
+    enum { MAP_FILE_DATA_LENGTH_MAX = 16 * 1024 * 1024 }; // @Temporary?    
+    static char filedata_do_not_modify_me_please[MAP_FILE_DATA_LENGTH_MAX]; // @Temporary
+    uint32_t file_len_do_not_modify_me_please = 0;
+
     {
         {
             FILE *f = PH2CLD__fopen(filename, "rb");
@@ -878,8 +897,9 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
             };
             PH2MAP__Header header = {};
             {
-                static char filedata[16 * 1024 * 1024];
-                uint32_t file_len = (uint32_t)fread(filedata, 1, sizeof(filedata), f);
+                char *filedata = filedata_do_not_modify_me_please;
+                uint32_t file_len = (uint32_t)fread(filedata, 1, MAP_FILE_DATA_LENGTH_MAX, f);
+                file_len_do_not_modify_me_please = file_len;
                 ptr = filedata;
                 end = filedata + file_len;
                 Read(ptr, header);
@@ -1107,6 +1127,15 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
             }
         }
     }
+
+    {
+        Array<uint8_t> round_trip = {};
+        map_write_to_memory(g, &round_trip, file_len_do_not_modify_me_please);
+        assert(round_trip.count <= file_len_do_not_modify_me_please);
+        // @Todo: assert(round_trip.count == file_len_do_not_modify_me_please);
+        assert(memcmp(round_trip.data, filedata_do_not_modify_me_please, round_trip.count) == 0);
+    }
+
     // Log("about to upload %d map meshes", (int)g.opaque_meshes.count);
     for (MAP_Mesh &mesh : g.opaque_meshes) {
         int indices_index = 0;
