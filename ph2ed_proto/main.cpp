@@ -118,6 +118,7 @@ struct CLD_Face_Buffer {
     int num_vertices = 0;
 };
 
+// Texture subfiles can be empty, so they can't be implicitly encoded by indices in MAP_Texture.
 struct MAP_Texture_Subfile {
     bool came_from_non_numbered_dependency = false; // @Temporary! (maybe? Yuck!)
     uint32_t texture_count = 0;
@@ -403,12 +404,101 @@ static void cld_load(G &g, const char *filename) {
     g.cld_must_update = true;
 }
 #define Read(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(&(x), ptr, sizeof(x)) && (ptr += sizeof(x)))
+struct PH2MAP__Header {
+    uint32_t magic; // should be 0x20010510
+    uint32_t file_length;
+    uint32_t subfile_count;
+    uint32_t padding0; // always 0
+};
+struct PH2MAP__Subfile_Header {
+    uint32_t type; // 1 == Geometry; 2 == Texture
+    uint32_t length;
+    uint32_t padding0;
+    uint32_t padding1;
+};
+struct PH2MAP__Texture_Subfile_Header {
+    uint32_t magic; // should be 0x19990901
+    uint32_t pad[2];
+    uint32_t always1;
+};
+struct PH2MAP__BC_Texture_Header {
+    uint32_t id;
+    uint16_t width;
+    uint16_t height;
+    uint16_t width2;
+    uint16_t height2;
+    uint32_t sprite_count;
+    uint16_t material;
+    uint16_t material2; // @Note: the docs say this is always `id`, but I observe it's always `material`
+    uint32_t pad[3];
+};
+struct PH2MAP__BC_End_Sentinel {
+    uint32_t line_check;
+    uint32_t zero[3];
+};
+struct PH2MAP__Sprite_Header {
+    uint32_t id;
+    uint16_t x;
+    uint16_t y;
+    uint16_t width;
+    uint16_t height;
+    uint32_t format;
+    
+    // Sprite Pixel Header
+    uint32_t data_length;
+    uint32_t data_length_plus_header; // plus_header meaning +16
+    uint32_t pad;
+    uint32_t always0x99000000;
+};
+
+struct PH2MAP__Geometry_Subfile_Header {
+    uint32_t magic; // should be 0x20010730
+    uint32_t geometry_count;
+    uint32_t geometry_size;
+    uint32_t material_count;
+};
+
 struct PH2MAP__Geometry_Header {
     uint32_t id;
     int32_t group_size;
     int32_t opaque_group_offset;
     int32_t transparent_group_offset;
     int32_t decal_group_offset;
+};
+struct PH2MAP__Mapmesh_Header {
+    float bounding_box_a[4];
+    float bounding_box_b[4];
+    int32_t vertex_sections_header_offset;
+    int32_t indices_offset;
+    int32_t indices_length;
+    int32_t unknown; // @Todo: some kinda sanity check on this value
+    int32_t mesh_part_group_count;
+};
+struct PH2MAP__Mesh_Part_Group_Header {
+    uint32_t material_index;
+    uint32_t section_index;
+    uint32_t mesh_part_count;
+};
+struct PH2MAP__Mesh_Part {
+    uint16_t strip_length;
+    uint8_t invert_reading;
+    uint8_t strip_count;
+    uint16_t first_vertex;
+    uint16_t last_vertex;
+};
+struct PH2MAP__Decal_Header {
+    float bounding_box_a[4];
+    float bounding_box_b[4];
+    int32_t vertex_sections_header_offset;
+    int32_t indices_offset;
+    int32_t indices_length;
+    uint32_t sub_decal_count;
+};
+struct PH2MAP__Sub_Decal {
+    uint32_t material_index;
+    uint32_t section_index;
+    uint32_t strip_length;
+    uint32_t strip_count;
 };
 struct PH2MAP__Vertex_Sections_Header {
     int32_t vertices_length;
@@ -439,6 +529,14 @@ struct PH2MAP__Vertex_Section_Header {
     int32_t bytes_per_vertex;
     int32_t section_length;
 };
+struct PH2MAP__Material {
+    int16_t mode;
+    int16_t texture_id;
+    uint32_t material_color;
+    uint32_t overlay_color;
+    float specularity;
+};
+
 void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indices_index, const MAP_Mesh &mesh, MAP_Mesh_Part_Group mesh_part_group) {
     vertices.clear();
     int vertices_reserve = 0;
@@ -556,15 +654,6 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
         Common_Header header = {};
         uint32_t real_header_size = 0; // Semi hacky. Ouch!
         if (is_decal) {
-            struct PH2MAP__Decal_Header {
-                float bounding_box_a[4];
-                float bounding_box_b[4];
-                int32_t vertex_sections_header_offset;
-                int32_t indices_offset;
-                int32_t indices_length;
-                uint32_t sub_decal_count;
-            };
-
             PH2MAP__Decal_Header decal_header = {};
             Read(ptr4, decal_header);
             header.bounding_box_a[0] = decal_header.bounding_box_a[0];
@@ -582,16 +671,6 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
 
             real_header_size = sizeof(PH2MAP__Decal_Header);
         } else {
-            struct PH2MAP__Mapmesh_Header {
-                float bounding_box_a[4];
-                float bounding_box_b[4];
-                int32_t vertex_sections_header_offset;
-                int32_t indices_offset;
-                int32_t indices_length;
-                int32_t unknown; // @Todo: some kinda sanity check on this value
-                int32_t mesh_part_group_count;
-            };
-
             PH2MAP__Mapmesh_Header mapmesh_header = {};
             Read(ptr4, mapmesh_header);
             header.bounding_box_a[0] = mapmesh_header.bounding_box_a[0];
@@ -747,12 +826,6 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
             };
 
             if (is_decal) {
-                struct PH2MAP__Sub_Decal {
-                    uint32_t material_index;
-                    uint32_t section_index;
-                    uint32_t strip_length;
-                    uint32_t strip_count;
-                };
                 PH2MAP__Sub_Decal sub_decal = {};
                 Read(ptr4, sub_decal);
 
@@ -772,11 +845,6 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
                 int last_index = first_index + part.strip_length * part.strip_count;
                 indices_index = last_index;
             } else {
-                struct PH2MAP__Mesh_Part_Group_Header {
-                    uint32_t material_index;
-                    uint32_t section_index;
-                    uint32_t mesh_part_count;
-                };
                 PH2MAP__Mesh_Part_Group_Header mesh_part_group_header = {};
                 Read(ptr4, mesh_part_group_header);
             
@@ -788,13 +856,6 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
 
                 mesh_part_group.mesh_parts.reserve(mesh_part_group_header.mesh_part_count);
                 for (uint32_t mesh_part_index = 0; mesh_part_index < mesh_part_group_header.mesh_part_count; mesh_part_index++) {
-                    struct PH2MAP__Mesh_Part {
-                        uint16_t strip_length;
-                        uint8_t invert_reading;
-                        uint8_t strip_count;
-                        uint16_t first_vertex;
-                        uint16_t last_vertex;
-                    };
                     PH2MAP__Mesh_Part mesh_part = {};
                     Read(ptr4, mesh_part);
 
@@ -836,13 +897,39 @@ static void map_write_struct(Array<uint8_t> *result, const void *px, size_t size
     assert(result->count >= (int64_t)sizeof_x);
     memcpy(&(*result)[result->count - (int64_t)sizeof_x], px, sizeof_x);
 }
-static void map_write_to_memory(G &g, Array<uint8_t> *result, uint32_t temp_delete_me_prescient_file_length) {
-    uint32_t magic = 0x20010510;
 #define Write(x) map_write_struct(result, &(x), sizeof(x))
-    Write(magic);
-    Write(temp_delete_me_prescient_file_length); // @Todo: don't use prescient knowledge of the file length; backpatch it instead.
-
-    (void)g;
+#define WriteLit(T, x) do { T t = (x); Write(t); } while (0)
+static void map_write_to_memory(G &g, Array<uint8_t> *result, uint32_t temp_delete_me_prescient_file_length) {
+    WriteLit(uint32_t, 0x20010510);
+    Write(temp_delete_me_prescient_file_length); // @Todo: don't use prescient knowledge of the file length; backpatch it or prepass it instead.
+    { // @Temporary: don't prepass(!!!); backpatch instead.
+        int num_tex_subfiles = 0;
+        int num_geo_subfiles = 0;
+        for (auto &sub : g.texture_subfiles) {
+            if (!sub.came_from_non_numbered_dependency) { // @Temporary i hope!
+                ++num_tex_subfiles;
+            }
+        }
+        int prev_subfile_index = (int)num_tex_subfiles - 1;
+        assert(prev_subfile_index >= -1);
+        for (auto &geo : g.geometries) {
+            if ((int)geo.subfile_index != prev_subfile_index) {
+                assert((int)geo.subfile_index == prev_subfile_index + 1);
+                prev_subfile_index = (int)geo.subfile_index;
+                ++num_geo_subfiles;
+            }
+        }
+        uint32_t subfile_count = (uint32_t)num_tex_subfiles + num_geo_subfiles;
+        Write(subfile_count);
+    }
+    WriteLit(uint32_t, 0);
+    for (auto &sub : g.texture_subfiles) {
+        if (sub.came_from_non_numbered_dependency) {
+            continue;
+        }
+        WriteLit(uint32_t, 2);
+        return;
+    }
 }
 static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture> textures, uint32_t id) {
     for (auto &tex : textures) {
@@ -933,12 +1020,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             // @Temporary @Debug
             const char *ptr = nullptr;
             const char *end = nullptr;
-            struct PH2MAP__Header {
-                uint32_t magic; // should be 0x20010510
-                uint32_t file_length;
-                uint32_t subfile_count;
-                uint32_t padding0; // always 0
-            };
             PH2MAP__Header header = {};
             {
                 char *filedata = filedata_do_not_modify_me_please;
@@ -954,12 +1035,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             // Log("Map \"%s\" has %u subfiles.", filename, header.subfile_count);
             bool has_ever_seen_geometry_subfile = false;
             for (uint32_t subfile_index = 0; subfile_index < header.subfile_count; subfile_index++) {
-                struct PH2MAP__Subfile_Header {
-                    uint32_t type; // 1 == Geometry; 2 == Texture
-                    uint32_t length;
-                    uint32_t padding0;
-                    uint32_t padding1;
-                };
                 PH2MAP__Subfile_Header subfile_header = {};
                 Read(ptr, subfile_header);
                 assert(subfile_header.type == 1 || subfile_header.type == 2);
@@ -972,12 +1047,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                     assert(ptr + subfile_header.length <= end);
                     ptr += subfile_header.length;
                     
-                    struct PH2MAP__Geometry_Subfile_Header {
-                        uint32_t magic; // should be 0x20010730
-                        uint32_t geometry_count;
-                        uint32_t geometry_size;
-                        uint32_t material_count;
-                    };
                     PH2MAP__Geometry_Subfile_Header geometry_subfile_header = {};
                     Read(ptr2, geometry_subfile_header);
                     assert(geometry_subfile_header.magic == 0x20010730);
@@ -1028,13 +1097,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                     }
                     g.materials.reserve(geometry_subfile_header.material_count);
                     for (uint32_t material_index = 0; material_index < geometry_subfile_header.material_count; material_index++) {
-                        struct PH2MAP__Material {
-                            int16_t mode;
-                            int16_t texture_id;
-                            uint32_t material_color;
-                            uint32_t overlay_color;
-                            float specularity;
-                        };
                         PH2MAP__Material material = {};
                         Read(ptr2, material);
                         assert(PH2CLD__sanity_check_float(material.specularity));
@@ -1045,11 +1107,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                     assert(!has_ever_seen_geometry_subfile);
                     assert(ptr + subfile_header.length <= end);
                     auto end = ptr + subfile_header.length;
-                    struct PH2MAP__Texture_Subfile_Header {
-                        uint32_t magic;
-                        uint32_t pad[2];
-                        uint32_t always1;
-                    };
                     PH2MAP__Texture_Subfile_Header texture_subfile_header = {};
                     Read(ptr, texture_subfile_header);
                     assert(texture_subfile_header.magic == 0x19990901);
@@ -1067,10 +1124,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         {
                             auto ptr2 = ptr;
                             // "read until the first int of the line is 0, and then skip that line"
-                            struct PH2MAP__BC_End_Sentinel {
-                                uint32_t line_check;
-                                uint32_t zero[3];
-                            };
                             PH2MAP__BC_End_Sentinel bc_end_sentinel = {};
                             Read(ptr2, bc_end_sentinel);
                             if (bc_end_sentinel.line_check == 0) {
@@ -1082,17 +1135,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                             }
                         }
                         ++texture_subfile.texture_count;
-                        struct PH2MAP__BC_Texture_Header {
-                            uint32_t id;
-                            uint16_t width;
-                            uint16_t height;
-                            uint16_t width2;
-                            uint16_t height2;
-                            uint32_t sprite_count;
-                            uint16_t material;
-                            uint16_t material2; // @Note: the docs say this is always `id`, but I observe it's always `material`
-                            uint32_t pad[3];
-                        };
                         PH2MAP__BC_Texture_Header bc_texture_header = {};
                         Read(ptr, bc_texture_header);
                         assert(bc_texture_header.id <= 0xffff);
@@ -1114,24 +1156,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         tex.sprite_count = (uint8_t)bc_texture_header.sprite_count;
 
                         for (size_t sprite_index = 0; sprite_index < bc_texture_header.sprite_count; sprite_index++) {
-                            struct PH2MAP__Sprite_Header {
-                                uint32_t id;
-                                uint16_t x;
-                                uint16_t y;
-                                uint16_t width;
-                                uint16_t height;
-                                uint32_t format;
-                            };
-                            struct PH2MAP__Sprite_Pixel_Header {
-                                uint32_t data_length;
-                                uint32_t data_length_plus_header;
-                                uint32_t pad;
-                                uint32_t always0x99000000;
-                            };
                             PH2MAP__Sprite_Header sprite_header = {};
-                            PH2MAP__Sprite_Pixel_Header pixel_header = {};
                             Read(ptr, sprite_header);
-                            Read(ptr, pixel_header);
 
                             assert(sprite_header.x == 0);
                             assert(sprite_header.y == 0);
@@ -1144,12 +1170,12 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                                 sprite_header.format == 0x103 || 
                                 sprite_header.format == 0x104);
 
-                            assert(pixel_header.data_length + sizeof(PH2MAP__Sprite_Pixel_Header) == pixel_header.data_length_plus_header);
-                            assert(pixel_header.pad == 0);
-                            assert(pixel_header.always0x99000000 == 0x99000000);
+                            assert(sprite_header.data_length + 16 == sprite_header.data_length_plus_header);
+                            assert(sprite_header.pad == 0);
+                            assert(sprite_header.always0x99000000 == 0x99000000);
 
                             auto pixels_data = ptr; 
-                            uint32_t pixels_len = pixel_header.data_length;
+                            uint32_t pixels_len = sprite_header.data_length;
                             auto pixels_end = pixels_data + pixels_len;
 
                             tex.sprite_metadata[sprite_index].id = (uint16_t)sprite_header.id;
@@ -1193,20 +1219,19 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             }
         }
     }
-
-    {
-        Array<uint8_t> round_trip = {};
-        defer {
-            round_trip.release();
-        };
-        map_write_to_memory(g, &round_trip, file_len_do_not_modify_me_please);
-        assert(round_trip.count <= file_len_do_not_modify_me_please);
-        // @Todo: assert(round_trip.count == file_len_do_not_modify_me_please);
-        assert(memcmp(round_trip.data, filedata_do_not_modify_me_please, round_trip.count) == 0);
-    }
-
+    
     // upload textures and geometries IFF this is a top-level call
     if (!is_non_numbered_dependency) {
+        { // Round-trip test
+            Array<uint8_t> round_trip = {};
+            defer {
+                round_trip.release();
+            };
+            map_write_to_memory(g, &round_trip, file_len_do_not_modify_me_please);
+            assert(round_trip.count <= file_len_do_not_modify_me_please);
+            // @Todo: assert(round_trip.count == file_len_do_not_modify_me_please);
+            assert(memcmp(round_trip.data, filedata_do_not_modify_me_please, round_trip.count) == 0);
+        }
         // Log("about to upload %d map meshes", (int)g.opaque_meshes.count);
         for (MAP_Mesh &mesh : g.opaque_meshes) {
             int indices_index = 0;
