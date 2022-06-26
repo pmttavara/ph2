@@ -118,6 +118,22 @@ struct CLD_Face_Buffer {
     int num_vertices = 0;
 };
 
+struct MAP_Texture_Subfile {
+    bool came_from_non_numbered_dependency = false; // @Temporary! (maybe? Yuck!)
+    uint32_t texture_count = 0;
+};
+
+// Geometries can be empty, so they can't be implicitly encoded by indices in MAP_Mesh.
+// (MeshGroups can't be empty, so they can. Same with GeometryGroup subfiles, which we store here.)
+// This encoding is preserved to achieve bit-for-bit roundtrippability.
+struct MAP_Geometry {
+    uint32_t subfile_index = 0;
+    // You'll need to look into the MAP_Mesh arrays to figure out your start+end indices for these geometries.
+    uint32_t opaque_mesh_count = 0; // this one member encodes the entire MeshGroup.
+    uint32_t transparent_mesh_count = 0; // this one member encodes the entire MeshGroup.
+    uint32_t decal_count = 0; // this one member encodes the entire DecalGroup.
+};
+
 struct MAP_Geometry_Vertex {
     float position[3] = {};
     float normal[3] = {};
@@ -154,6 +170,7 @@ struct MAP_Mesh_Part_Group {
 //        explicit metadata if you want to preserve bit-for-bit roundtrippability.
 //        Geometry subfiles CANNOT be empty (I'm asserting geometry_count >= 1 as of writing). -p 2022-06-25
 struct MAP_Mesh {
+    uint32_t geometry_id = 0; // Data belonging to the parent Geometry, copied down into here for convenience
     Array<MAP_Mesh_Part_Group> mesh_part_groups = {};
     Array<MAP_Mesh_Vertex_Buffer> vertex_buffers = {};
     int vertex_buffers_count;
@@ -243,6 +260,9 @@ struct G {
     enum { cld_buffers_count = 4 };
     CLD_Face_Buffer cld_face_buffers[cld_buffers_count] = {};
 
+    Array<MAP_Texture_Subfile> texture_subfiles = {};
+    Array<MAP_Geometry> geometries = {};
+
     Array<MAP_Mesh> opaque_meshes = {};
     Array<MAP_Mesh> transparent_meshes = {};
     Array<MAP_Mesh> decal_meshes = {};
@@ -288,6 +308,8 @@ struct G {
         for (auto &mesh : decal_meshes) {
             mesh.release();
         }
+        geometries.release();
+        texture_subfiles.release();
         sg_destroy_pipeline(map_pipeline);
         for (auto &buf : map_buffers) {
             buf.release();
@@ -509,10 +531,11 @@ void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indi
         }
     }
 }
-static void map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, const char *group_header, const char *end, bool is_decal) {
+static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t geometry_id, const char *group_header, const char *end, bool is_decal) {
     const char *ptr3 = group_header;
     uint32_t count = 0;
     Read(ptr3, count);
+    assert(count > 0);
     meshes->reserve(count);
     for (uint32_t offset_index = 0; offset_index < count; offset_index++) {
         int32_t offset = 0;
@@ -591,6 +614,8 @@ static void map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, const ch
         defer {
             meshes->push(mesh);
         };
+
+        mesh.geometry_id = geometry_id;
 
         assert(PH2CLD__sanity_check_float4(header.bounding_box_a));
         assert(PH2CLD__sanity_check_float4(header.bounding_box_b));
@@ -803,6 +828,7 @@ static void map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, const ch
             }
         }
     }
+    return (int)count;
 }
 static void map_write_struct(Array<uint8_t> *result, const void *px, size_t sizeof_x) {
     result->resize(result->count + (int64_t)sizeof_x);
@@ -826,21 +852,23 @@ static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture> textures, uint32_t 
     }
     return nullptr;
 }
-static void map_load(G &g, const char *filename, bool clear_materials = true) {
+static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false) {
     g.map_buffers_count = 0;
     g.decal_buffers_count = 0;
+    g.geometries.clear();
     for (MAP_Mesh &mesh : g.opaque_meshes) mesh.release();
     for (MAP_Mesh &mesh : g.transparent_meshes) mesh.release();
     for (MAP_Mesh &mesh : g.decal_meshes) mesh.release();
     g.opaque_meshes.clear();
     g.transparent_meshes.clear();
     g.decal_meshes.clear();
-    if (clear_materials) {
+    if (!is_non_numbered_dependency) {
         g.materials.clear();
         for (auto &tex : g.textures) {
             tex.release();
         }
-        g.textures.release();
+        g.texture_subfiles.clear();
+        g.textures.clear();
         g.texture_ui_selected = -1;
     }
     { // Semi-garbage code.
@@ -873,8 +901,8 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                         };
                         snprintf(mem, n, "%s.map", non_numbered);
                         if (strcmp(filename, mem) != 0) {
-                            Log("Loading \"%s\" for base textures", mem);
-                            map_load(g, mem, false);
+                            // Log("Loading \"%s\" for base textures", mem);
+                            map_load(g, mem, true);
                         }
                     }
                 }
@@ -883,7 +911,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
     }
     int prev_num_array_resizes = num_array_resizes;
     defer {
-        Log("%d array resizes", num_array_resizes - prev_num_array_resizes);
+        // Log("%d array resizes", num_array_resizes - prev_num_array_resizes);
     };
     
     enum { MAP_FILE_DATA_LENGTH_MAX = 16 * 1024 * 1024 }; // @Temporary?    
@@ -969,20 +997,30 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
 
                         ptr2 -= sizeof(geometry_header);
 
+                        MAP_Geometry geometry = {};
+                        defer {
+                            g.geometries.push(geometry);
+                        };
+
+                        geometry.subfile_index = subfile_index;
+
                         if (geometry_header.opaque_group_offset) {
                             // Log("Opaque!");
                             const char *mesh_group_header = ptr2 + geometry_header.opaque_group_offset;
-                            map_load_mesh_group_or_decal_group(&g.opaque_meshes, mesh_group_header, ptr2 + geometry_header.group_size, false);
+                            int num_added = map_load_mesh_group_or_decal_group(&g.opaque_meshes, geometry_header.id, mesh_group_header, ptr2 + geometry_header.group_size, false);
+                            geometry.opaque_mesh_count += num_added;
                         }
                         if (geometry_header.transparent_group_offset) {
                             // Log("Transparent!");
                             const char *mesh_group_header = ptr2 + geometry_header.transparent_group_offset;
-                            map_load_mesh_group_or_decal_group(&g.transparent_meshes, mesh_group_header, ptr2 + geometry_header.group_size, false);
+                            int num_added = map_load_mesh_group_or_decal_group(&g.transparent_meshes, geometry_header.id, mesh_group_header, ptr2 + geometry_header.group_size, false);
+                            geometry.transparent_mesh_count += num_added;
                         }
                         if (geometry_header.decal_group_offset) {
                             // Log("Decals!");
                             const char *decal_group_header = ptr2 + geometry_header.decal_group_offset;
-                            map_load_mesh_group_or_decal_group(&g.decal_meshes, decal_group_header, ptr2 + geometry_header.group_size, true);
+                            int num_added = map_load_mesh_group_or_decal_group(&g.decal_meshes, geometry_header.id, decal_group_header, ptr2 + geometry_header.group_size, true);
+                            geometry.decal_count += num_added;
                         }
                         
                         ptr2 += geometry_header.group_size;
@@ -1018,6 +1056,13 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                     assert(texture_subfile_header.pad[0] == 0);
                     assert(texture_subfile_header.pad[1] == 0);
                     assert(texture_subfile_header.always1 == 1);
+
+                    MAP_Texture_Subfile texture_subfile = {};
+                    defer {
+                        g.texture_subfiles.push(texture_subfile);
+                    };
+                    texture_subfile.came_from_non_numbered_dependency = is_non_numbered_dependency;
+
                     for (;;) {
                         {
                             auto ptr2 = ptr;
@@ -1036,6 +1081,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                 break;
                             }
                         }
+                        ++texture_subfile.texture_count;
                         struct PH2MAP__BC_Texture_Header {
                             uint32_t id;
                             uint16_t width;
@@ -1159,49 +1205,49 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
         assert(memcmp(round_trip.data, filedata_do_not_modify_me_please, round_trip.count) == 0);
     }
 
-    // Log("about to upload %d map meshes", (int)g.opaque_meshes.count);
-    for (MAP_Mesh &mesh : g.opaque_meshes) {
-        int indices_index = 0;
-        // Log("about to upload %d mesh part groups", (int)mesh.mesh_part_groups.count);
-        for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-            assert(g.map_buffers_count < g.map_buffers_max);
-            auto & map_buffer = g.map_buffers[g.map_buffers_count++];
-            map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
-            assert(map_buffer.vertices.count % 3 == 0);
-            // map_buffer.id = geometry_header.id; // @Temporary! We need to retain this info eventually!
-            assert(mesh_part_group.material_index >= 0);
-            assert(mesh_part_group.material_index < 65536);
-            map_buffer.material_index = (uint16_t)mesh_part_group.material_index;
+    // upload textures and geometries IFF this is a top-level call
+    if (!is_non_numbered_dependency) {
+        // Log("about to upload %d map meshes", (int)g.opaque_meshes.count);
+        for (MAP_Mesh &mesh : g.opaque_meshes) {
+            int indices_index = 0;
+            // Log("about to upload %d mesh part groups", (int)mesh.mesh_part_groups.count);
+            for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
+                assert(g.map_buffers_count < g.map_buffers_max);
+                auto &map_buffer = g.map_buffers[g.map_buffers_count++];
+                map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
+                assert(map_buffer.vertices.count % 3 == 0);
+                map_buffer.id = mesh.geometry_id;
+                assert(mesh_part_group.material_index >= 0);
+                assert(mesh_part_group.material_index < 65536);
+                map_buffer.material_index = (uint16_t)mesh_part_group.material_index;
+            }
         }
-    }
-    for (MAP_Mesh &mesh : g.transparent_meshes) {
-        int indices_index = 0;
-        for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-            assert(g.decal_buffers_count < g.decal_buffers_max);
-            auto & decal_buffer = g.decal_buffers[g.decal_buffers_count++];
-            map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
-            assert(decal_buffer.vertices.count % 3 == 0);
-            // decal_buffer.id = geometry_header.id;
-            assert(mesh_part_group.material_index >= 0);
-            assert(mesh_part_group.material_index < 65536);
-            decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
+        for (MAP_Mesh &mesh : g.transparent_meshes) {
+            int indices_index = 0;
+            for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
+                assert(g.decal_buffers_count < g.decal_buffers_max);
+                auto &decal_buffer = g.decal_buffers[g.decal_buffers_count++];
+                map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
+                assert(decal_buffer.vertices.count % 3 == 0);
+                decal_buffer.id = mesh.geometry_id;
+                assert(mesh_part_group.material_index >= 0);
+                assert(mesh_part_group.material_index < 65536);
+                decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
+            }
         }
-    }
-    for (MAP_Mesh &mesh : g.decal_meshes) {
-        int indices_index = 0;
-        for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-            assert(g.decal_buffers_count < g.decal_buffers_max);
-            auto & decal_buffer = g.decal_buffers[g.decal_buffers_count++];
-            map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
-            assert(decal_buffer.vertices.count % 3 == 0);
-            // decal_buffer.id = geometry_header.id;
-            assert(mesh_part_group.material_index >= 0);
-            assert(mesh_part_group.material_index < 65536);
-            decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
+        for (MAP_Mesh &mesh : g.decal_meshes) {
+            int indices_index = 0;
+            for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
+                assert(g.decal_buffers_count < g.decal_buffers_max);
+                auto &decal_buffer = g.decal_buffers[g.decal_buffers_count++];
+                map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
+                assert(decal_buffer.vertices.count % 3 == 0);
+                decal_buffer.id = mesh.geometry_id;
+                assert(mesh_part_group.material_index >= 0);
+                assert(mesh_part_group.material_index < 65536);
+                decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
+            }
         }
-    }
-    // upload textures IFF this is a top-level map file
-    if (clear_materials) {
         for (auto &tex : g.textures) {
             sg_image_desc d = {};
             d.width = tex.width;
@@ -1221,26 +1267,40 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
             tex.image = sg_make_image(d);
             assert(tex.image.id);
         }
+
+        // Log("%lld geometries", g.geometries.count);
+        // for (auto &geo : g.geometries) {
+        //     Log("    %u meshes", geo.opaque_mesh_count + geo.transparent_mesh_count + geo.decal_count);
+        // }
+        // Log("%lld texture subfiles", g.texture_subfiles.count);
+        // for (auto &sub : g.texture_subfiles) {
+        //     Log("    %u textures%s", sub.texture_count, sub.came_from_non_numbered_dependency ? " (from non-numbered dependency)" : "");
+        // }
+
+        g.map_must_update = true;
+        sapp_set_window_title(filename);
     }
-    g.map_must_update = true;
-    sapp_set_window_title(filename);
 }
 static void test_all_maps(G &g) {
     struct _finddata_t find_data;
     intptr_t directory = _findfirst("map/*.map", &find_data);
     assert(directory >= 0);
+    int spinner = 0;
+    int num_tested = 0;
     while (1) {
         char b[260 + sizeof("map/")];
         snprintf(b, sizeof(b), "map/%s", find_data.name);
-        Log("Loading map \"%s\"", b);
+        // Log("Loading map \"%s\"", b);
+        printf("%c\r", "|/-\\"[spinner++ % 4]);
         map_load(g, b);
+        ++num_tested;
         if (_findnext(directory, &find_data) < 0) {
             if (errno == ENOENT) break;
             else assert(0);
         }
     }
     _findclose(directory);
-    fflush(stdout);
+    Log("Tested %d maps.", num_tested);
 }
 
 static void imgui_do_console(G &g) {
