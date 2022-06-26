@@ -862,67 +862,60 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                             uint32_t decal_count = 0;
                             Read(ptr3, decal_count);
                             // Log("%s has %d decals", filename, decal_count);
-                            uint32_t prev_off = 0;
-                            const char *decals[1024] = {};
-                            assert(decal_count < countof(decals));
-                            for (uint32_t decal_index = 0; decal_index < decal_count; decal_index++) {
-                                uint32_t offset = 0;
-                                Read(ptr3, offset);
-                                // We could sanity check these values as well.
-                                decals[decal_index] = decal_group_header + offset;
-                            }
                             g.decal_meshes.reserve(decal_count);
                             for (uint32_t decal_index = 0; decal_index < decal_count; decal_index++) {
-                                ptr3 = decals[decal_index];
+                                int32_t decal_offset = 0;
+                                Read(ptr3, decal_offset);
+                                assert(decal_offset > 0);
+
+                                const char *decal_header_base = decal_group_header + decal_offset;
+                                const char *ptr4 = decal_header_base;
+                                struct PH2MAP__Decal_Header {
+                                    float bounding_box_a[4];
+                                    float bounding_box_b[4];
+                                    int32_t vertex_sections_header_offset;
+                                    int32_t indices_offset;
+                                    int32_t indices_length;
+                                    uint32_t sub_decal_count;
+                                };
                                 
                                 MAP_Mesh mesh = {};
                                 defer {
                                     g.decal_meshes.push(mesh);
                                 };
-
-                                struct PH2MAP__Decal_Header {
-                                    float bounding_box_a[4];
-                                    float bounding_box_b[4];
-                                    int32_t unused; // is this always 0?
-                                    int32_t indices_offset;
-                                    int32_t indices_length;
-                                    uint32_t sub_decal_count;
-                                };
+                                
                                 PH2MAP__Decal_Header decal_header = {};
-                                Read(ptr3, decal_header);
+                                Read(ptr4, decal_header);
+                                assert(PH2CLD__sanity_check_float4(decal_header.bounding_box_a));
+                                assert(PH2CLD__sanity_check_float4(decal_header.bounding_box_b));
+                                assert(decal_header.bounding_box_a[0] <= decal_header.bounding_box_b[0]);
+                                assert(decal_header.bounding_box_a[1] <= decal_header.bounding_box_b[1]);
+                                assert(decal_header.bounding_box_a[2] <= decal_header.bounding_box_b[2]);
+                                assert(decal_header.bounding_box_a[3] == 0);
+                                assert(decal_header.bounding_box_b[3] == 0);
+                                assert(decal_header.indices_offset >= 0);
+                                assert(decal_header.indices_length >= 0);
+                                assert(decal_header.indices_length % sizeof(uint16_t) == 0);
+                                assert(decal_header_base + decal_header.indices_offset + decal_header.indices_length <= end);
 
-                                struct PH2MAP__Sub_Decal {
-                                    uint32_t material_index;
-                                    uint32_t section_index;
-                                    uint32_t strip_length;
-                                    uint32_t strip_count;
-                                };
-                                PH2MAP__Sub_Decal sub_decals[1024] = {};
-                                assert(decal_header.sub_decal_count < countof(sub_decals));
-                                for (uint32_t sub_decal_index = 0; sub_decal_index < decal_header.sub_decal_count; sub_decal_index++) {
-                                    Read(ptr3, sub_decals[sub_decal_index]);
-                                }
+                                ptr4 = decal_header_base + decal_header.vertex_sections_header_offset;
+                                assert(decal_header.vertex_sections_header_offset == ptr4 - decal_header_base);
                                 PH2MAP__Vertex_Sections_Header vertex_sections_header = {};
-                                Read(ptr3, vertex_sections_header);
+                                Read(ptr4, vertex_sections_header);
                                 assert(vertex_sections_header.vertices_length >= 0);
                                 assert(vertex_sections_header.vertex_section_count >= 0);
                                 assert(vertex_sections_header.vertex_section_count <= 4);
-                                const char *ptr4 = ptr3 + vertex_sections_header.vertex_section_count * sizeof(PH2MAP__Vertex_Section_Header);
-                                const char *end_of_previous_section = ptr4;
+                                const char *ptr5 = ptr4 + vertex_sections_header.vertex_section_count * sizeof(PH2MAP__Vertex_Section_Header);
+                                const char *end_of_previous_section = ptr5;
                                 mesh.vertex_buffers.reserve(vertex_sections_header.vertex_section_count);
                                 for (int32_t vertex_section_index = 0; vertex_section_index < vertex_sections_header.vertex_section_count; vertex_section_index++) {
                                     PH2MAP__Vertex_Section_Header vertex_section_header = {};
-                                    Read(ptr3, vertex_section_header);
+                                    Read(ptr4, vertex_section_header);
                                     
-                                    MAP_Mesh_Vertex_Buffer vertex_buffer = {};
-                                    defer {
-                                        mesh.vertex_buffers.push(vertex_buffer);
-                                    };
-
                                     // @Note: How does section_starts work?
                                     //assert(vertex_section_header.section_starts == 0);
 
-                                    const char *vertex_section_offset_base = ptr3;
+                                    const char *vertex_section_offset_base = ptr4;
 
                                     assert(vertex_section_header.section_starts >= 0);
                                     assert(vertex_section_header.bytes_per_vertex == 0x14 ||
@@ -931,20 +924,25 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                         vertex_section_header.bytes_per_vertex == 0x24);
                                     assert(vertex_section_header.section_length >= 0);
                                     assert(vertex_section_header.section_length % vertex_section_header.bytes_per_vertex == 0);
+                                    
+                                    MAP_Mesh_Vertex_Buffer vertex_buffer = {};
+                                    defer {
+                                        mesh.vertex_buffers.push(vertex_buffer);
+                                    };
 
                                     vertex_buffer.bytes_per_vertex = vertex_section_header.bytes_per_vertex;
                                     
                                     vertex_buffer.num_vertices = vertex_section_header.section_length / vertex_section_header.bytes_per_vertex;
 
-                                    assert(ptr4 == end_of_previous_section);
-                                    const char *end_of_this_section = ptr4 + vertex_section_header.section_length;
+                                    assert(ptr5 == end_of_previous_section);
+                                    const char *end_of_this_section = ptr5 + vertex_section_header.section_length;
                                     vertex_buffer.data = (char *)malloc(vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
-                                    memcpy(vertex_buffer.data, ptr4, vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
+                                    memcpy(vertex_buffer.data, ptr5, vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
                                     for (int i = 0; i < vertex_buffer.num_vertices; i++) {
                                         switch (vertex_section_header.bytes_per_vertex) {
                                             case 0x14: {
                                                 PH2MAP__Vertex14 vert = {};
-                                                Read(ptr4, vert);
+                                                Read(ptr5, vert);
                                                 assert(PH2CLD__sanity_check_float3(vert.position));
                                                 assert(PH2CLD__sanity_check_float2(vert.uv));
                                                 assert(vert.uv[0] > -1);
@@ -954,7 +952,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                             } break;
                                             case 0x18: {
                                                 PH2MAP__Vertex18 vert = {};
-                                                Read(ptr4, vert);
+                                                Read(ptr5, vert);
                                                 assert(PH2CLD__sanity_check_float3(vert.position));
                                                 assert(PH2CLD__sanity_check_float2(vert.uv));
                                                 assert(vert.uv[0] > -1);
@@ -964,7 +962,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                             } break;
                                             case 0x20: {
                                                 PH2MAP__Vertex20 vert = {};
-                                                Read(ptr4, vert);
+                                                Read(ptr5, vert);
                                                 assert(PH2CLD__sanity_check_float3(vert.position));
                                                 // It looks like sometimes this can be NaN (0x7fc00000);
                                                 // it'd be nice to check if it's 0x7fc00000 and only sanity check otherwise.
@@ -977,7 +975,7 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                             } break;
                                             case 0x24: {
                                                 PH2MAP__Vertex24 vert = {};
-                                                Read(ptr4, vert);
+                                                Read(ptr5, vert);
                                                 assert(PH2CLD__sanity_check_float3(vert.position));
                                                 // It looks like sometimes this can be NaN (0x7fc00000);
                                                 // it'd be nice to check if it's 0x7fc00000 and only sanity check otherwise.
@@ -990,35 +988,50 @@ static void map_load(G &g, const char *filename, bool clear_materials = true) {
                                             } break;
                                         };
                                     }
-                                    assert(ptr4 == end_of_this_section);
+                                    assert(ptr5 == end_of_this_section);
                                     end_of_previous_section = end_of_this_section;
                                 }
-                                assert(end_of_previous_section == decals[decal_index] + decal_header.indices_offset);
-                                ptr3 = end_of_previous_section;
+                                assert(end_of_previous_section == decal_header_base + decal_header.indices_offset);
+                                ptr4 = end_of_previous_section;
+                                assert(decal_header.indices_length % sizeof(uint16_t) == 0);
                                 int indices_count = decal_header.indices_length / sizeof(uint16_t);
                                 mesh.indices.reserve(indices_count);
                                 for (int indices_index = 0; indices_index < indices_count; indices_index++) {
                                     uint16_t index = 0;
-                                    Read(ptr3, index);
+                                    Read(ptr4, index);
                                     mesh.indices.push(index);
                                 }
+                                ptr4 = decal_header_base + sizeof(PH2MAP__Decal_Header);
                                 int indices_index = 0;
                                 mesh.mesh_part_groups.reserve(decal_header.sub_decal_count);
                                 for (uint32_t sub_decal_index = 0; sub_decal_index < decal_header.sub_decal_count; sub_decal_index++) {
+                                    struct PH2MAP__Sub_Decal {
+                                        uint32_t material_index;
+                                        uint32_t section_index;
+                                        uint32_t strip_length;
+                                        uint32_t strip_count;
+                                    };
+                                    PH2MAP__Sub_Decal sub_decal = {};
+                                    Read(ptr4, sub_decal);
+
+
+                                    assert(sub_decal.section_index < 4);
+
                                     // push sub decal to the map mesh part group array in question
                                     MAP_Mesh_Part_Group mesh_part_group = {};
                                     defer {
                                         mesh.mesh_part_groups.push(mesh_part_group);
                                     };
-                                    mesh_part_group.material_index = sub_decals[sub_decal_index].material_index;
-                                    mesh_part_group.section_index = sub_decals[sub_decal_index].section_index;
+                                    mesh_part_group.material_index = sub_decal.material_index;
+                                    mesh_part_group.section_index = sub_decal.section_index;
+
                                     mesh_part_group.mesh_parts.reserve(1);
                                     MAP_Mesh_Part part = {};
                                     defer {
                                         mesh_part_group.mesh_parts.push(part);
                                     };
-                                    part.strip_length = sub_decals[sub_decal_index].strip_length;
-                                    part.strip_count = sub_decals[sub_decal_index].strip_count;
+                                    part.strip_length = sub_decal.strip_length;
+                                    part.strip_count = sub_decal.strip_count;
                                     int first_index = indices_index;
                                     int last_index = first_index + part.strip_length * part.strip_count;
                                     indices_index = last_index;
