@@ -190,6 +190,16 @@ struct MAP_Mesh {
         indices.release();
     }
 };
+
+struct MAP_Material {
+    uint32_t subfile_index = 0;
+    int16_t mode;
+    int16_t texture_id;
+    uint32_t material_color;
+    uint32_t overlay_color;
+    float specularity;
+};
+
 struct MAP_Sprite_Metadata {
     uint16_t id;
     uint16_t format;
@@ -285,7 +295,7 @@ struct G {
     Array<MAP_Texture> textures = {};
     int texture_ui_selected = -1;
 
-    Array<uint16_t> materials = {}; // @Todo: swap uint16_t here with MAP_Material (just the in-file data verbatim)
+    Array<MAP_Material> materials = {};
 
     bool cld_must_update = false;
     bool map_must_update = false;
@@ -931,7 +941,9 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, uint32_t temp_dele
         if (sub.came_from_non_numbered_dependency) { // @Temporary i hope!
             continue;
         }
-        WriteLit(uint32_t, 2);
+        
+        // Write subfile header
+        WriteLit(uint32_t, 2); // subfile type
 
         int subfile_length = 0;
         subfile_length += sizeof(PH2MAP__Texture_Subfile_Header);
@@ -949,13 +961,14 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, uint32_t temp_dele
         Write(subfile_length);
         // Log("Subfile %d is %d bytes", (int)(&sub - g.texture_subfiles.data) - (g.texture_subfiles.count - num_tex_subfiles), subfile_length);
 
-        WriteLit(uint32_t, 0);
-        WriteLit(uint32_t, 0);
+        WriteLit(uint32_t, 0); // pad
+        WriteLit(uint32_t, 0); // pad
 
-        WriteLit(uint32_t, 0x19990901);
-        WriteLit(uint32_t, 0);
-        WriteLit(uint32_t, 0);
-        WriteLit(uint32_t, 1);
+        // Write texture subfile header
+        PH2MAP__Texture_Subfile_Header texture_subfile_header = {};
+        texture_subfile_header.magic = 0x19990901;
+        texture_subfile_header.always1 = 1;
+        Write(texture_subfile_header);
 
         for (int texture_index = rolling_texture_index; texture_index < rolling_texture_index + sub.texture_count; texture_index++) {
             MAP_Texture &tex = g.textures[texture_index];
@@ -991,6 +1004,101 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, uint32_t temp_dele
         { // textures are read until the first int of the line is 0, and then that line is skipped - hence, we add this terminator sentinel line here
             WriteLit(PH2MAP__BC_End_Sentinel, PH2MAP__BC_End_Sentinel{});
         }
+    }
+    uint32_t subfile_index = (uint32_t)num_tex_subfiles;
+    assert(subfile_index >= 0);
+    int rolling_opaque_mesh_index = 0;
+    int rolling_transparent_mesh_index = 0;
+    int rolling_decal_index = 0;
+    for (;;) { // Write geometry subfiles and geometries
+        int geometry_start = 0;
+        int geometry_count = 0;
+        for (auto &geo : g.geometries) {
+            if (geo.subfile_index == subfile_index) {
+                if (!geometry_count) {
+                    geometry_start = (int)(&geo - g.geometries.data);
+                }
+                ++geometry_count;
+            }
+        }
+        if (geometry_count <= 0) {
+            break;
+        }
+        int material_start = 0;
+        int material_count = 0;
+        for (auto &mat : g.materials) {
+            if (mat.subfile_index == subfile_index) {
+                if (!material_count) {
+                    material_start = (int)(&mat - g.materials.data);
+                }
+                ++material_count;
+            }
+        }
+
+        WriteLit(uint32_t, 1);
+
+        int subfile_length = 0;
+        subfile_length += sizeof(PH2MAP__Geometry_Subfile_Header);
+        // @Note: could be backpatched?
+        for (int geometry_index = geometry_start; geometry_index < geometry_start + geometry_count; geometry_index++) {
+            MAP_Geometry &geo = g.geometries[geometry_index];
+            subfile_length += sizeof(PH2MAP__Geometry_Header);
+            if (geo.opaque_mesh_count > 0) {
+                subfile_length += (1 + geo.opaque_mesh_count) * sizeof(uint32_t); // count + offsets
+                for (int mesh_index = rolling_opaque_mesh_index; mesh_index < rolling_opaque_mesh_index + (int)geo.opaque_mesh_count; mesh_index++) {
+                    subfile_length += sizeof(PH2MAP__Mapmesh_Header);
+                    MAP_Mesh &mesh = g.opaque_meshes[mesh_index];
+                    for (auto &mesh_part_group : mesh.mesh_part_groups) {
+                        subfile_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
+                        subfile_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
+                    }
+                    subfile_length += sizeof(PH2MAP__Vertex_Sections_Header);
+                    subfile_length += (int)(mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
+                    for (auto &section : mesh.vertex_buffers) {
+                        subfile_length += section.num_vertices * section.bytes_per_vertex;
+                    }
+                    subfile_length += (int)(mesh.indices.count * sizeof(uint16_t));
+                }
+            }
+            if (geo.transparent_mesh_count > 0) {
+                subfile_length += (1 + geo.transparent_mesh_count) * sizeof(uint32_t); // count + offsets
+                for (int mesh_index = rolling_transparent_mesh_index; mesh_index < rolling_transparent_mesh_index + (int)geo.transparent_mesh_count; mesh_index++) {
+                    subfile_length += sizeof(PH2MAP__Mapmesh_Header);
+                    MAP_Mesh &mesh = g.transparent_meshes[mesh_index];
+                    for (auto &mesh_part_group : mesh.mesh_part_groups) {
+                        subfile_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
+                        subfile_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
+                    }
+                    subfile_length += sizeof(PH2MAP__Vertex_Sections_Header);
+                    subfile_length += (int)(mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
+                    for (auto &section : mesh.vertex_buffers) {
+                        subfile_length += section.num_vertices * section.bytes_per_vertex;
+                    }
+                    subfile_length += (int)(mesh.indices.count * sizeof(uint16_t));
+                }
+            }
+            if (geo.decal_count > 0) {
+                subfile_length += (1 + geo.decal_count) * sizeof(uint32_t); // count + offsets
+                for (int decal_index = rolling_decal_index; decal_index < rolling_decal_index + (int)geo.decal_count; decal_index++) {
+                    subfile_length += sizeof(PH2MAP__Decal_Header);
+                    MAP_Mesh &decal = g.decal_meshes[decal_index];
+                    subfile_length += (int)(decal.mesh_part_groups.count * sizeof(PH2MAP__Sub_Decal));
+                    subfile_length += sizeof(PH2MAP__Vertex_Sections_Header);
+                    subfile_length += (int)(decal.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
+                    for (auto &section : decal.vertex_buffers) {
+                        subfile_length += section.num_vertices * section.bytes_per_vertex;
+                    }
+                    subfile_length += (int)(decal.indices.count * sizeof(uint16_t));
+                }
+            }
+        }
+        subfile_length += material_count * sizeof(PH2MAP__Material);
+
+        WriteLit(uint32_t, subfile_length);
+
+        return;
+
+        // ++subfile_index;
     }
 }
 static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture> textures, uint32_t id) {
@@ -1161,7 +1269,17 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         PH2MAP__Material material = {};
                         Read(ptr2, material);
                         assert(PH2CLD__sanity_check_float(material.specularity));
-                        g.materials.push(material.texture_id);
+
+                        MAP_Material mat = {};
+                        defer {
+                            g.materials.push(mat);
+                        };
+                        mat.subfile_index = subfile_index;
+                        mat.mode = material.mode;
+                        mat.texture_id = material.texture_id;
+                        mat.material_color = material.material_color;
+                        mat.overlay_color = material.overlay_color;
+                        mat.specularity = material.specularity;
                     }
                     assert(ptr2 == ptr);
                 } else if (subfile_header.type == 2) { // Texture subfile
@@ -2316,10 +2434,10 @@ static void frame(void *userdata) {
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
                 sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
                 sg_image tex = {};
-                assert(g.materials[g.map_buffers[i].material_index] >= 0);
-                assert(g.materials[g.map_buffers[i].material_index] < 65536);
-                auto map_tex = map_get_texture_by_id(g.textures, g.materials[g.map_buffers[i].material_index]);
-                if (g.materials[g.map_buffers[i].material_index] == 0) {
+                assert(g.materials[g.map_buffers[i].material_index].texture_id >= 0);
+                assert(g.materials[g.map_buffers[i].material_index].texture_id < 65536);
+                auto map_tex = map_get_texture_by_id(g.textures, g.materials[g.map_buffers[i].material_index].texture_id);
+                if (g.materials[g.map_buffers[i].material_index].texture_id == 0) {
                     // @Todo: how do we render a mesh with no valid texture ID?
                     tex = g.missing_texture;
                 } else if (!map_tex) {
@@ -2349,10 +2467,10 @@ static void frame(void *userdata) {
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
                 sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
                 sg_image tex = {};
-                assert(g.materials[g.decal_buffers[i].material_index] >= 0);
-                assert(g.materials[g.decal_buffers[i].material_index] < 65536);
-                auto map_tex = map_get_texture_by_id(g.textures, g.materials[g.decal_buffers[i].material_index]);
-                if (g.materials[g.decal_buffers[i].material_index] == 0) {
+                assert(g.materials[g.decal_buffers[i].material_index].texture_id >= 0);
+                assert(g.materials[g.decal_buffers[i].material_index].texture_id < 65536);
+                auto map_tex = map_get_texture_by_id(g.textures, g.materials[g.decal_buffers[i].material_index].texture_id);
+                if (g.materials[g.decal_buffers[i].material_index].texture_id == 0) {
                     // @Todo: how do we render a mesh with no valid texture ID?
                     tex = g.missing_texture;
                 } else if (!map_tex) {
