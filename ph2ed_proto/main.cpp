@@ -950,7 +950,7 @@ static void map_write_struct(Array<uint8_t> *result, const void *px, size_t size
 }
 #define Write(x) map_write_struct(result, &(x), sizeof(x))
 #define WriteLit(T, x) do { T t = (x); Write(t); } while (0)
-static void map_write_to_memory(G &g, Array<uint8_t> *result, int XXX_geo_subfile_length, int XXX_geo_start, int XXX_geo_count, int XXX_mat_start, int XXX_mat_count, uint32_t temp_delete_me_prescient_file_length) {
+static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo_subfile_length, Array<int> XXX_geo_start, Array<int> XXX_geo_count, Array<int> XXX_mat_start, Array<int> XXX_mat_count, uint32_t temp_delete_me_prescient_file_length) {
     WriteLit(uint32_t, 0x20010510);
     Write(temp_delete_me_prescient_file_length); // @Todo: don't use prescient knowledge of the file length; backpatch it or prepass it instead.
     int num_tex_subfiles = 0;
@@ -1062,8 +1062,11 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, int XXX_geo_subfil
                 ++geometry_count;
             }
         }
-        assert(geometry_start == XXX_geo_start);
-        assert(geometry_count == XXX_geo_count);
+        if (geometry_count <= 0) {
+            break;
+        }
+        assert(geometry_start == XXX_geo_start[subfile_index - num_tex_subfiles]);
+        assert(geometry_count == XXX_geo_count[subfile_index - num_tex_subfiles]);
         int material_start = 0;
         int material_count = 0;
         for (auto &mat : g.materials) {
@@ -1074,11 +1077,8 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, int XXX_geo_subfil
                 ++material_count;
             }
         }
-        assert(material_start == XXX_mat_start);
-        assert(material_count == XXX_mat_count);
-        if (geometry_count <= 0) {
-            break;
-        }
+        assert(material_start == XXX_mat_start[subfile_index - num_tex_subfiles]);
+        assert(material_count == XXX_mat_count[subfile_index - num_tex_subfiles]);
         
         WriteLit(uint32_t, 1);
 
@@ -1200,12 +1200,12 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, int XXX_geo_subfil
         }
         subfile_length += material_count * sizeof(PH2MAP__Material);
         
-        assert(subfile_length == XXX_geo_subfile_length);
-        WriteLit(uint32_t, subfile_length);
+        assert(subfile_length == XXX_geo_subfile_length[subfile_index - num_tex_subfiles]);
+        // WriteLit(uint32_t, subfile_length);
 
-        return;
+        // return;
 
-        // ++subfile_index;
+        ++subfile_index;
     }
 }
 static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture> textures, uint32_t id) {
@@ -1281,11 +1281,20 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     enum { MAP_FILE_DATA_LENGTH_MAX = 16 * 1024 * 1024 }; // @Temporary?    
     static char filedata_do_not_modify_me_please[MAP_FILE_DATA_LENGTH_MAX]; // @Temporary
     uint32_t file_len_do_not_modify_me_please = 0;
-    int XXX_geo_subfile_length = 0;
-    int XXX_geo_start = 0;
-    int XXX_geo_count = 0;
-    int XXX_mat_start = 0;
-    int XXX_mat_count = 0;
+    Array<int> XXX_geo_subfile_length = 0;
+    Array<int> XXX_geo_start = 0;
+    Array<int> XXX_geo_count = 0;
+    Array<int> XXX_mat_start = 0;
+    Array<int> XXX_mat_count = 0;
+    int geo_subfile_count = 0;
+            
+    defer {
+        XXX_geo_subfile_length.release();
+        XXX_geo_start.release();
+        XXX_geo_count.release();
+        XXX_mat_start.release();
+        XXX_mat_count.release();
+    };
 
     int XXX_tentacion = 1;
     {
@@ -1324,9 +1333,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                 assert(subfile_header.padding0 == 0);
                 assert(subfile_header.padding1 == 0);
                 if (subfile_header.type == 1) { // Geometry subfile
-                    if (!has_ever_seen_geometry_subfile) {
-                        XXX_geo_subfile_length = subfile_header.length;
-                    }
+                    ++geo_subfile_count;
+                    XXX_geo_subfile_length.push(subfile_header.length);
                     has_ever_seen_geometry_subfile = true;
                     auto ptr2 = ptr;
 
@@ -1338,8 +1346,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                     assert(geometry_subfile_header.magic == 0x20010730);
                     assert(geometry_subfile_header.geometry_count >= 1);
                     g.geometries.reserve(g.geometries.count + geometry_subfile_header.geometry_count);
-                    XXX_geo_start = (int)g.geometries.count;
-                    XXX_geo_count = (int)geometry_subfile_header.geometry_count;
+                    XXX_geo_start.push((int)g.geometries.count);
+                    XXX_geo_count.push((int)geometry_subfile_header.geometry_count);
                     for (uint32_t geometry_index = 0; geometry_index < geometry_subfile_header.geometry_count; geometry_index++) {
                         const char *geometry_start = ptr2;
                         assert((uintptr_t)geometry_start % 16 == 0);
@@ -1431,8 +1439,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
 
                     }
                     g.materials.reserve(g.materials.count + geometry_subfile_header.material_count);
-                    XXX_mat_start = (int)g.materials.count;
-                    XXX_mat_count = (int)geometry_subfile_header.material_count;
+                    XXX_mat_start.push((int)g.materials.count);
+                    XXX_mat_count.push((int)geometry_subfile_header.material_count);
                     for (uint32_t material_index = 0; material_index < geometry_subfile_header.material_count; material_index++) {
                         PH2MAP__Material material = {};
                         Read(ptr2, material);
@@ -1579,6 +1587,11 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             defer {
                 round_trip.release();
             };
+            assert(geo_subfile_count == XXX_geo_subfile_length.count);
+            assert(geo_subfile_count == XXX_geo_start.count);
+            assert(geo_subfile_count == XXX_geo_count.count);
+            assert(geo_subfile_count == XXX_mat_start.count);
+            assert(geo_subfile_count == XXX_mat_count.count);
             map_write_to_memory(g, &round_trip, XXX_geo_subfile_length, XXX_geo_start, XXX_geo_count, XXX_mat_start, XXX_mat_count, file_len_do_not_modify_me_please);
             assert(round_trip.count <= file_len_do_not_modify_me_please);
             // @Todo: assert(round_trip.count == file_len_do_not_modify_me_please);
