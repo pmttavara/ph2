@@ -1165,9 +1165,9 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
     }
     assert(result->count % 16 == misalignment);
 }
-static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo_subfile_length, Array<int> XXX_geo_start, Array<int> XXX_geo_count, Array<int> XXX_mat_start, Array<int> XXX_mat_count, uint32_t temp_delete_me_prescient_file_length) {
+static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo_subfile_length, Array<int> XXX_geo_start, Array<int> XXX_geo_count, Array<int> XXX_mat_start, Array<int> XXX_mat_count) {
     WriteLit(uint32_t, 0x20010510);
-    Write(temp_delete_me_prescient_file_length); // @Todo: don't use prescient knowledge of the file length; backpatch it or prepass it instead.
+    WriteLit(uint32_t, 0); // File length -- will be backpatched; @Todo: implement a prepass instead, since I'll need one for preallocating in the final library.
     int num_tex_subfiles = 0;
     int num_geo_subfiles = 0;
     { // @Temporary: don't prepass(!!!); backpatch instead.
@@ -1220,6 +1220,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
         WriteLit(uint32_t, 0); // pad
         WriteLit(uint32_t, 0); // pad
 
+        int64_t subfile_start = result->count;
         // Write texture subfile header
         PH2MAP__Texture_Subfile_Header texture_subfile_header = {};
         texture_subfile_header.magic = 0x19990901;
@@ -1260,6 +1261,8 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
         { // textures are read until the first int of the line is 0, and then that line is skipped - hence, we add this terminator sentinel line here
             WriteLit(PH2MAP__BC_End_Sentinel, PH2MAP__BC_End_Sentinel{});
         }
+        int64_t subfile_end = result->count;
+        assert(subfile_end - subfile_start == subfile_length);
     }
     uint32_t subfile_index = (uint32_t)num_tex_subfiles;
     assert(subfile_index >= 0);
@@ -1455,6 +1458,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
         subfile_header.type = 1;
         subfile_header.length = subfile_length;
         Write(subfile_header);
+        int64_t subfile_start = result->count;
         PH2MAP__Geometry_Subfile_Header geometry_subfile_header = {};
         geometry_subfile_header.magic = 0x20010730;
         geometry_subfile_header.geometry_count = geometry_count;
@@ -1462,6 +1466,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
         geometry_subfile_header.material_count = material_count;
         Write(geometry_subfile_header);
 
+        int misalignment = 0;
         for (int geometry_index = geometry_start; geometry_index < geometry_start + geometry_count; geometry_index++) {
             auto &geo = g.geometries[geometry_index];
             auto &info = geometry_info[geometry_index - geometry_start];
@@ -1469,11 +1474,11 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
 
             if (geo.opaque_mesh_count) {
                 assert(result->count % 16 == 4);
-                map_write_mesh_group_or_decal_group(result, false, g.opaque_meshes, info.opaque_mesh_start, (int)geo.opaque_mesh_count, 0);
-                assert(result->count % 16 == 0);
+                misalignment = 0;
+                map_write_mesh_group_or_decal_group(result, false, g.opaque_meshes, info.opaque_mesh_start, (int)geo.opaque_mesh_count, misalignment);
+                assert(result->count % 16 == misalignment);
             }
             if (geo.transparent_mesh_count) {
-                int misalignment = 0;
                 if (geo.has_weird_2_byte_misalignment_before_transparents) {
                     result->push(0);
                     result->push(0);
@@ -1488,7 +1493,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
                 assert(result->count % 16 == misalignment);
             }
             if (geo.decal_count) {
-                int misalignment = 0;
                 if (geo.has_weird_2_byte_misalignment_before_transparents || geo.has_weird_2_byte_misalignment_before_decals) {
                     while (result->count % 16 != 2) result->push(0);
                     misalignment = 2;
@@ -1503,9 +1507,24 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
             }
         }
 
-        return;
-        // ++subfile_index;
+        for (int material_index = 0; material_index < material_count; material_index++) {
+            MAP_Material &mat = g.materials[material_start + material_index];
+            PH2MAP__Material material = {};
+            material.mode = mat.mode;
+            material.texture_id = mat.texture_id;
+            material.material_color = mat.material_color;
+            material.overlay_color = mat.overlay_color;
+            material.specularity = mat.specularity;
+            Write(material);
+        }
+
+        int64_t subfile_end = result->count;
+        assert(subfile_end - subfile_start == subfile_length);
+        while (result->count % 16 != misalignment) result->push(0);
+        ++subfile_index;
     }
+    // File length backpatch
+    *(uint32_t *)&(*result)[sizeof(uint32_t)] = (uint32_t)result->count;
 }
 static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture> textures, uint32_t id) {
     for (auto &tex : textures) {
@@ -1896,9 +1915,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             assert(geo_subfile_count == XXX_geo_count.count);
             assert(geo_subfile_count == XXX_mat_start.count);
             assert(geo_subfile_count == XXX_mat_count.count);
-            map_write_to_memory(g, &round_trip, XXX_geo_subfile_length, XXX_geo_start, XXX_geo_count, XXX_mat_start, XXX_mat_count, file_len_do_not_modify_me_please);
-            assert(round_trip.count <= file_len_do_not_modify_me_please);
-            // @Todo: assert(round_trip.count == file_len_do_not_modify_me_please);
+            map_write_to_memory(g, &round_trip, XXX_geo_subfile_length, XXX_geo_start, XXX_geo_count, XXX_mat_start, XXX_mat_count);
+            assert(round_trip.count == file_len_do_not_modify_me_please);
             assert(memcmp(round_trip.data, filedata_do_not_modify_me_please, round_trip.count) == 0);
         }
         // Log("about to upload %d map meshes", (int)g.opaque_meshes.count);
