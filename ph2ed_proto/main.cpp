@@ -138,8 +138,6 @@ struct MAP_Geometry {
     // Only here to preserve bit-for-bit roundtrippability.
     bool has_weird_2_byte_misalignment_before_transparents = false;
     bool has_weird_2_byte_misalignment_before_decals = false;
-
-    int XXX_length = 0; // @Debug @Remove
 };
 
 struct MAP_Geometry_Vertex {
@@ -169,14 +167,11 @@ struct MAP_Mesh_Part {
     int strip_count;
 
     bool was_inverted; // Only for roundtrippability.
-    int XXX_length = 0; // @Debug @Remove
 };
 struct MAP_Mesh_Part_Group {
     uint32_t material_index;
     uint32_t section_index;
     Array<MAP_Mesh_Part> mesh_parts = {};
-
-    int XXX_length = 0; // @Debug @Remove
 };
 // @Note: Geometries can be empty -- contain 0 mesh groups (no opaque, no transparent, no decal).
 //        This means you can't just store tree nesting structure implicitly on the map meshes, you need
@@ -211,9 +206,6 @@ struct MAP_Mesh {
     //        vertices_length field as the retail maps, and then we can make stronger claims about the field and
     //        obviate the need for this override.
     uint32_t vertices_length_override = 0;
-
-    int XXX_length = 0; // @Debug @Remove
-    int XXX_offset = 0; // @Debug @Remove
 };
 
 struct MAP_Material {
@@ -665,13 +657,17 @@ void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indi
     }
 }
 // We need 'misalignment' because some mesh groups are weirdly misaligned, and mesh alignment happens *with respect to that misalignment* (!!!!!!!!!!)
-static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
+struct Mesh_Group_Load_Result {
+    int num_added;
+    int total_bytes;
+};
+static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
     const char *ptr3 = group_header;
     uint32_t count = 0;
     Read(ptr3, count);
     assert(count > 0);
     meshes->reserve(count);
-    int32_t XXX_prev_offset = 0;
+    const char *mesh_end = nullptr;
     for (uint32_t offset_index = 0; offset_index < count; offset_index++) {
         int32_t offset = 0;
         Read(ptr3, offset);
@@ -679,12 +675,7 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
 
         if (offset_index == 0) {
             assert(offset == (1 + count) * sizeof(uint32_t));
-        } else {
-            int prev_size = (*meshes)[meshes->count - 1].XXX_length;
-            int computed_offset = XXX_prev_offset + prev_size;
-            assert(computed_offset == offset);
         }
-        XXX_prev_offset = offset;
 
         const char *header_base = group_header + offset;
         const char *ptr4 = header_base;
@@ -693,8 +684,6 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
         defer {
             meshes->push(mesh);
         };
-
-        mesh.XXX_offset = offset;
 
         struct Common_Header {
             float bounding_box_a[4];
@@ -880,11 +869,7 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
             assert(*aligner == 0);
         }
         ptr4 = aligner;
-        mesh.XXX_length = (int)(ptr4 - header_base);
-        if (offset_index < count - 1) {
-            int32_t next_offset = *(uint32_t*)ptr3;
-            assert(offset + mesh.XXX_length == next_offset);
-        }
+        mesh_end = ptr4;
 
         ptr4 = header_base + real_header_size;
         int indices_index = 0;
@@ -898,7 +883,6 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
             MAP_Mesh_Part_Group mesh_part_group = {};
             const char *mesh_part_group_start = ptr4;
             defer {
-                mesh_part_group.XXX_length = (int)(ptr4 - mesh_part_group_start);
                 mesh.mesh_part_groups.push(mesh_part_group);
             };
 
@@ -916,7 +900,6 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
                 defer {
                     mesh_part_group.mesh_parts.push(part);
                 };
-                part.XXX_length = sizeof(PH2MAP__Mesh_Part);
                 part.strip_length = sub_decal.strip_length;
                 part.strip_count = sub_decal.strip_count;
                 int first_index = indices_index;
@@ -968,7 +951,11 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
             }
         }
     }
-    return (int)count;
+    assert(mesh_end);
+    Mesh_Group_Load_Result load_result = {};
+    load_result.num_added = (int)count;
+    load_result.total_bytes = (int)(mesh_end - group_header);
+    return load_result;
 }
 static void map_write_struct(Array<uint8_t> *result, const void *px, size_t sizeof_x) {
     result->resize(result->count + (int64_t)sizeof_x);
@@ -996,25 +983,12 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
                 mesh_length += sizeof(PH2MAP__Mapmesh_Header);
             }
             MAP_Mesh &mesh = group[start + mesh_index];
-            assert(rolling_offset == mesh.XXX_offset);
-            defer {
-                while ((aligner + rolling_offset + mesh_length) % 16 != misalignment) {
-                    mesh_length++;
-                }
-                assert(mesh_length == mesh.XXX_length);
-                rolling_offset += mesh_length;
-            };
             for (auto &mesh_part_group : mesh.mesh_part_groups) {
-                int mesh_part_group_length = 0;
-                defer {
-                    assert(mesh_part_group_length == mesh_part_group.XXX_length);
-                    mesh_length += mesh_part_group_length;
-                };
                 if (decals) {
-                    mesh_part_group_length += sizeof(PH2MAP__Sub_Decal);
+                    mesh_length += sizeof(PH2MAP__Sub_Decal);
                 } else {
-                    mesh_part_group_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
-                    mesh_part_group_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
+                    mesh_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
+                    mesh_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
                 }
             }
             mesh_length += sizeof(PH2MAP__Vertex_Sections_Header);
@@ -1023,6 +997,10 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
                 mesh_length += section.num_vertices * section.bytes_per_vertex;
             }
             mesh_length += (int)(mesh.indices.count * sizeof(uint16_t));
+            while ((aligner + rolling_offset + mesh_length) % 16 != misalignment) {
+                mesh_length++;
+            }
+            rolling_offset += mesh_length;
         }
     }
 #else
@@ -1049,47 +1027,34 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
             mesh_length += sizeof(PH2MAP__Mapmesh_Header);
         }
         MAP_Mesh &mesh = group[start + mesh_index];
-        PH2MAP__Mapmesh_Header header = {}; // @Cleanup: should go in the else branch of `if (decals)`, tbh.
-        memcpy(header.bounding_box_a, mesh.bounding_box_a, sizeof(float) * 3);
-        memcpy(header.bounding_box_b, mesh.bounding_box_b, sizeof(float) * 3);
+        Write(mesh.bounding_box_a);
+        WriteLit(float, 0);
+        Write(mesh.bounding_box_b);
+        WriteLit(float, 0);
 
         for (auto &mesh_part_group : mesh.mesh_part_groups) {
-            int mesh_part_group_length = 0;
-            defer {
-                assert(mesh_part_group_length == mesh_part_group.XXX_length);
-                mesh_length += mesh_part_group_length;
-            };
             if (decals) {
-                mesh_part_group_length += sizeof(PH2MAP__Sub_Decal);
+                mesh_length += sizeof(PH2MAP__Sub_Decal);
             } else {
-                mesh_part_group_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
-                mesh_part_group_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
+                mesh_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
+                mesh_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
             }
         }
-        header.vertex_sections_header_offset = mesh_length;
+        int32_t vertex_sections_header_offset = mesh_length;
+        WriteLit(int32_t, vertex_sections_header_offset);
         mesh_length += sizeof(PH2MAP__Vertex_Sections_Header);
         mesh_length += (int)(mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
         for (auto &section : mesh.vertex_buffers) {
             mesh_length += section.num_vertices * section.bytes_per_vertex;
         }
-        header.indices_offset = mesh_length;
+        int32_t indices_offset = mesh_length;
+        WriteLit(int32_t, indices_offset);
         mesh_length += (int)(mesh.indices.count * sizeof(uint16_t));
-        header.indices_length = (int)(mesh.indices.count * sizeof(uint16_t));
-        header.unknown = header.indices_offset + header.indices_length - mesh.diff_between_unknown_value_and_index_buffer_end;
-        header.mesh_part_group_count = (int32_t)mesh.mesh_part_groups.count;
-
-        if (decals) {
-            PH2MAP__Decal_Header decal_header = {};
-            memcpy(decal_header.bounding_box_a, header.bounding_box_a, sizeof(float) * 3);
-            memcpy(decal_header.bounding_box_b, header.bounding_box_b, sizeof(float) * 3);
-            decal_header.vertex_sections_header_offset = header.vertex_sections_header_offset;
-            decal_header.indices_offset = header.indices_offset;
-            decal_header.indices_length = header.indices_length;
-            decal_header.sub_decal_count = header.mesh_part_group_count;
-            Write(decal_header);
-        } else {
-            Write(header);
+        WriteLit(int32_t, (int)(mesh.indices.count * sizeof(uint16_t)));
+        if (!decals) {
+            WriteLit(int32_t, mesh_length - mesh.diff_between_unknown_value_and_index_buffer_end);
         }
+        WriteLit(int32_t, mesh.mesh_part_groups.count);
 
         int indices_index = 0;
         for (auto &mesh_part_group : mesh.mesh_part_groups) {
@@ -1133,13 +1098,12 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
             }
         }
 
-        uint64_t sections_start = header.vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header);
+        uint64_t sections_start = vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header);
         // Vertex Sections Header
         if (mesh.vertices_length_override) {
             WriteLit(uint32_t, mesh.vertices_length_override);
         } else {
-            // vertex_sections_header.vertices_length = (int64_t)header.indices_offset - (int64_t)sections_start;
-            WriteLit(uint32_t, (int64_t)header.indices_offset - (int64_t)sections_start);
+            WriteLit(uint32_t, (int64_t)indices_offset - (int64_t)sections_start);
         }
         WriteLit(uint32_t, mesh.vertex_buffers.count);
 
@@ -1165,7 +1129,7 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
     }
     assert(result->count % 16 == misalignment);
 }
-static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo_subfile_length, Array<int> XXX_geo_start, Array<int> XXX_geo_count, Array<int> XXX_mat_start, Array<int> XXX_mat_count) {
+static void map_write_to_memory(G &g, Array<uint8_t> *result) {
     WriteLit(uint32_t, 0x20010510);
     WriteLit(uint32_t, 0); // File length -- will be backpatched; @Todo: implement a prepass instead, since I'll need one for preallocating in the final library.
     int num_tex_subfiles = 0;
@@ -1283,8 +1247,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
         if (geometry_count <= 0) {
             break;
         }
-        assert(geometry_start == XXX_geo_start[subfile_index - num_tex_subfiles]);
-        assert(geometry_count == XXX_geo_count[subfile_index - num_tex_subfiles]);
         int material_start = 0;
         int material_count = 0;
         for (auto &mat : g.materials) {
@@ -1295,8 +1257,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
                 ++material_count;
             }
         }
-        assert(material_start == XXX_mat_start[subfile_index - num_tex_subfiles]);
-        assert(material_count == XXX_mat_count[subfile_index - num_tex_subfiles]);
         
         struct Temp_Geometry_Info {
             PH2MAP__Geometry_Header header = {};
@@ -1333,7 +1293,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
                 } else {
                     assert(geometry_length % 16 == 0);
                 }
-                assert(geometry_length == geo.XXX_length);
                 info->header.group_size = geometry_length;
                 subfile_length += geometry_length;
             };
@@ -1346,7 +1305,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
                     mesh_length += sizeof(PH2MAP__Mapmesh_Header);
                     MAP_Mesh &mesh = g.opaque_meshes[mesh_index];
                     defer {
-                        // assert(mesh_length == mesh.XXX_length);
                         geometry_length += mesh_length;
                         geometry_length += 15;
                         geometry_length &= ~15;
@@ -1354,7 +1312,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
                     for (auto &mesh_part_group : mesh.mesh_part_groups) {
                         int mesh_part_group_length = 0;
                         defer {
-                            assert(mesh_part_group_length == mesh_part_group.XXX_length);
                             mesh_length += mesh_part_group_length;
                         };
                         mesh_part_group_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
@@ -1379,7 +1336,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
                     mesh_length += sizeof(PH2MAP__Mapmesh_Header);
                     MAP_Mesh &mesh = g.transparent_meshes[mesh_index];
                     defer {
-                        // assert(mesh_length == mesh.XXX_length);
                         geometry_length += mesh_length;
                         int modulus = 0;
                         if (geo.has_weird_2_byte_misalignment_before_transparents) {
@@ -1392,7 +1348,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
                     for (auto &mesh_part_group : mesh.mesh_part_groups) {
                         int mesh_part_group_length = 0;
                         defer {
-                            assert(mesh_part_group_length == mesh_part_group.XXX_length);
                             mesh_length += mesh_part_group_length;
                         };
                         mesh_part_group_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
@@ -1417,7 +1372,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
                     mesh_length += sizeof(PH2MAP__Decal_Header);
                     MAP_Mesh &decal = g.decal_meshes[decal_index];
                     defer {
-                        // assert(mesh_length == decal.XXX_length);
                         geometry_length += mesh_length;
                         int modulus = 0;
                         if (geo.has_weird_2_byte_misalignment_before_transparents || geo.has_weird_2_byte_misalignment_before_decals) {
@@ -1431,7 +1385,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
                     for (auto &mesh_part_group : decal.mesh_part_groups) {
                         int mesh_part_group_length = 0;
                         defer {
-                            assert(mesh_part_group_length == mesh_part_group.XXX_length);
                             all_subdecal_lengths += mesh_part_group_length;
                         };
                         mesh_part_group_length += sizeof(PH2MAP__Sub_Decal);
@@ -1451,8 +1404,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
             rolling_decal_index += (int)geo.decal_count;
         }
         subfile_length += material_count * sizeof(PH2MAP__Material);
-        
-        assert(subfile_length == XXX_geo_subfile_length[subfile_index - num_tex_subfiles]);
 
         PH2MAP__Subfile_Header subfile_header = {};
         subfile_header.type = 1;
@@ -1600,22 +1551,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     enum { MAP_FILE_DATA_LENGTH_MAX = 16 * 1024 * 1024 }; // @Temporary?    
     static char filedata_do_not_modify_me_please[MAP_FILE_DATA_LENGTH_MAX]; // @Temporary
     uint32_t file_len_do_not_modify_me_please = 0;
-    Array<int> XXX_geo_subfile_length = 0;
-    Array<int> XXX_geo_start = 0;
-    Array<int> XXX_geo_count = 0;
-    Array<int> XXX_mat_start = 0;
-    Array<int> XXX_mat_count = 0;
-    int geo_subfile_count = 0;
-            
-    defer {
-        XXX_geo_subfile_length.release();
-        XXX_geo_start.release();
-        XXX_geo_count.release();
-        XXX_mat_start.release();
-        XXX_mat_count.release();
-    };
-
-    int XXX_tentacion = 1;
     {
         {
             FILE *f = PH2CLD__fopen(filename, "rb");
@@ -1653,8 +1588,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                 assert(subfile_header.padding0 == 0);
                 assert(subfile_header.padding1 == 0);
                 if (subfile_header.type == 1) { // Geometry subfile
-                    ++geo_subfile_count;
-                    XXX_geo_subfile_length.push(subfile_header.length);
                     has_ever_seen_geometry_subfile = true;
                     auto ptr2 = ptr;
 
@@ -1667,8 +1600,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                     assert(geometry_subfile_header.geometry_count >= 1);
                     assert(geometry_subfile_header.geometry_size == subfile_header.length - geometry_subfile_header.material_count * sizeof(PH2MAP__Material));
                     g.geometries.reserve(g.geometries.count + geometry_subfile_header.geometry_count);
-                    XXX_geo_start.push((int)g.geometries.count);
-                    XXX_geo_count.push((int)geometry_subfile_header.geometry_count);
                     for (uint32_t geometry_index = 0; geometry_index < geometry_subfile_header.geometry_count; geometry_index++) {
                         // Log("  In geometry %u", geometry_index);
                         const char *geometry_start = ptr2;
@@ -1689,8 +1620,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
 
                         MAP_Geometry geometry = {};
                         defer {
-                            geometry.XXX_length = (int)(ptr2 - geometry_start);
-                            assert(geometry.XXX_length == geometry_header.group_size);
                             g.geometries.push(geometry);
                         };
 
@@ -1708,12 +1637,9 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                             // Log("Opaque!");
                             const char *mesh_group_header = ptr2 + geometry_header.opaque_group_offset;
                             int mesh_start = (int)g.opaque_meshes.count;
-                            int num_added = map_load_mesh_group_or_decal_group(&g.opaque_meshes, 0, mesh_group_header, ptr2 + geometry_header.group_size, false);
-                            opaque_group_length += (1 + num_added) * sizeof(uint32_t);
-                            for (int i = mesh_start; i < g.opaque_meshes.count; i++) {
-                                opaque_group_length += g.opaque_meshes[i].XXX_length;
-                            }
-                            geometry.opaque_mesh_count += num_added;
+                            Mesh_Group_Load_Result result = map_load_mesh_group_or_decal_group(&g.opaque_meshes, 0, mesh_group_header, ptr2 + geometry_header.group_size, false);
+                            opaque_group_length += result.total_bytes;
+                            geometry.opaque_mesh_count += result.num_added;
                         }
                         length_sum += opaque_group_length;
                         if (geometry_header.transparent_group_offset) {
@@ -1728,12 +1654,9 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                             // Log("Transparent!");
                             const char *mesh_group_header = ptr2 + geometry_header.transparent_group_offset;
                             int mesh_start = (int)g.transparent_meshes.count;
-                            int num_added = map_load_mesh_group_or_decal_group(&g.transparent_meshes, geometry.has_weird_2_byte_misalignment_before_transparents ? 2 : 0, mesh_group_header, ptr2 + geometry_header.group_size, false);
-                            transparent_group_length += (1 + num_added) * sizeof(uint32_t);
-                            for (int i = mesh_start; i < g.transparent_meshes.count; i++) {
-                                transparent_group_length += g.transparent_meshes[i].XXX_length;
-                            }
-                            geometry.transparent_mesh_count += num_added;
+                            Mesh_Group_Load_Result result = map_load_mesh_group_or_decal_group(&g.transparent_meshes, geometry.has_weird_2_byte_misalignment_before_transparents ? 2 : 0, mesh_group_header, ptr2 + geometry_header.group_size, false);
+                            transparent_group_length += result.total_bytes;
+                            geometry.transparent_mesh_count += result.num_added;
                         }
                         length_sum += transparent_group_length;
                         if (geometry_header.decal_group_offset) {
@@ -1748,12 +1671,9 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                             // Log("Decals!");
                             const char *decal_group_header = ptr2 + geometry_header.decal_group_offset;
                             int mesh_start = (int)g.decal_meshes.count;
-                            int num_added = map_load_mesh_group_or_decal_group(&g.decal_meshes, geometry.has_weird_2_byte_misalignment_before_transparents || geometry.has_weird_2_byte_misalignment_before_decals ? 2 : 0, decal_group_header, ptr2 + geometry_header.group_size, true);
-                            decal_group_length += (1 + num_added) * sizeof(uint32_t);
-                            for (int i = mesh_start; i < g.decal_meshes.count; i++) {
-                                decal_group_length += g.decal_meshes[i].XXX_length;
-                            }
-                            geometry.decal_count += num_added;
+                            Mesh_Group_Load_Result result = map_load_mesh_group_or_decal_group(&g.decal_meshes, geometry.has_weird_2_byte_misalignment_before_transparents || geometry.has_weird_2_byte_misalignment_before_decals ? 2 : 0, decal_group_header, ptr2 + geometry_header.group_size, true);
+                            decal_group_length += result.total_bytes;
+                            geometry.decal_count += result.num_added;
                         }
                         length_sum += decal_group_length;
                         assert(length_sum == geometry_header.group_size);
@@ -1762,8 +1682,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
 
                     }
                     g.materials.reserve(g.materials.count + geometry_subfile_header.material_count);
-                    XXX_mat_start.push((int)g.materials.count);
-                    XXX_mat_count.push((int)geometry_subfile_header.material_count);
                     for (uint32_t material_index = 0; material_index < geometry_subfile_header.material_count; material_index++) {
                         PH2MAP__Material material = {};
                         Read(ptr2, material);
@@ -1910,12 +1828,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             defer {
                 round_trip.release();
             };
-            assert(geo_subfile_count == XXX_geo_subfile_length.count);
-            assert(geo_subfile_count == XXX_geo_start.count);
-            assert(geo_subfile_count == XXX_geo_count.count);
-            assert(geo_subfile_count == XXX_mat_start.count);
-            assert(geo_subfile_count == XXX_mat_count.count);
-            map_write_to_memory(g, &round_trip, XXX_geo_subfile_length, XXX_geo_start, XXX_geo_count, XXX_mat_start, XXX_mat_count);
+            map_write_to_memory(g, &round_trip);
             assert(round_trip.count == file_len_do_not_modify_me_please);
             assert(memcmp(round_trip.data, filedata_do_not_modify_me_please, round_trip.count) == 0);
         }
