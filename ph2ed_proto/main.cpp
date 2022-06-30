@@ -45,7 +45,7 @@ struct LogMsg {
 enum { LOG_MAX = 16384 };
 LogMsg log_buf[LOG_MAX];
 int log_buf_index = 0;
-void LogC(uint32_t c, const char *fmt, ...) {
+void LogC_(uint32_t c, const char *fmt, ...) {
     log_buf[log_buf_index % LOG_MAX].colour = c;
     va_list args;
     va_start(args, fmt);
@@ -55,8 +55,8 @@ void LogC(uint32_t c, const char *fmt, ...) {
     fflush(stdout);
     log_buf_index++;
 }
-#define LogC(c, fmt, ...) LogC(c, fmt, ##__VA_ARGS__)
-#define Log(fmt, ...) LogC(IM_COL32(127,127,127,255), fmt, ##__VA_ARGS__)
+#define LogC(c, ...) LogC_(c, "" __VA_ARGS__)
+#define Log(...) LogC(IM_COL32(127,127,127,255), "" __VA_ARGS__)
 
 #include "HandmadeMath.h"
 
@@ -170,6 +170,7 @@ struct MAP_Mesh_Part {
     int strip_length;
     int strip_count;
 
+    bool was_inverted; // Only for roundtrippability.
     int XXX_length = 0; // @Debug @Remove
 };
 struct MAP_Mesh_Part_Group {
@@ -203,6 +204,15 @@ struct MAP_Mesh {
         vertex_buffers.release();
         indices.release();
     }
+
+    uint8_t diff_between_unknown_value_and_index_buffer_end = 0; // @Temporary? for roundtrippability.
+
+    // @Note: Some "manually-edited" (python scripts) maps have a different vertices_length than you would otherwise compute,
+    //        so we store them as an override in that case. It's overridden if nonzero.
+    //        It's possible in the future we'll be able to edit the manually-edited maps so that they have the same
+    //        vertices_length field as the retail maps, and then we can make stronger claims about the field and
+    //        obviate the need for this override.
+    uint32_t vertices_length_override = 0;
 
     int XXX_length = 0; // @Debug @Remove
 };
@@ -680,6 +690,11 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
         const char *header_base = group_header + offset;
         const char *ptr4 = header_base;
 
+        MAP_Mesh mesh = {};
+        defer {
+            meshes->push(mesh);
+        };
+
         struct Common_Header {
             float bounding_box_a[4];
             float bounding_box_b[4];
@@ -722,14 +737,12 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
             header.indices_offset = mapmesh_header.indices_offset;
             header.indices_length = mapmesh_header.indices_length;
             header.count = mapmesh_header.mesh_part_group_count;
+            assert(mapmesh_header.indices_offset + mapmesh_header.indices_length - mapmesh_header.unknown >= 6);
+            assert(mapmesh_header.indices_offset + mapmesh_header.indices_length - mapmesh_header.unknown <= 20);
+            mesh.diff_between_unknown_value_and_index_buffer_end = (uint8_t)(mapmesh_header.indices_offset + mapmesh_header.indices_length - mapmesh_header.unknown);
 
             real_header_size = sizeof(PH2MAP__Mapmesh_Header);
         }
-
-        MAP_Mesh mesh = {};
-        defer {
-            meshes->push(mesh);
-        };
 
         assert(PH2CLD__sanity_check_float4(header.bounding_box_a));
         assert(PH2CLD__sanity_check_float4(header.bounding_box_b));
@@ -754,6 +767,7 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
         assert(vertex_sections_header.vertex_section_count >= 0);
         assert(vertex_sections_header.vertex_section_count <= 4);
         const char *ptr5 = ptr4 + vertex_sections_header.vertex_section_count * sizeof(PH2MAP__Vertex_Section_Header);
+        assert(ptr5 == header_base + header.vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + vertex_sections_header.vertex_section_count * sizeof(PH2MAP__Vertex_Section_Header));
         const char *end_of_previous_section = ptr5;
         mesh.vertex_buffers.reserve(vertex_sections_header.vertex_section_count);
         for (int32_t vertex_section_index = 0; vertex_section_index < vertex_sections_header.vertex_section_count; vertex_section_index++) {
@@ -840,6 +854,9 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
             end_of_previous_section = end_of_this_section;
         }
         assert(end_of_previous_section == header_base + header.indices_offset);
+        if (vertex_sections_header.vertices_length != (int64_t)header.indices_offset - (int64_t)(header.vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + vertex_sections_header.vertex_section_count * sizeof(PH2MAP__Vertex_Section_Header))) {
+            mesh.vertices_length_override = vertex_sections_header.vertices_length;
+        }
         ptr4 = end_of_previous_section;
         assert(header.indices_length % sizeof(uint16_t) == 0);
         int indices_count = header.indices_length / sizeof(uint16_t);
@@ -917,13 +934,14 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
                     defer {
                         mesh_part_group.mesh_parts.push(part);
                     };
-                
+
                     part.strip_length = mesh_part.strip_length;
                     part.strip_count = mesh_part.strip_count;
                     if (mesh_part.invert_reading) {
                         part.strip_length = mesh_part.strip_count;
                         part.strip_count = mesh_part.strip_length;
                     }
+                    part.was_inverted = mesh_part.invert_reading;
                     int first_index = indices_index;
                     int last_index = first_index + part.strip_length * part.strip_count;
                     indices_index = last_index;
@@ -1258,19 +1276,61 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
             if (geo.opaque_mesh_count) {
                 WriteLit(uint32_t, geo.opaque_mesh_count);
                 int64_t offsets_start = result->count;
-                for (int64_t i = 0; i < geo.opaque_mesh_count; i++) {
-                    WriteLit(uint32_t, 0); // offset will be backpatched
+
+                { // @Temporary @Remove
+                    int rolling_offset = (1 + geo.opaque_mesh_count) * sizeof(uint32_t);
+                    for (int mesh_index = info.opaque_mesh_start;
+                        mesh_index < (int)(info.opaque_mesh_start + geo.opaque_mesh_count);
+                        mesh_index++) {
+                        WriteLit(uint32_t, rolling_offset);
+                        int mesh_length = 0;
+                        mesh_length += sizeof(PH2MAP__Mapmesh_Header);
+                        MAP_Mesh &mesh = g.opaque_meshes[mesh_index];
+                        defer {
+                            rolling_offset += mesh_length;
+                            rolling_offset += sizeof(PH2MAP__Geometry_Header);
+                            rolling_offset += 15;
+                            rolling_offset &= ~15;
+                            rolling_offset -= sizeof(PH2MAP__Geometry_Header);
+                        };
+                        for (auto &mesh_part_group : mesh.mesh_part_groups) {
+                            int mesh_part_group_length = 0;
+                            defer {
+                                assert(mesh_part_group_length == mesh_part_group.XXX_length);
+                                mesh_length += mesh_part_group_length;
+                            };
+                            mesh_part_group_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
+                            mesh_part_group_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
+                        }
+                        mesh_length += sizeof(PH2MAP__Vertex_Sections_Header);
+                        int vertex_sections_header_offset = mesh_length;
+                        mesh_length += (int)(mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
+                        for (auto &section : mesh.vertex_buffers) {
+                            mesh_length += section.num_vertices * section.bytes_per_vertex;
+                        }
+                        mesh_length += (int)(mesh.indices.count * sizeof(uint16_t));
+                    }
                 }
+
+                // @Todo
+                // for (int64_t i = 0; i < geo.opaque_mesh_count; i++) {
+                //     WriteLit(uint32_t, 0); // offset will be backpatched
+                // }
 
                 int rolling_offset = (1 + geo.opaque_mesh_count) * sizeof(uint32_t);
                 for (int mesh_index = info.opaque_mesh_start;
                          mesh_index < (int)(info.opaque_mesh_start + geo.opaque_mesh_count);
-                         mesh_index++) {
+                         /*mesh_index++*/) {
                     // WriteLit(uint32_t, rolling_offset);
-                    *(uint32_t *)(&result->data[offsets_start + mesh_index * sizeof(uint32_t)]) = rolling_offset;
+                    // @Todo: *(uint32_t *)(&result->data[offsets_start + mesh_index * sizeof(uint32_t)]) = rolling_offset;
+                    assert(*(uint32_t *)(&result->data[offsets_start + mesh_index * sizeof(uint32_t)]) == (uint32_t)rolling_offset);
                     int mesh_length = 0;
                     mesh_length += sizeof(PH2MAP__Mapmesh_Header);
                     MAP_Mesh &mesh = g.opaque_meshes[mesh_index];
+                    PH2MAP__Mapmesh_Header header = {};
+                    memcpy(header.bounding_box_a, mesh.bounding_box_a, sizeof(float) * 3);
+                    memcpy(header.bounding_box_b, mesh.bounding_box_b, sizeof(float) * 3);
+                    
                     defer {
                         rolling_offset += mesh_length;
                         rolling_offset += sizeof(PH2MAP__Geometry_Header);
@@ -1287,20 +1347,63 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
                         mesh_part_group_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
                         mesh_part_group_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
                     }
+                    header.vertex_sections_header_offset = mesh_length;
                     mesh_length += sizeof(PH2MAP__Vertex_Sections_Header);
-                    int vertex_sections_header_offset = mesh_length;
                     mesh_length += (int)(mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
                     for (auto &section : mesh.vertex_buffers) {
                         mesh_length += section.num_vertices * section.bytes_per_vertex;
                     }
+                    header.indices_offset = mesh_length;
                     mesh_length += (int)(mesh.indices.count * sizeof(uint16_t));
+                    header.indices_length = (int)(mesh.indices.count * sizeof(uint16_t));
+                    header.unknown = header.indices_offset + header.indices_length - mesh.diff_between_unknown_value_and_index_buffer_end;
+                    header.mesh_part_group_count = (int32_t)mesh.mesh_part_groups.count;
 
-                    PH2MAP__Mapmesh_Header header = {};
-                    memcpy(header.bounding_box_a, mesh.bounding_box_a, sizeof(float) * 3);
-                    memcpy(header.bounding_box_b, mesh.bounding_box_b, sizeof(float) * 3);
-                    // Write(header.bounding_box_a);
-                    // Write(header.bounding_box_b);
-                    // WriteLit(uint32_t, vertex_sections_header_offset);
+                    Write(header);
+
+                    int indices_index = 0;
+                    for (auto &mesh_part_group : mesh.mesh_part_groups) {
+                        WriteLit(uint32_t, mesh_part_group.material_index);
+                        WriteLit(uint32_t, mesh_part_group.section_index);
+                        WriteLit(uint32_t, (uint32_t)mesh_part_group.mesh_parts.count);
+                        for (auto &part : mesh_part_group.mesh_parts) {
+                            if (part.was_inverted) {
+                                WriteLit(uint16_t, (uint16_t)part.strip_count);
+                                WriteLit(uint8_t, 1);
+                                assert(part.strip_length <= 255);
+                                WriteLit(uint8_t, (uint8_t)part.strip_length);
+                            } else {
+                                WriteLit(uint16_t, (uint16_t)part.strip_length);
+                                WriteLit(uint8_t, 0);
+                                assert(part.strip_count <= 255);
+                                WriteLit(uint8_t, (uint8_t)part.strip_count);
+                            }
+                            int first_index = indices_index;
+                            int last_index = first_index + part.strip_length * part.strip_count;
+                            indices_index = last_index;
+                            int first_vertex = INT_MAX;
+                            int last_vertex = INT_MIN;
+                            for (int i = first_index; i < last_index; i++) {
+                                if (first_vertex > mesh.indices[i]) {
+                                    first_vertex = mesh.indices[i];
+                                }
+                                if (last_vertex < mesh.indices[i]) {
+                                    last_vertex = mesh.indices[i];
+                                }
+                            }
+                            WriteLit(uint16_t, (uint16_t)first_vertex);
+                            WriteLit(uint16_t, (uint16_t)last_vertex);
+                        }
+                    }
+                    // Vertex Sections Header
+                    if (mesh.vertices_length_override) {
+                        WriteLit(uint32_t, mesh.vertices_length_override);
+                    } else {
+                        // vertex_sections_header.vertices_length = (int64_t)header.indices_offset - (int64_t)(header.vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
+                        WriteLit(uint32_t, (uint32_t)((int64_t)header.indices_offset - (int64_t)(header.vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header))));
+                    }
+
+                    return;
                 }
             }
 
@@ -1375,6 +1478,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             }
         }
     }
+    sapp_set_window_title(filename);
     int prev_num_array_resizes = num_array_resizes;
     defer {
         // Log("%d array resizes", num_array_resizes - prev_num_array_resizes);
@@ -1431,6 +1535,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             for (uint32_t subfile_index = 0; subfile_index < header.subfile_count; subfile_index++) {
                 PH2MAP__Subfile_Header subfile_header = {};
                 Read(ptr, subfile_header);
+                // Log("In subfile %u", subfile_index);
                 assert(subfile_header.type == 1 || subfile_header.type == 2);
                 assert(subfile_header.padding0 == 0);
                 assert(subfile_header.padding1 == 0);
@@ -1452,6 +1557,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                     XXX_geo_start.push((int)g.geometries.count);
                     XXX_geo_count.push((int)geometry_subfile_header.geometry_count);
                     for (uint32_t geometry_index = 0; geometry_index < geometry_subfile_header.geometry_count; geometry_index++) {
+                        // Log("  In geometry %u", geometry_index);
                         const char *geometry_start = ptr2;
                         assert((uintptr_t)geometry_start % 16 == 0);
                         PH2MAP__Geometry_Header geometry_header = {};
@@ -1800,7 +1906,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         // }
 
         g.map_must_update = true;
-        sapp_set_window_title(filename);
     }
 }
 static void test_all_maps(G &g) {
