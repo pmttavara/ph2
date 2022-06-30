@@ -163,8 +163,6 @@ struct MAP_Mesh_Vertex_Buffer {
     int bytes_per_vertex;
     char *data;
     int num_vertices;
-
-    int XXX_length = 0; // @Debug @Remove
 };
 struct MAP_Mesh_Part {
     int strip_length;
@@ -215,6 +213,7 @@ struct MAP_Mesh {
     uint32_t vertices_length_override = 0;
 
     int XXX_length = 0; // @Debug @Remove
+    int XXX_offset = 0; // @Debug @Remove
 };
 
 struct MAP_Material {
@@ -695,6 +694,8 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
             meshes->push(mesh);
         };
 
+        mesh.XXX_offset = offset;
+
         struct Common_Header {
             float bounding_box_a[4];
             float bounding_box_b[4];
@@ -777,14 +778,19 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
             // @Note: How does section_starts work?
             //assert(vertex_section_header.section_starts == 0);
 
-            const char *vertex_section_offset_base = ptr4;
+            const char *vertex_section_offset_base = header_base + header.vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + vertex_sections_header.vertex_section_count * sizeof(PH2MAP__Vertex_Section_Header);
 
             assert(vertex_section_header.section_starts >= 0);
+            if (vertex_section_index == 0) {
+                assert(vertex_section_header.section_starts == 0);
+            } else {
+                assert(vertex_section_header.section_starts > 0);
+            }
             assert(vertex_section_header.bytes_per_vertex == 0x14 ||
                 vertex_section_header.bytes_per_vertex == 0x18 ||
                 vertex_section_header.bytes_per_vertex == 0x20 ||
                 vertex_section_header.bytes_per_vertex == 0x24);
-            assert(vertex_section_header.section_length >= 0);
+            assert(vertex_section_header.section_length > 0);
             assert(vertex_section_header.section_length % vertex_section_header.bytes_per_vertex == 0);
 
             MAP_Mesh_Vertex_Buffer vertex_buffer = {};
@@ -793,10 +799,11 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t 
             };
             
             vertex_buffer.bytes_per_vertex = vertex_section_header.bytes_per_vertex;
-            
+
             vertex_buffer.num_vertices = vertex_section_header.section_length / vertex_section_header.bytes_per_vertex;
 
             assert(ptr5 == end_of_previous_section);
+            assert(ptr5 == vertex_section_offset_base + vertex_section_header.section_starts);
             const char *end_of_this_section = ptr5 + vertex_section_header.section_length;
             vertex_buffer.data = (char *)malloc(vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
             memcpy(vertex_buffer.data, ptr5, vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
@@ -970,7 +977,194 @@ static void map_write_struct(Array<uint8_t> *result, const void *px, size_t size
     memcpy(&(*result)[result->count - (int64_t)sizeof_x], px, sizeof_x);
 }
 #define Write(x) map_write_struct(result, &(x), sizeof(x))
-#define WriteLit(T, x) do { T t = (x); Write(t); } while (0)
+#define WriteLit(T, x) do { T t = (T)(x); Write(t); } while (0)
+static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool decals, Array<MAP_Mesh> group, int start, int count, int misalignment) {
+    int64_t aligner = result->count;
+    WriteLit(uint32_t, count);
+    int64_t offsets_start = result->count;
+#if 0
+    { // @Temporary @Remove
+        int rolling_offset = (1 + count) * sizeof(uint32_t);
+        for (int mesh_index = 0;
+            mesh_index < count;
+            mesh_index++) {
+            WriteLit(uint32_t, rolling_offset);
+            int mesh_length = 0;
+            if (decals) {
+                mesh_length += sizeof(PH2MAP__Decal_Header);
+            } else {
+                mesh_length += sizeof(PH2MAP__Mapmesh_Header);
+            }
+            MAP_Mesh &mesh = group[start + mesh_index];
+            assert(rolling_offset == mesh.XXX_offset);
+            defer {
+                while ((aligner + rolling_offset + mesh_length) % 16 != misalignment) {
+                    mesh_length++;
+                }
+                assert(mesh_length == mesh.XXX_length);
+                rolling_offset += mesh_length;
+            };
+            for (auto &mesh_part_group : mesh.mesh_part_groups) {
+                int mesh_part_group_length = 0;
+                defer {
+                    assert(mesh_part_group_length == mesh_part_group.XXX_length);
+                    mesh_length += mesh_part_group_length;
+                };
+                if (decals) {
+                    mesh_part_group_length += sizeof(PH2MAP__Sub_Decal);
+                } else {
+                    mesh_part_group_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
+                    mesh_part_group_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
+                }
+            }
+            mesh_length += sizeof(PH2MAP__Vertex_Sections_Header);
+            mesh_length += (int)(mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
+            for (auto &section : mesh.vertex_buffers) {
+                mesh_length += section.num_vertices * section.bytes_per_vertex;
+            }
+            mesh_length += (int)(mesh.indices.count * sizeof(uint16_t));
+        }
+    }
+#else
+
+    for (int64_t i = 0; i < count; i++) {
+        WriteLit(uint32_t, 0); // offset will be backpatched
+    }
+
+#endif
+
+    for (int mesh_index = 0;
+        mesh_index < count;
+        mesh_index++) {
+#if 0
+        assert(*(uint32_t *)(&(*result)[offsets_start + mesh_index * sizeof(uint32_t)]) == (uint32_t)(result->count - offsets_start + sizeof(uint32_t)));
+#else
+        *(uint32_t *)(&(*result)[offsets_start + mesh_index * sizeof(uint32_t)]) = (uint32_t)(result->count - offsets_start + sizeof(uint32_t));
+#endif
+
+        int mesh_length = 0;
+        if (decals) {
+            mesh_length += sizeof(PH2MAP__Decal_Header);
+        } else {
+            mesh_length += sizeof(PH2MAP__Mapmesh_Header);
+        }
+        MAP_Mesh &mesh = group[start + mesh_index];
+        PH2MAP__Mapmesh_Header header = {}; // @Cleanup: should go in the else branch of `if (decals)`, tbh.
+        memcpy(header.bounding_box_a, mesh.bounding_box_a, sizeof(float) * 3);
+        memcpy(header.bounding_box_b, mesh.bounding_box_b, sizeof(float) * 3);
+
+        for (auto &mesh_part_group : mesh.mesh_part_groups) {
+            int mesh_part_group_length = 0;
+            defer {
+                assert(mesh_part_group_length == mesh_part_group.XXX_length);
+                mesh_length += mesh_part_group_length;
+            };
+            if (decals) {
+                mesh_part_group_length += sizeof(PH2MAP__Sub_Decal);
+            } else {
+                mesh_part_group_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
+                mesh_part_group_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
+            }
+        }
+        header.vertex_sections_header_offset = mesh_length;
+        mesh_length += sizeof(PH2MAP__Vertex_Sections_Header);
+        mesh_length += (int)(mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
+        for (auto &section : mesh.vertex_buffers) {
+            mesh_length += section.num_vertices * section.bytes_per_vertex;
+        }
+        header.indices_offset = mesh_length;
+        mesh_length += (int)(mesh.indices.count * sizeof(uint16_t));
+        header.indices_length = (int)(mesh.indices.count * sizeof(uint16_t));
+        header.unknown = header.indices_offset + header.indices_length - mesh.diff_between_unknown_value_and_index_buffer_end;
+        header.mesh_part_group_count = (int32_t)mesh.mesh_part_groups.count;
+
+        if (decals) {
+            PH2MAP__Decal_Header decal_header = {};
+            memcpy(decal_header.bounding_box_a, header.bounding_box_a, sizeof(float) * 3);
+            memcpy(decal_header.bounding_box_b, header.bounding_box_b, sizeof(float) * 3);
+            decal_header.vertex_sections_header_offset = header.vertex_sections_header_offset;
+            decal_header.indices_offset = header.indices_offset;
+            decal_header.indices_length = header.indices_length;
+            decal_header.sub_decal_count = header.mesh_part_group_count;
+            Write(decal_header);
+        } else {
+            Write(header);
+        }
+
+        int indices_index = 0;
+        for (auto &mesh_part_group : mesh.mesh_part_groups) {
+            WriteLit(uint32_t, mesh_part_group.material_index);
+            WriteLit(uint32_t, mesh_part_group.section_index);
+            if (decals) {
+                assert(mesh_part_group.mesh_parts.count == 1);
+                auto &part = mesh_part_group.mesh_parts[0];
+                WriteLit(uint32_t, part.strip_length);
+                WriteLit(uint32_t, part.strip_count);
+            } else {
+                WriteLit(uint32_t, (uint32_t)mesh_part_group.mesh_parts.count);
+                for (auto &part : mesh_part_group.mesh_parts) {
+                    if (part.was_inverted) {
+                        WriteLit(uint16_t, (uint16_t)part.strip_count);
+                        WriteLit(uint8_t, 1);
+                        assert(part.strip_length <= 255);
+                        WriteLit(uint8_t, (uint8_t)part.strip_length);
+                    } else {
+                        WriteLit(uint16_t, (uint16_t)part.strip_length);
+                        WriteLit(uint8_t, 0);
+                        assert(part.strip_count <= 255);
+                        WriteLit(uint8_t, (uint8_t)part.strip_count);
+                    }
+                    int first_index = indices_index;
+                    int last_index = first_index + part.strip_length * part.strip_count;
+                    indices_index = last_index;
+                    int first_vertex = INT_MAX;
+                    int last_vertex = INT_MIN;
+                    for (int i = first_index; i < last_index; i++) {
+                        if (first_vertex > mesh.indices[i]) {
+                            first_vertex = mesh.indices[i];
+                        }
+                        if (last_vertex < mesh.indices[i]) {
+                            last_vertex = mesh.indices[i];
+                        }
+                    }
+                    WriteLit(uint16_t, (uint16_t)first_vertex);
+                    WriteLit(uint16_t, (uint16_t)last_vertex);
+                }
+            }
+        }
+
+        uint64_t sections_start = header.vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header);
+        // Vertex Sections Header
+        if (mesh.vertices_length_override) {
+            WriteLit(uint32_t, mesh.vertices_length_override);
+        } else {
+            // vertex_sections_header.vertices_length = (int64_t)header.indices_offset - (int64_t)sections_start;
+            WriteLit(uint32_t, (int64_t)header.indices_offset - (int64_t)sections_start);
+        }
+        WriteLit(uint32_t, mesh.vertex_buffers.count);
+
+        uint32_t rolling_vertex_section_offset = 0;
+
+        for (auto &section : mesh.vertex_buffers) {
+            uint32_t section_length = section.num_vertices * section.bytes_per_vertex;
+            WriteLit(uint32_t, rolling_vertex_section_offset);
+            WriteLit(uint32_t, section.bytes_per_vertex);
+            WriteLit(uint32_t, section_length);
+            rolling_vertex_section_offset += section_length;
+        }
+        for (auto &section : mesh.vertex_buffers) {
+            map_write_struct(result, section.data, section.num_vertices * section.bytes_per_vertex);
+        }
+
+        map_write_struct(result, mesh.indices.data, mesh.indices.count * sizeof(uint16_t));
+
+        // Meshes can *START* misaligned, but they end aligned. (aligned *to* weird misalignment that sometimes happens.)
+        while (result->count % 16 != misalignment) {
+            result->push(0);
+        }
+    }
+    assert(result->count % 16 == misalignment);
+}
 static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo_subfile_length, Array<int> XXX_geo_start, Array<int> XXX_geo_count, Array<int> XXX_mat_start, Array<int> XXX_mat_count, uint32_t temp_delete_me_prescient_file_length) {
     WriteLit(uint32_t, 0x20010510);
     Write(temp_delete_me_prescient_file_length); // @Todo: don't use prescient knowledge of the file length; backpatch it or prepass it instead.
@@ -1268,148 +1462,48 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result, Array<int> XXX_geo
         geometry_subfile_header.material_count = material_count;
         Write(geometry_subfile_header);
 
-        for (int geometry_index = geometry_start; geometry_index < geometry_start + geometry_count; /*geometry_index++*/) {
+        for (int geometry_index = geometry_start; geometry_index < geometry_start + geometry_count; geometry_index++) {
             auto &geo = g.geometries[geometry_index];
             auto &info = geometry_info[geometry_index - geometry_start];
             Write(info.header);
 
             if (geo.opaque_mesh_count) {
-                WriteLit(uint32_t, geo.opaque_mesh_count);
-                int64_t offsets_start = result->count;
-
-                { // @Temporary @Remove
-                    int rolling_offset = (1 + geo.opaque_mesh_count) * sizeof(uint32_t);
-                    for (int mesh_index = info.opaque_mesh_start;
-                        mesh_index < (int)(info.opaque_mesh_start + geo.opaque_mesh_count);
-                        mesh_index++) {
-                        WriteLit(uint32_t, rolling_offset);
-                        int mesh_length = 0;
-                        mesh_length += sizeof(PH2MAP__Mapmesh_Header);
-                        MAP_Mesh &mesh = g.opaque_meshes[mesh_index];
-                        defer {
-                            rolling_offset += mesh_length;
-                            rolling_offset += sizeof(PH2MAP__Geometry_Header);
-                            rolling_offset += 15;
-                            rolling_offset &= ~15;
-                            rolling_offset -= sizeof(PH2MAP__Geometry_Header);
-                        };
-                        for (auto &mesh_part_group : mesh.mesh_part_groups) {
-                            int mesh_part_group_length = 0;
-                            defer {
-                                assert(mesh_part_group_length == mesh_part_group.XXX_length);
-                                mesh_length += mesh_part_group_length;
-                            };
-                            mesh_part_group_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
-                            mesh_part_group_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
-                        }
-                        mesh_length += sizeof(PH2MAP__Vertex_Sections_Header);
-                        int vertex_sections_header_offset = mesh_length;
-                        mesh_length += (int)(mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
-                        for (auto &section : mesh.vertex_buffers) {
-                            mesh_length += section.num_vertices * section.bytes_per_vertex;
-                        }
-                        mesh_length += (int)(mesh.indices.count * sizeof(uint16_t));
-                    }
-                }
-
-                // @Todo
-                // for (int64_t i = 0; i < geo.opaque_mesh_count; i++) {
-                //     WriteLit(uint32_t, 0); // offset will be backpatched
-                // }
-
-                int rolling_offset = (1 + geo.opaque_mesh_count) * sizeof(uint32_t);
-                for (int mesh_index = info.opaque_mesh_start;
-                         mesh_index < (int)(info.opaque_mesh_start + geo.opaque_mesh_count);
-                         /*mesh_index++*/) {
-                    // WriteLit(uint32_t, rolling_offset);
-                    // @Todo: *(uint32_t *)(&result->data[offsets_start + mesh_index * sizeof(uint32_t)]) = rolling_offset;
-                    assert(*(uint32_t *)(&result->data[offsets_start + mesh_index * sizeof(uint32_t)]) == (uint32_t)rolling_offset);
-                    int mesh_length = 0;
-                    mesh_length += sizeof(PH2MAP__Mapmesh_Header);
-                    MAP_Mesh &mesh = g.opaque_meshes[mesh_index];
-                    PH2MAP__Mapmesh_Header header = {};
-                    memcpy(header.bounding_box_a, mesh.bounding_box_a, sizeof(float) * 3);
-                    memcpy(header.bounding_box_b, mesh.bounding_box_b, sizeof(float) * 3);
-                    
-                    defer {
-                        rolling_offset += mesh_length;
-                        rolling_offset += sizeof(PH2MAP__Geometry_Header);
-                        rolling_offset += 15;
-                        rolling_offset &= ~15;
-                        rolling_offset -= sizeof(PH2MAP__Geometry_Header);
-                    };
-                    for (auto &mesh_part_group : mesh.mesh_part_groups) {
-                        int mesh_part_group_length = 0;
-                        defer {
-                            assert(mesh_part_group_length == mesh_part_group.XXX_length);
-                            mesh_length += mesh_part_group_length;
-                        };
-                        mesh_part_group_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
-                        mesh_part_group_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
-                    }
-                    header.vertex_sections_header_offset = mesh_length;
-                    mesh_length += sizeof(PH2MAP__Vertex_Sections_Header);
-                    mesh_length += (int)(mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
-                    for (auto &section : mesh.vertex_buffers) {
-                        mesh_length += section.num_vertices * section.bytes_per_vertex;
-                    }
-                    header.indices_offset = mesh_length;
-                    mesh_length += (int)(mesh.indices.count * sizeof(uint16_t));
-                    header.indices_length = (int)(mesh.indices.count * sizeof(uint16_t));
-                    header.unknown = header.indices_offset + header.indices_length - mesh.diff_between_unknown_value_and_index_buffer_end;
-                    header.mesh_part_group_count = (int32_t)mesh.mesh_part_groups.count;
-
-                    Write(header);
-
-                    int indices_index = 0;
-                    for (auto &mesh_part_group : mesh.mesh_part_groups) {
-                        WriteLit(uint32_t, mesh_part_group.material_index);
-                        WriteLit(uint32_t, mesh_part_group.section_index);
-                        WriteLit(uint32_t, (uint32_t)mesh_part_group.mesh_parts.count);
-                        for (auto &part : mesh_part_group.mesh_parts) {
-                            if (part.was_inverted) {
-                                WriteLit(uint16_t, (uint16_t)part.strip_count);
-                                WriteLit(uint8_t, 1);
-                                assert(part.strip_length <= 255);
-                                WriteLit(uint8_t, (uint8_t)part.strip_length);
-                            } else {
-                                WriteLit(uint16_t, (uint16_t)part.strip_length);
-                                WriteLit(uint8_t, 0);
-                                assert(part.strip_count <= 255);
-                                WriteLit(uint8_t, (uint8_t)part.strip_count);
-                            }
-                            int first_index = indices_index;
-                            int last_index = first_index + part.strip_length * part.strip_count;
-                            indices_index = last_index;
-                            int first_vertex = INT_MAX;
-                            int last_vertex = INT_MIN;
-                            for (int i = first_index; i < last_index; i++) {
-                                if (first_vertex > mesh.indices[i]) {
-                                    first_vertex = mesh.indices[i];
-                                }
-                                if (last_vertex < mesh.indices[i]) {
-                                    last_vertex = mesh.indices[i];
-                                }
-                            }
-                            WriteLit(uint16_t, (uint16_t)first_vertex);
-                            WriteLit(uint16_t, (uint16_t)last_vertex);
-                        }
-                    }
-                    // Vertex Sections Header
-                    if (mesh.vertices_length_override) {
-                        WriteLit(uint32_t, mesh.vertices_length_override);
-                    } else {
-                        // vertex_sections_header.vertices_length = (int64_t)header.indices_offset - (int64_t)(header.vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
-                        WriteLit(uint32_t, (uint32_t)((int64_t)header.indices_offset - (int64_t)(header.vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + mesh.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header))));
-                    }
-
-                    return;
-                }
+                assert(result->count % 16 == 4);
+                map_write_mesh_group_or_decal_group(result, false, g.opaque_meshes, info.opaque_mesh_start, (int)geo.opaque_mesh_count, 0);
+                assert(result->count % 16 == 0);
             }
-
-            return;
+            if (geo.transparent_mesh_count) {
+                int misalignment = 0;
+                if (geo.has_weird_2_byte_misalignment_before_transparents) {
+                    result->push(0);
+                    result->push(0);
+                    misalignment = 2;
+                }
+                if (!geo.opaque_mesh_count) {
+                    assert(result->count % 16 == 4);
+                } else {
+                    assert(result->count % 16 == misalignment);
+                }
+                map_write_mesh_group_or_decal_group(result, false, g.transparent_meshes, info.transparent_mesh_start, (int)geo.transparent_mesh_count, misalignment);
+                assert(result->count % 16 == misalignment);
+            }
+            if (geo.decal_count) {
+                int misalignment = 0;
+                if (geo.has_weird_2_byte_misalignment_before_transparents || geo.has_weird_2_byte_misalignment_before_decals) {
+                    while (result->count % 16 != 2) result->push(0);
+                    misalignment = 2;
+                }
+                if (!geo.opaque_mesh_count && !geo.transparent_mesh_count) {
+                    assert(result->count % 16 == 4);
+                } else {
+                    assert(result->count % 16 == misalignment);
+                }
+                map_write_mesh_group_or_decal_group(result, true, g.decal_meshes, info.decal_start, (int)geo.decal_count, misalignment);
+                assert(result->count % 16 == misalignment);
+            }
         }
 
+        return;
         // ++subfile_index;
     }
 }
