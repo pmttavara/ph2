@@ -965,6 +965,10 @@ static void map_write_struct(Array<uint8_t> *result, const void *px, size_t size
 }
 #define Write(x) map_write_struct(result, &(x), sizeof(x))
 #define WriteLit(T, x) do { T t = (T)(x); Write(t); } while (0)
+
+#define CreateBackpatch(T) (int64_t)(result->resize(result->count + sizeof(T)), (result->count - sizeof(T)))
+#define WriteBackpatch(T, backpatch_idx, value) do { *(T *)(&(*result)[(backpatch_idx)]) = (T)(value); } while (0)
+
 static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool decals, Array<MAP_Mesh> group, int start, int count, int misalignment) {
     int64_t aligner = result->count;
     WriteLit(uint32_t, count);
@@ -1017,7 +1021,7 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
 #if 0
         assert(*(uint32_t *)(&(*result)[offsets_start + mesh_index * sizeof(uint32_t)]) == (uint32_t)(result->count - offsets_start + sizeof(uint32_t)));
 #else
-        *(uint32_t *)(&(*result)[offsets_start + mesh_index * sizeof(uint32_t)]) = (uint32_t)(result->count - offsets_start + sizeof(uint32_t));
+        WriteBackpatch(uint32_t, offsets_start + mesh_index * sizeof(uint32_t), result->count - offsets_start + sizeof(uint32_t));
 #endif
 
         int mesh_length = 0;
@@ -1130,9 +1134,6 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
     assert(result->count % 16 == misalignment);
 }
 static int32_t map_compute_file_length(G &g) {
-
-    Log("Computing file length...");
-
     int32_t file_length = 0;
     file_length += sizeof(PH2MAP__Header);
 
@@ -1185,7 +1186,6 @@ static int32_t map_compute_file_length(G &g) {
     int rolling_opaque_mesh_index = 0;
     int rolling_transparent_mesh_index = 0;
     int rolling_decal_index = 0;
-    // Log("Computing length:");
     for (int geo_subfile_index = 0;; geo_subfile_index++) { // Write geometry subfiles and geometries
         int geometry_start = 0;
         int geometry_count = 0;
@@ -1200,9 +1200,6 @@ static int32_t map_compute_file_length(G &g) {
         if (geometry_count <= 0) {
             break;
         }
-        Log("File had length %d", (int)file_length);
-        // Log("  #%d subfile out of %d total", subfile_index, subfile_count);
-        // Log("  #%d geo subfile out of %d geo subfiles", geo_subfile_index, num_geo_subfiles);
         assert((int)subfile_index < subfile_count);
         assert(geo_subfile_index < num_geo_subfiles);
         int material_start = 0;
@@ -1254,7 +1251,6 @@ static int32_t map_compute_file_length(G &g) {
                 }
                 info->header.group_size = geometry_length;
                 subfile_length += geometry_length;
-                Log("    Geometry %d has length %d", geometry_index, geometry_length);
             };
 
             if (geo.opaque_mesh_count > 0) {
@@ -1362,25 +1358,19 @@ static int32_t map_compute_file_length(G &g) {
             rolling_decal_index += (int)geo.decal_count;
         }
         subfile_length += material_count * sizeof(PH2MAP__Material);
-        Log("  Subfile %d has length %d", subfile_index, subfile_length);
 
         file_length += sizeof(PH2MAP__Subfile_Header);
         file_length += subfile_length;
-        Log("File has length %d before alignment", (int)file_length);
         while (file_length % 16 != misalignment) {
             file_length++;
         }
         ++subfile_index;
-        Log("File now has length %d", (int)file_length);
     }
     return file_length;
 }
 static void map_write_to_memory(G &g, Array<uint8_t> *result) {
     result->reserve(2411724 * 2); // @Temporary: just a speedup thing :)
     int32_t file_length = map_compute_file_length(g);
-
-    Log("Writing file...");
-
     WriteLit(uint32_t, 0x20010510);
     WriteLit(uint32_t, file_length);
     int num_tex_subfiles = 0;
@@ -1417,23 +1407,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
         // Write subfile header
         WriteLit(uint32_t, 2); // subfile type
 
-        // @Todo @Temporary @Cleanup: Replace this prepass with a backpatch.
-        int subfile_length = 0;
-        subfile_length += sizeof(PH2MAP__Texture_Subfile_Header);
-        // @Note: could be backpatched?
-        for (int texture_index = rolling_texture_index; texture_index < rolling_texture_index + sub.texture_count; texture_index++) {
-            subfile_length += sizeof(PH2MAP__BC_Texture_Header);
-            MAP_Texture &tex = g.textures[texture_index];
-            for (int sprite_index = 0; sprite_index < tex.sprite_count; sprite_index++) {
-                subfile_length += sizeof(PH2MAP__Sprite_Header);
-                // in theory, sprite pixels byte len would be added here, but it should always be 0 except the last
-            }
-            subfile_length += tex.pixel_bytes; // pixels byte len of the last sprite
-        }
-        subfile_length += 16; // textures are read until the first int of the line is 0, and then that line is skipped - hence, we add this terminator sentinel line here
-
-        Write(subfile_length);
-        // Log("Subfile %d is %d bytes", (int)(&sub - g.texture_subfiles.data) - (g.texture_subfiles.count - num_tex_subfiles), subfile_length);
+        auto backpatch_subfile_length = CreateBackpatch(uint32_t);
 
         WriteLit(uint32_t, 0); // pad
         WriteLit(uint32_t, 0); // pad
@@ -1447,7 +1421,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
 
         for (int texture_index = rolling_texture_index; texture_index < rolling_texture_index + sub.texture_count; texture_index++) {
             MAP_Texture &tex = g.textures[texture_index];
-            // Log("texture index is %d, id is %d", (int)texture_index, (int)tex.id);
             PH2MAP__BC_Texture_Header bc_texture_header = {};
             bc_texture_header.id = tex.id;
             bc_texture_header.width = tex.width;
@@ -1479,8 +1452,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
         { // textures are read until the first int of the line is 0, and then that line is skipped - hence, we add this terminator sentinel line here
             WriteLit(PH2MAP__BC_End_Sentinel, PH2MAP__BC_End_Sentinel{});
         }
-        int64_t subfile_end = result->count;
-        assert(subfile_end - subfile_start == subfile_length);
+        WriteBackpatch(uint32_t, backpatch_subfile_length, result->count - subfile_start);
     }
 
     uint32_t subfile_index = (uint32_t)num_tex_subfiles;
@@ -1488,7 +1460,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
     int rolling_opaque_mesh_index = 0;
     int rolling_transparent_mesh_index = 0;
     int rolling_decal_index = 0;
-    // Log("Writing data:");
     for (int geo_subfile_index = 0;; geo_subfile_index++) { // Write geometry subfiles and geometries
         int geometry_start = 0;
         int geometry_count = 0;
@@ -1503,9 +1474,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
         if (geometry_count <= 0) {
             break;
         }
-        Log("File had length %d", (int)result->count);
-        // Log("  #%d subfile out of %d total", subfile_index, subfile_count);
-        // Log("  #%d geo subfile out of %d geo subfiles", geo_subfile_index, num_geo_subfiles);
         assert((int)subfile_index < subfile_count);
         assert(geo_subfile_index < num_geo_subfiles);
         int material_start = 0;
@@ -1534,7 +1502,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
         int subfile_length = 0;
         subfile_length += sizeof(PH2MAP__Geometry_Subfile_Header);
         // @Note: we start out 16-byte aligned here.
-        // @Note: could be backpatched?
+        // @Todo: replace all this with backpatching as much as possible.
         for (int geometry_index = geometry_start; geometry_index < geometry_start + geometry_count; geometry_index++) {
             MAP_Geometry &geo = g.geometries[geometry_index];
             Temp_Geometry_Info *info = geometry_info.push();
@@ -1556,7 +1524,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
                 }
                 info->header.group_size = geometry_length;
                 subfile_length += geometry_length;
-                Log("    Geometry %d has length %d", geometry_index, geometry_length);
             };
 
             if (geo.opaque_mesh_count > 0) {
@@ -1666,12 +1633,11 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
             rolling_decal_index += (int)geo.decal_count;
         }
         subfile_length += material_count * sizeof(PH2MAP__Material);
-        Log("  Subfile %d has length %d", subfile_index, subfile_length);
 
-        PH2MAP__Subfile_Header subfile_header = {};
-        subfile_header.type = 1;
-        subfile_header.length = subfile_length;
-        Write(subfile_header);
+        WriteLit(uint32_t, 1);
+        auto backpatch_subfile_length = CreateBackpatch(uint32_t);
+        WriteLit(uint32_t, 0);
+        WriteLit(uint32_t, 0);
         int64_t subfile_start = result->count;
         PH2MAP__Geometry_Subfile_Header geometry_subfile_header = {};
         geometry_subfile_header.magic = 0x20010730;
@@ -1731,15 +1697,12 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
             material.specularity = mat.specularity;
             Write(material);
         }
-        
-        int64_t subfile_end = result->count;
-        assert(subfile_end - subfile_start == subfile_length);
-        Log("File has length %d before alignment", (int)result->count);
+
+        WriteBackpatch(uint32_t, backpatch_subfile_length, result->count - subfile_start);
         while (result->count % 16 != misalignment) {
             result->push(0);
         }
         ++subfile_index;
-        Log("File now has length %d", (int)result->count);
     }
     assert(file_length == result->count);
 }
