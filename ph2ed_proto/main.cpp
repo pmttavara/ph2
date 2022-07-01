@@ -1372,30 +1372,14 @@ static int32_t map_compute_file_length(G &g) {
 static void map_write_to_memory(G &g, Array<uint8_t> *result) {
     int32_t file_length = map_compute_file_length(g);
     result->reserve(file_length);
+
+    // MAP Header
     WriteLit(uint32_t, 0x20010510);
     WriteLit(uint32_t, file_length);
-    int num_tex_subfiles = 0;
-    int num_geo_subfiles = 0;
-    int subfile_count = 0;
-    { // @Temporary: don't prepass(!!!); backpatch instead.
-        for (auto &sub : g.texture_subfiles) {
-            if (!sub.came_from_non_numbered_dependency) { // @Temporary i hope!
-                ++num_tex_subfiles;
-            }
-        }
-        int prev_subfile_index = (int)num_tex_subfiles - 1;
-        assert(prev_subfile_index >= -1);
-        for (auto &geo : g.geometries) {
-            if ((int)geo.subfile_index != prev_subfile_index) {
-                assert((int)geo.subfile_index == prev_subfile_index + 1);
-                prev_subfile_index = (int)geo.subfile_index;
-                ++num_geo_subfiles;
-            }
-        }
-        subfile_count = num_tex_subfiles + num_geo_subfiles;
-        WriteLit(uint32_t, subfile_count);
-    }
+    auto backpatch_subfile_count = CreateBackpatch(uint32_t);
     WriteLit(uint32_t, 0);
+
+    int subfile_count = 0;
     int rolling_texture_index = 0;
     for (auto &sub : g.texture_subfiles) {
         defer {
@@ -1404,17 +1388,15 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
         if (sub.came_from_non_numbered_dependency) { // @Temporary i hope!
             continue;
         }
-        
-        // Write subfile header
+
+        // Subfile Header
         WriteLit(uint32_t, 2); // subfile type
-
         auto backpatch_subfile_length = CreateBackpatch(uint32_t);
-
         WriteLit(uint32_t, 0); // pad
         WriteLit(uint32_t, 0); // pad
 
+        // Texture Subfile Header
         int64_t subfile_start = result->count;
-        // Write texture subfile header
         PH2MAP__Texture_Subfile_Header texture_subfile_header = {};
         texture_subfile_header.magic = 0x19990901;
         texture_subfile_header.always1 = 1;
@@ -1450,22 +1432,23 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
             }
             map_write_struct(result, tex.pixel_data, tex.pixel_bytes);
         }
-        { // textures are read until the first int of the line is 0, and then that line is skipped - hence, we add this terminator sentinel line here
-            WriteLit(PH2MAP__BC_End_Sentinel, PH2MAP__BC_End_Sentinel{});
-        }
+        // textures are read until the first int of the line is 0, and then that line is skipped - hence, we add this terminator sentinel line here
+        WriteLit(PH2MAP__BC_End_Sentinel, PH2MAP__BC_End_Sentinel{});
+
         WriteBackpatch(uint32_t, backpatch_subfile_length, result->count - subfile_start);
+        ++subfile_count;
     }
 
-    uint32_t subfile_index = (uint32_t)num_tex_subfiles;
-    assert(subfile_index >= 0);
+    // GeometryGroup Subfiles
+    assert(subfile_count >= 0);
     int rolling_opaque_mesh_index = 0;
     int rolling_transparent_mesh_index = 0;
     int rolling_decal_index = 0;
-    for (int geo_subfile_index = 0;; geo_subfile_index++) { // Write geometry subfiles and geometries
+    for (;;) { // Write geometry subfiles and geometries
         int geometry_start = 0;
         int geometry_count = 0;
         for (auto &geo : g.geometries) {
-            if (geo.subfile_index == subfile_index) {
+            if ((int)geo.subfile_index == subfile_count) {
                 if (!geometry_count) {
                     geometry_start = (int)(&geo - g.geometries.data);
                 }
@@ -1475,60 +1458,27 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
         if (geometry_count <= 0) {
             break;
         }
-        assert((int)subfile_index < subfile_count);
-        assert(geo_subfile_index < num_geo_subfiles);
-        int material_start = 0;
-        int material_count = 0;
-        for (auto &mat : g.materials) {
-            if (mat.subfile_index == subfile_index) {
-                if (!material_count) {
-                    material_start = (int)(&mat - g.materials.data);
-                }
-                ++material_count;
-            }
-        }
 
-        struct Temp_Geometry_Info {
-            PH2MAP__Geometry_Header header = {};
-            int opaque_mesh_start = 0;
-            int transparent_mesh_start = 0;
-            int decal_start = 0;
-        };
-        Array<Temp_Geometry_Info> geometry_info = {}; // @Yucky!!!!
-        defer {
-            geometry_info.release();
-        };
-        geometry_info.reserve(geometry_count);
-
-        // @Note: we start out 16-byte aligned here.
-        for (int geometry_index = geometry_start; geometry_index < geometry_start + geometry_count; geometry_index++) {
-            MAP_Geometry &geo = g.geometries[geometry_index];
-            Temp_Geometry_Info *info = geometry_info.push();
-            info->header.id = geo.id;
-            info->opaque_mesh_start = rolling_opaque_mesh_index;
-            info->transparent_mesh_start = rolling_transparent_mesh_index;
-            info->decal_start = rolling_decal_index;
-            rolling_opaque_mesh_index += (int)geo.opaque_mesh_count;
-            rolling_transparent_mesh_index += (int)geo.transparent_mesh_count;
-            rolling_decal_index += (int)geo.decal_count;
-        }
-
+        // Subfile Header
         WriteLit(uint32_t, 1);
         auto backpatch_subfile_length = CreateBackpatch(uint32_t);
         WriteLit(uint32_t, 0);
         WriteLit(uint32_t, 0);
+
+        // Geometry Subfile Header
         int64_t subfile_start = result->count;
         WriteLit(uint32_t, 0x20010730);
         WriteLit(uint32_t, geometry_count);
         auto backpatch_geometry_size = CreateBackpatch(uint32_t);
-        WriteLit(uint32_t, material_count);
+        auto backpatch_material_count = CreateBackpatch(uint32_t);
 
+        // @Note: we start out 16-byte aligned here.
         int misalignment = 0;
         for (int geometry_index = geometry_start; geometry_index < geometry_start + geometry_count; geometry_index++) {
             auto &geo = g.geometries[geometry_index];
-            auto &info = geometry_info[geometry_index - geometry_start];
+
+            // Geometry Header
             int64_t geometry_header_start = result->count;
-            // Write(info.header);
             WriteLit(uint32_t, geo.id);
             auto backpatch_group_size = CreateBackpatch(int32_t);
             auto backpatch_opaque_group_offset = CreateBackpatch(int32_t);
@@ -1539,7 +1489,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
                 assert(result->count % 16 == 4);
                 misalignment = 0;
                 WriteBackpatch(int32_t, backpatch_opaque_group_offset, result->count - geometry_header_start);
-                map_write_mesh_group_or_decal_group(result, false, g.opaque_meshes, info.opaque_mesh_start, (int)geo.opaque_mesh_count, misalignment);
+                map_write_mesh_group_or_decal_group(result, false, g.opaque_meshes, rolling_opaque_mesh_index, (int)geo.opaque_mesh_count, misalignment);
                 assert(result->count % 16 == misalignment);
             }
             if (geo.transparent_mesh_count) {
@@ -1554,7 +1504,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
                     assert(result->count % 16 == misalignment);
                 }
                 WriteBackpatch(int32_t, backpatch_transparent_group_offset, result->count - geometry_header_start);
-                map_write_mesh_group_or_decal_group(result, false, g.transparent_meshes, info.transparent_mesh_start, (int)geo.transparent_mesh_count, misalignment);
+                map_write_mesh_group_or_decal_group(result, false, g.transparent_meshes, rolling_transparent_mesh_index, (int)geo.transparent_mesh_count, misalignment);
                 assert(result->count % 16 == misalignment);
             }
             if (geo.decal_count) {
@@ -1568,15 +1518,26 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
                     assert(result->count % 16 == misalignment);
                 }
                 WriteBackpatch(int32_t, backpatch_decal_group_offset, result->count - geometry_header_start);
-                map_write_mesh_group_or_decal_group(result, true, g.decal_meshes, info.decal_start, (int)geo.decal_count, misalignment);
+                map_write_mesh_group_or_decal_group(result, true, g.decal_meshes, rolling_decal_index, (int)geo.decal_count, misalignment);
                 assert(result->count % 16 == misalignment);
             }
             WriteBackpatch(int32_t, backpatch_group_size, result->count - geometry_header_start);
+            rolling_opaque_mesh_index += (int)geo.opaque_mesh_count;
+            rolling_transparent_mesh_index += (int)geo.transparent_mesh_count;
+            rolling_decal_index += (int)geo.decal_count;
         }
 
         WriteBackpatch(uint32_t, backpatch_geometry_size, result->count - subfile_start);
-        for (int material_index = 0; material_index < material_count; material_index++) {
-            MAP_Material &mat = g.materials[material_start + material_index];
+
+        int material_count = 0;
+        for (auto &mat : g.materials) {
+            if (mat.subfile_index < (uint32_t)subfile_count) {
+                continue;
+            }
+            if (mat.subfile_index > (uint32_t)subfile_count) {
+                break;
+            }
+            ++material_count;
             PH2MAP__Material material = {};
             material.mode = mat.mode;
             material.texture_id = mat.texture_id;
@@ -1585,13 +1546,15 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
             material.specularity = mat.specularity;
             Write(material);
         }
+        WriteBackpatch(uint32_t, backpatch_material_count, material_count);
 
         WriteBackpatch(uint32_t, backpatch_subfile_length, result->count - subfile_start);
         while (result->count % 16 != misalignment) {
             result->push(0);
         }
-        ++subfile_index;
+        ++subfile_count;
     }
+    WriteBackpatch(uint32_t, backpatch_subfile_count, subfile_count);
     assert(file_length == result->count);
 }
 static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture> textures, uint32_t id) {
