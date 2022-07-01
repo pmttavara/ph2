@@ -156,7 +156,7 @@ template <class T> struct Array {
         invariants();
         assert(index < count);
         amortize(count + 1);
-        memmove(data[index + 1], data[index], (count - index - 1) * sizeof(T));
+        memmove(&data[index + 1], &data[index], (count - index - 1) * sizeof(T));
         count += 1;
         data[index] = value;
         return &data[index];
@@ -170,7 +170,7 @@ template <class T> struct Array {
     void remove_ordered(int64_t index) {
         invariants();
         assert(index < count);
-        memmove(data[index], data[index + 1], (count - index - 1) * sizeof(T));
+        memmove(&data[index], &data[index + 1], (count - index - 1) * sizeof(T));
         count -= 1;
     }
     T *begin() {
