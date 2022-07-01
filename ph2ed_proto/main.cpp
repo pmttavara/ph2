@@ -183,8 +183,9 @@ struct MAP_Mesh_Part_Group {
 //        explicit metadata if you want to preserve bit-for-bit roundtrippability.
 //        Geometry subfiles CANNOT be empty (I'm asserting geometry_count >= 1 as of writing). -p 2022-06-25
 struct MAP_Mesh {
-    float bounding_box_a[3];
-    float bounding_box_b[3];
+    bool bbox_override = false;
+    float bounding_box_a[3] = {};
+    float bounding_box_b[3] = {};
     Array<MAP_Mesh_Part_Group> mesh_part_groups = {};
     Array<MAP_Mesh_Vertex_Buffer> vertex_buffers = {};
     Array<uint16_t> indices = {};
@@ -758,6 +759,9 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh>
         memcpy(mesh.bounding_box_a, header.bounding_box_a, sizeof(float) * 3);
         memcpy(mesh.bounding_box_b, header.bounding_box_b, sizeof(float) * 3);
 
+        float bbox_min[3] = { +INFINITY, +INFINITY, +INFINITY };
+        float bbox_max[3] = { -INFINITY, -INFINITY, -INFINITY };
+
         ptr4 = header_base + header.vertex_sections_header_offset;
         PH2MAP__Vertex_Sections_Header vertex_sections_header = {};
         Read(ptr4, vertex_sections_header);
@@ -805,6 +809,7 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh>
             vertex_buffer.data = (char *)malloc(vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
             memcpy(vertex_buffer.data, ptr5, vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
             for (int i = 0; i < vertex_buffer.num_vertices; i++) {
+                float pos[3] = {};
                 switch (vertex_section_header.bytes_per_vertex) {
                     case 0x14: {
                         PH2MAP__Vertex14 vert = {};
@@ -815,6 +820,7 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh>
                         assert(vert.uv[0] < + 2);
                         assert(vert.uv[1] > -1);
                         assert(vert.uv[1] < + 2);
+                        memcpy(pos, vert.position, 3 * sizeof(float));
                     } break;
                     case 0x18: {
                         PH2MAP__Vertex18 vert = {};
@@ -825,6 +831,7 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh>
                         assert(vert.uv[0] < + 2);
                         assert(vert.uv[1] > -1);
                         assert(vert.uv[1] < + 2);
+                        memcpy(pos, vert.position, 3 * sizeof(float));
                     } break;
                     case 0x20: {
                         PH2MAP__Vertex20 vert = {};
@@ -838,6 +845,7 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh>
                         assert(vert.uv[0] < + 2);
                         assert(vert.uv[1] > -1);
                         assert(vert.uv[1] < + 2);
+                        memcpy(pos, vert.position, 3 * sizeof(float));
                     } break;
                     case 0x24: {
                         PH2MAP__Vertex24 vert = {};
@@ -851,13 +859,38 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh>
                         assert(vert.uv[0] < + 2);
                         assert(vert.uv[1] > -1);
                         assert(vert.uv[1] < + 2);
+                        memcpy(pos, vert.position, 3 * sizeof(float));
                     } break;
-                };
+                }
+                bbox_min[0] = fminf(bbox_min[0], pos[0]);
+                bbox_min[1] = fminf(bbox_min[1], pos[1]);
+                bbox_min[2] = fminf(bbox_min[2], pos[2]);
+                bbox_max[0] = fmaxf(bbox_max[0], pos[0]);
+                bbox_max[1] = fmaxf(bbox_max[1], pos[1]);
+                bbox_max[2] = fmaxf(bbox_max[2], pos[2]);
             }
             assert(ptr5 == end_of_this_section);
             end_of_previous_section = end_of_this_section;
         }
         assert(end_of_previous_section == header_base + header.indices_offset);
+
+        // assert(bbox_min[0] == header.bounding_box_a[0]);
+        // assert(bbox_min[1] == header.bounding_box_a[1]);
+        // assert(bbox_min[2] == header.bounding_box_a[2]);
+        // assert(bbox_max[0] == header.bounding_box_b[0]);
+        // assert(bbox_max[1] == header.bounding_box_b[1]);
+        // assert(bbox_max[2] == header.bounding_box_b[2]);
+
+        // @Note: Manually edited files sometimes haven't updated their bounding boxes.
+        if (memcmp(bbox_min, header.bounding_box_a, 3 * sizeof(float)) != 0) {
+            mesh.bbox_override = true;
+            Log("BBox Override");
+        }
+        if (memcmp(bbox_max, header.bounding_box_b, 3 * sizeof(float)) != 0) {
+            mesh.bbox_override = true;
+            Log("BBox Override");
+        }
+
         if (vertex_sections_header.vertices_length != (int64_t)header.indices_offset - (int64_t)(header.vertex_sections_header_offset + sizeof(PH2MAP__Vertex_Sections_Header) + vertex_sections_header.vertex_section_count * sizeof(PH2MAP__Vertex_Section_Header))) {
             mesh.vertices_length_override = vertex_sections_header.vertices_length;
         }
@@ -992,10 +1025,54 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
         int64_t mesh_start = result->count;
         WriteBackpatch(uint32_t, offsets_start + mesh_index * sizeof(uint32_t), mesh_start - offsets_start + sizeof(uint32_t));
         MAP_Mesh &mesh = group[start + mesh_index];
-        Write(mesh.bounding_box_a);
-        WriteLit(float, 0);
-        Write(mesh.bounding_box_b);
-        WriteLit(float, 0);
+        if (mesh.bbox_override) {
+            Write(mesh.bounding_box_a);
+            WriteLit(float, 0);
+            Write(mesh.bounding_box_b);
+            WriteLit(float, 0);
+        } else { // Compute bounding box
+            float bbox_min[3] = { + INFINITY, + INFINITY, + INFINITY };
+            float bbox_max[3] = { -INFINITY, -INFINITY, -INFINITY };
+            for (auto &vertex_buffer : mesh.vertex_buffers) {
+                for (int i = 0; i < vertex_buffer.num_vertices; i++) {
+                    float pos[3] = {};
+                    switch (vertex_buffer.bytes_per_vertex) {
+                        case 0x14: {
+                            auto verts = (PH2MAP__Vertex14 *)vertex_buffer.data;
+                            memcpy(pos, verts[i].position, 3 * sizeof(float));
+                        } break;
+                        case 0x18: {
+                            auto verts = (PH2MAP__Vertex18 *)vertex_buffer.data;
+                            memcpy(pos, verts[i].position, 3 * sizeof(float));
+                        } break;
+                        case 0x20: {
+                            auto verts = (PH2MAP__Vertex20 *)vertex_buffer.data;
+                            memcpy(pos, verts[i].position, 3 * sizeof(float));
+                        } break;
+                        case 0x24: {
+                            auto verts = (PH2MAP__Vertex24 *)vertex_buffer.data;
+                            memcpy(pos, verts[i].position, 3 * sizeof(float));
+                        } break;
+                    }
+                    bbox_min[0] = fminf(bbox_min[0], pos[0]);
+                    bbox_min[1] = fminf(bbox_min[1], pos[1]);
+                    bbox_min[2] = fminf(bbox_min[2], pos[2]);
+                    bbox_max[0] = fmaxf(bbox_max[0], pos[0]);
+                    bbox_max[1] = fmaxf(bbox_max[1], pos[1]);
+                    bbox_max[2] = fmaxf(bbox_max[2], pos[2]);
+                }
+            }
+            assert(bbox_min[0] == mesh.bounding_box_a[0]); // @Temporary until we can get rid of overrides hopefully!
+            assert(bbox_min[1] == mesh.bounding_box_a[1]);
+            assert(bbox_min[2] == mesh.bounding_box_a[2]);
+            assert(bbox_max[0] == mesh.bounding_box_b[0]);
+            assert(bbox_max[1] == mesh.bounding_box_b[1]);
+            assert(bbox_max[2] == mesh.bounding_box_b[2]);
+            Write(bbox_min);
+            WriteLit(float, 0);
+            Write(bbox_max);
+            WriteLit(float, 0);
+        }
         auto backpatch_vertex_sections_header_offset = CreateBackpatch(uint32_t);
         auto backpatch_indices_offset = CreateBackpatch(uint32_t);
         WriteLit(int32_t, (int)(mesh.indices.count * sizeof(uint16_t)));
@@ -2591,7 +2668,169 @@ static void frame(void *userdata) {
             ImGui::PushID(i);
             auto &buf = g.map_buffers[i];
             char b[128]; snprintf(b, sizeof b, "Geo #%d (ID %d), mesh #%d, group #%d", buf.global_geometry_index, buf.id, buf.global_mesh_index, buf.mesh_part_group_index);
-            ImGui::Checkbox(b, &g.map_buffers[i].shown);
+            ImGui::Checkbox(b, &buf.shown);
+            if (ImGui::Button("Delete")) {
+                int mpg_index = buf.mesh_part_group_index;
+                auto &mesh = g.opaque_meshes[buf.global_mesh_index];
+                auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
+                auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
+                int indices_index = 0;
+                for (int i = 0; i < mpg_index; i++) {
+                    for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
+                        indices_index += part.strip_length * part.strip_count;
+                    }
+                }
+                Log("Starting at index %d...", indices_index);
+                int indices_to_process = 0;
+                for (auto &part : mesh_part_group.mesh_parts) {
+                    indices_to_process += part.strip_length * part.strip_count;
+                }
+                Log("We're going to process %d indices...", indices_to_process);
+                for (int i = 0; i < indices_to_process; i++) {
+                    mesh.indices.remove_ordered(indices_index);
+                }
+                mesh_part_group.mesh_parts.release();
+                mesh.mesh_part_groups.remove_ordered(mpg_index);
+                g.map_must_update = true;
+                Log("Deleted!");
+            }
+            bool move = false;
+            int axis = 0;
+            int sign = +1;
+            ImGui::Text("Move:");
+            ImGui::SameLine(); if (ImGui::Button("+X")) { move = true; axis = 0; sign = +1; }
+            ImGui::SameLine(); if (ImGui::Button("-X")) { move = true; axis = 0; sign = -1; }
+            ImGui::SameLine(); if (ImGui::Button("+Y")) { move = true; axis = 1; sign = +1; }
+            ImGui::SameLine(); if (ImGui::Button("-Y")) { move = true; axis = 1; sign = -1; }
+            ImGui::SameLine(); if (ImGui::Button("+Z")) { move = true; axis = 2; sign = +1; }
+            ImGui::SameLine(); if (ImGui::Button("-Z")) { move = true; axis = 2; sign = -1; }
+            if (move) {
+                int mpg_index = buf.mesh_part_group_index;
+                auto &mesh = g.opaque_meshes[buf.global_mesh_index];
+                mesh.bbox_override = false;
+                auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
+                auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
+                int indices_index = 0;
+                for (int i = 0; i < mpg_index; i++) {
+                    for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
+                        indices_index += part.strip_length * part.strip_count;
+                    }
+                }
+                Log("Starting at index %d...", indices_index);
+                int indices_to_process = 0;
+                for (auto &part : mesh_part_group.mesh_parts) {
+                    indices_to_process += part.strip_length * part.strip_count;
+                }
+                Log("We're going to process %d indices...", indices_to_process);
+                Array<int> unique_indices = {};
+                defer {
+                    unique_indices.release();
+                };
+                for (int i = 0; i < indices_to_process; i++) {
+                    int index = mesh.indices[indices_index + i];
+                    bool found = false;
+                    for (auto &idx : unique_indices) {
+                        if (idx == index) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        switch (buf.bytes_per_vertex) {
+                            case 0x14: {
+                                auto verts = (PH2MAP__Vertex14 *)buf.data;
+                                verts[index].position[axis] += 1000 * sign;
+                            } break;
+                            case 0x18: {
+                                auto verts = (PH2MAP__Vertex18 *)buf.data;
+                                verts[index].position[axis] += 1000 * sign;
+                            } break;
+                            case 0x20: {
+                                auto verts = (PH2MAP__Vertex20 *)buf.data;
+                                verts[index].position[axis] += 1000 * sign;
+                            } break;
+                            case 0x24: {
+                                auto verts = (PH2MAP__Vertex24 *)buf.data;
+                                verts[index].position[axis] += 1000 * sign;
+                            } break;
+                        }
+                        unique_indices.push(index);
+                    }
+                }
+                g.map_must_update = true;
+                Log("Moved!");
+            }
+            if (ImGui::Button("Dupe")) {
+                int mpg_index = buf.mesh_part_group_index;
+                auto &mesh = g.opaque_meshes[buf.global_mesh_index];
+                auto &buf = mesh.vertex_buffers[mesh.mesh_part_groups[mpg_index].section_index];
+                int indices_index = 0;
+                for (int i = 0; i < mpg_index; i++) {
+                    for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
+                        indices_index += part.strip_length * part.strip_count;
+                    }
+                }
+                Log("Starting at index %d...", indices_index);
+                int indices_to_process = 0;
+                for (auto &part : mesh.mesh_part_groups[mpg_index ].mesh_parts) {
+                    indices_to_process += part.strip_length * part.strip_count;
+                }
+                Log("We're going to process %d indices...", indices_to_process);
+                Array<int> unique_indices = {};
+                defer {
+                    unique_indices.release();
+                };
+                for (int i = 0; i < indices_to_process; i++) {
+                    int index = mesh.indices[indices_index + i];
+                    bool found = false;
+                    for (auto &idx : unique_indices) {
+                        if (idx == index) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    unique_indices.push(index);
+                }
+                // int min_vertex = 0;
+                // int max_vertex = 65535;
+                buf.data = (char *)realloc(buf.data, (buf.num_vertices + indices_to_process) * buf.bytes_per_vertex);
+                assert(buf.data);
+                for (int i = 0; i < indices_to_process; i++) {
+                    int vert_index = mesh.indices[indices_index + i];
+                    switch (buf.bytes_per_vertex) {
+                        case 0x14: {
+                            auto verts = (PH2MAP__Vertex14 *)buf.data;
+                            verts[buf.num_vertices + i] = verts[vert_index];
+                            verts[buf.num_vertices + i].position[0] += 1000;
+                        } break;
+                        case 0x18: {
+                            auto verts = (PH2MAP__Vertex18 *)buf.data;
+                            verts[buf.num_vertices + i] = verts[vert_index];
+                            verts[buf.num_vertices + i].position[0] += 1000;
+                        } break;
+                        case 0x20: {
+                            auto verts = (PH2MAP__Vertex20 *)buf.data;
+                            verts[buf.num_vertices + i] = verts[vert_index];
+                            verts[buf.num_vertices + i].position[0] += 1000;
+                        } break;
+                        case 0x24: {
+                            auto verts = (PH2MAP__Vertex24 *)buf.data;
+                            verts[buf.num_vertices + i] = verts[vert_index];
+                            verts[buf.num_vertices + i].position[0] += 1000;
+                        } break;
+                    }
+                    mesh.indices.push((uint16_t)(buf.num_vertices + i));
+                }
+                buf.num_vertices += indices_to_process;
+                auto &new_group = *mesh.mesh_part_groups.push();
+                new_group = mesh.mesh_part_groups[mpg_index];
+                new_group.mesh_parts = {};
+                for (auto &part : mesh.mesh_part_groups[mpg_index].mesh_parts) {
+                    new_group.mesh_parts.push(part);
+                }
+                g.map_must_update = true;
+                Log("Duped!");
+            }
             ImGui::PopID();
             ImGui::PopID();
         }
@@ -2668,64 +2907,7 @@ static void frame(void *userdata) {
                 g.cld_must_update = true;
             }
         }
-        if (ImGui::Button("Move The Car")) {
-            auto &mesh = g.opaque_meshes[2];
-            auto &mesh_part_group = mesh.mesh_part_groups[4];
-            auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
-            int indices_index = 0;
-            for (int i = 0; i < 4; i++) {
-                for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
-                    indices_index += part.strip_length * part.strip_count;
-                }
-            }
-            Log("Starting at index %d...", indices_index);
-            int indices_to_remove = 0;
-            for (auto &part : mesh_part_group.mesh_parts) {
-                indices_to_remove += part.strip_length * part.strip_count;
-            }
-            Log("We're going to remove %d indices...", indices_to_remove);
-            Array<int> unique_indices = {};
-            defer {
-                unique_indices.release();
-            };
-            for (int i = 0; i < indices_to_remove; i++) {
-                // mesh.indices.remove_ordered(indices_index);
-                int index = mesh.indices[indices_index + i];
-                bool found = false;
-                for (auto &idx : unique_indices) {
-                    if (idx == index) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    switch (buf.bytes_per_vertex) {
-                        case 0x14: {
-                            auto verts = (PH2MAP__Vertex14 *)buf.data;
-                            verts[index].position[0] += 1000;
-                        } break;
-                        case 0x18: {
-                            auto verts = (PH2MAP__Vertex18 *)buf.data;
-                            verts[index].position[0] += 1000;
-                        } break;
-                        case 0x20: {
-                            auto verts = (PH2MAP__Vertex20 *)buf.data;
-                            verts[index].position[0] += 1000;
-                        } break;
-                        case 0x24: {
-                            auto verts = (PH2MAP__Vertex24 *)buf.data;
-                            verts[index].position[0] += 1000;
-                        } break;
-                    }
-                    unique_indices.push(index);
-                }
-            }
-            // mesh_part_group.mesh_parts.release();
-            // mesh.mesh_part_groups.remove_ordered(4);
-            // // mesh_part_group;
-            g.map_must_update = true;
-            Log("Car moved!");
-        }
+
         if (ImGui::Button("Save")) {
             Array<uint8_t> filedata = {};
             defer {
