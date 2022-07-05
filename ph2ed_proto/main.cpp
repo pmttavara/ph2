@@ -1071,12 +1071,12 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
                     bbox_max[2] = fmaxf(bbox_max[2], pos[2]);
                 }
             }
-            assert(bbox_min[0] == mesh.bounding_box_a[0]); // @Temporary until we can get rid of overrides hopefully!
-            assert(bbox_min[1] == mesh.bounding_box_a[1]);
-            assert(bbox_min[2] == mesh.bounding_box_a[2]);
-            assert(bbox_max[0] == mesh.bounding_box_b[0]);
-            assert(bbox_max[1] == mesh.bounding_box_b[1]);
-            assert(bbox_max[2] == mesh.bounding_box_b[2]);
+            // assert(bbox_min[0] == mesh.bounding_box_a[0]); // @Temporary until we can get rid of overrides hopefully!
+            // assert(bbox_min[1] == mesh.bounding_box_a[1]);
+            // assert(bbox_min[2] == mesh.bounding_box_a[2]);
+            // assert(bbox_max[0] == mesh.bounding_box_b[0]);
+            // assert(bbox_max[1] == mesh.bounding_box_b[1]);
+            // assert(bbox_max[2] == mesh.bounding_box_b[2]);
             Write(bbox_min);
             WriteLit(float, 0);
             Write(bbox_max);
@@ -1853,6 +1853,12 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     g.opened_map_filename = (char *)malloc(strlen(filename) + 1);
     assert(g.opened_map_filename);
     memcpy(g.opened_map_filename, filename, strlen(filename) + 1);
+    for (auto &buf : g.map_buffers) {
+        buf.shown = true;
+    }
+    for (auto &buf : g.decal_buffers) {
+        buf.shown = true;
+    }
 }
 static void map_upload(G &g) {
     g.map_buffers_count = 0;
@@ -1880,7 +1886,6 @@ static void map_upload(G &g) {
                 assert(g.map_buffers_count < g.map_buffers_max);
                 auto &map_buffer = g.map_buffers[g.map_buffers_count++];
                 map_buffer.source = MAP_Geometry_Buffer_Source::Opaque;
-                map_buffer.shown = true;
                 map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
                 assert(map_buffer.vertices.count % 3 == 0);
                 map_buffer.id = g.geometries[rolling_opaque_geo_index].id;
@@ -1910,7 +1915,6 @@ static void map_upload(G &g) {
                 assert(g.decal_buffers_count < g.decal_buffers_max);
                 auto &decal_buffer = g.decal_buffers[g.decal_buffers_count++];
                 decal_buffer.source = MAP_Geometry_Buffer_Source::Transparent;
-                decal_buffer.shown = true;
                 map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
                 assert(decal_buffer.vertices.count % 3 == 0);
                 decal_buffer.id = g.geometries[rolling_transparent_geo_index].id;
@@ -1939,7 +1943,6 @@ static void map_upload(G &g) {
                 assert(g.decal_buffers_count < g.decal_buffers_max);
                 auto &decal_buffer = g.decal_buffers[g.decal_buffers_count++];
                 decal_buffer.source = MAP_Geometry_Buffer_Source::Decal;
-                decal_buffer.shown = true;
                 map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
                 assert(decal_buffer.vertices.count % 3 == 0);
                 decal_buffer.id = g.geometries[rolling_decal_geo_index].id;
@@ -2265,6 +2268,7 @@ static void init(void *userdata) {
         d.depth.compare = SG_COMPAREFUNC_GREATER;
         d.cull_mode = SG_CULLMODE_BACK;
         d.face_winding = SG_FACEWINDING_CCW;
+        // d.primitive_type = SG_PRIMITIVETYPE_POINTS;
         g.map_pipeline = sg_make_pipeline(d);
         d.depth.write_enabled = false;
         d.alpha_to_coverage_enabled = false;
@@ -2671,7 +2675,8 @@ static void frame(void *userdata) {
             ImGui::End();
         };
         ImGui::SliderAngle("Camera FOV", &g.fov, FOV_MIN * (360 / TAU32), FOV_MAX * (360 / TAU32));
-        if (ImGui::Button("Reset Camera")) {
+        ImGui::Text("At (%f, %f, %f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
+        ImGui::SameLine(); if (ImGui::Button("Reset Camera")) {
             g.cam_pos = {};
             g.pitch = 0;
             g.yaw = 0;
@@ -2690,6 +2695,7 @@ static void frame(void *userdata) {
             Array<PH2MAP__Vertex20> verts = {}; defer { verts.release(); };
             Array<uint16_t> stripped_indices = {}; defer { stripped_indices.release(); };
             char b[1024];
+            hmm_vec3 center = {};
             while (fgets(b, sizeof b, f)) {
                 if (char *lf = strrchr(b, '\n')) *lf = 0;
                 char directive[3] = {};
@@ -2703,6 +2709,7 @@ static void frame(void *userdata) {
                     pos.X = (float)atof(args[0]);
                     pos.Y = (float)atof(args[1]);
                     pos.Z = (float)atof(args[2]);
+                    center += pos;
                 } else if (strcmp("vt", directive) == 0) {
                     // UV
                     assert(matches == 3);
@@ -2767,9 +2774,9 @@ static void frame(void *userdata) {
                     }
                     stripped_indices.push((uint16_t)indices_uploaded[0]);
                     stripped_indices.push((uint16_t)indices_uploaded[0]);
+                    stripped_indices.push((uint16_t)indices_uploaded[2]);
                     stripped_indices.push((uint16_t)indices_uploaded[1]);
-                    stripped_indices.push((uint16_t)indices_uploaded[2]);
-                    stripped_indices.push((uint16_t)indices_uploaded[2]);
+                    stripped_indices.push((uint16_t)indices_uploaded[1]);
                     if (matches == 5) { // Quad - upload another triangle
                         stripped_indices.push((uint16_t)indices_uploaded[0]);
                         stripped_indices.push((uint16_t)indices_uploaded[0]);
@@ -2780,9 +2787,9 @@ static void frame(void *userdata) {
                 }
                 memset(b, 0, sizeof b);
             }
-            Log("We got %lld positions, %lld uvs, %lld normals.", positions.count, uvs.count, normals.count);
-            Log("We built %lld vertices.", verts.count);
-            Log("We built %lld stripped indices.", stripped_indices.count);
+            // Log("We got %lld positions, %lld uvs, %lld normals.", positions.count, uvs.count, normals.count);
+            // Log("We built %lld vertices.", verts.count);
+            // Log("We built %lld stripped indices.", stripped_indices.count);
             MAP_Mesh &mesh = *g.opaque_meshes.push();
             g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
             MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
@@ -2804,6 +2811,18 @@ static void frame(void *userdata) {
             mesh.indices = stripped_indices;
             stripped_indices = {};
             g.map_must_update = true;
+
+            assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_count > 0);
+            assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_length > 0);
+
+            assert(positions.count);
+            if (positions.count) {
+                center /= (float)positions.count;
+                g.cam_pos = center;
+                g.cam_pos.X *= 1 * SCALE;
+                g.cam_pos.Y *= -1 * SCALE;
+                g.cam_pos.Z *= -1 * SCALE;
+            }
         }
         {
             static bool (vertices_touched[4])[UINT16_MAX] = {};
@@ -2931,8 +2950,14 @@ static void frame(void *userdata) {
                 for (int i = 0; i < g.map_buffers_count; i++) {
                     g.map_buffers[i].shown = !all_buffers_visible;
                 }
+                for (int i = g.map_buffers_count; i < g.map_buffers_max; i++) {
+                    g.map_buffers[i].shown = true;
+                }
                 for (int i = 0; i < g.decal_buffers_count; i++) {
                     g.decal_buffers[i].shown = !all_buffers_visible;
+                }
+                for (int i = g.decal_buffers_count; i < g.decal_buffers_max; i++) {
+                    g.decal_buffers[i].shown = true;
                 }
             }
             auto map_buffer_ui = [&] (MAP_Geometry_Buffer &buf) {
@@ -2957,7 +2982,14 @@ static void frame(void *userdata) {
                     } break;
                 }
                 char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d), %s Mesh #%d, group #%d", buf.global_geometry_index, buf.id, source, buf.global_mesh_index, buf.mesh_part_group_index);
-                ImGui::Checkbox("", &buf.shown);
+                if (ImGui::Checkbox("", &buf.shown)) {
+                    for (int i = g.map_buffers_count; i < g.map_buffers_max; i++) {
+                        g.map_buffers[i].shown = true;
+                    }
+                    for (int i = g.decal_buffers_count; i < g.decal_buffers_max; i++) {
+                        g.decal_buffers[i].shown = true;
+                    }
+                }
                 ImGui::SameLine(); if (!ImGui::CollapsingHeader(b)) {
                     return;
                 }
@@ -3012,16 +3044,35 @@ static void frame(void *userdata) {
                 }
                 ImGui::SameLine(); duplicate = ImGui::Button("Duplicate");
                 bool move = false;
-                int axis = 0;
-                int sign = + 1;
+                static hmm_vec3 displacement = {};
                 ImGui::Text("Move:");
-                ImGui::SameLine(); if (ImGui::Button("+X")) { move = true; axis = 0; sign = + 1; }
-                ImGui::SameLine(); if (ImGui::Button("-X")) { move = true; axis = 0; sign = -1; }
-                ImGui::SameLine(); if (ImGui::Button("+Y")) { move = true; axis = 1; sign = + 1; }
-                ImGui::SameLine(); if (ImGui::Button("-Y")) { move = true; axis = 1; sign = -1; }
-                ImGui::SameLine(); if (ImGui::Button("+Z")) { move = true; axis = 2; sign = + 1; }
-                ImGui::SameLine(); if (ImGui::Button("-Z")) { move = true; axis = 2; sign = -1; }
-                if (move) {
+                ImGui::SameLine(); if (ImGui::Button("+X")) { move = true; displacement = { +1, 0, 0 }; }
+                ImGui::SameLine(); if (ImGui::Button("-X")) { move = true; displacement = { -1, 0, 0 }; }
+                ImGui::SameLine(); if (ImGui::Button("+Y")) { move = true; displacement = { 0, +1, 0 }; }
+                ImGui::SameLine(); if (ImGui::Button("-Y")) { move = true; displacement = { 0, -1, 0 }; }
+                ImGui::SameLine(); if (ImGui::Button("+Z")) { move = true; displacement = { 0, 0, +1 }; }
+                ImGui::SameLine(); if (ImGui::Button("-Z")) { move = true; displacement = { 0, 0, -1 }; }
+                bool scale = false;
+                static hmm_vec3 scaling_factor = {1, 1, 1};
+                ImGui::Text("By:");
+                ImGui::SameLine(); ImGui::InputFloat3("###Displacement", &displacement.X);
+                ImGui::SameLine(); if (ImGui::Button("Apply###Displacement")) { move = true; }
+                ImGui::Text("Scale:");
+                ImGui::SameLine(); if (ImGui::Button("X * -1")) { scale = true; scaling_factor = { -1, 1, 1 }; }
+                ImGui::SameLine(); if (ImGui::Button("X * 2")) { scale = true; scaling_factor = { 2, 1, 1 }; }
+                ImGui::SameLine(); if (ImGui::Button("Y * -1")) { scale = true; scaling_factor = { 1, -1, 1 }; }
+                ImGui::SameLine(); if (ImGui::Button("Y * 2")) { scale = true; scaling_factor = { 1, 2, 1 }; }
+                ImGui::SameLine(); if (ImGui::Button("Z * -1")) { scale = true; scaling_factor = { 1, 1, -1 }; }
+                ImGui::SameLine(); if (ImGui::Button("Z * 2")) { scale = true; scaling_factor = { 1, 1, 2 }; }
+                ImGui::Text("By:");
+                ImGui::SameLine(); ImGui::InputFloat3("###Scaling", &scaling_factor.X);
+                ImGui::SameLine(); if (ImGui::Button("Apply###Scaling")) { scale = true; }
+                bool go_to = false;
+                if (ImGui::Button("Go To")) {
+                    go_to = true;
+                }
+
+                if (move || scale || go_to) {
                     int mpg_index = buf.mesh_part_group_index;
                     auto &mesh = g.opaque_meshes[buf.global_mesh_index];
                     mesh.bbox_override = false;
@@ -3045,6 +3096,8 @@ static void frame(void *userdata) {
                     defer {
                         unique_indices.release();
                     };
+                    Log("Scaling by %f, %f, %f", scaling_factor.X, scaling_factor.Y, scaling_factor.Z);
+                    hmm_vec3 center = {};
                     for (int i = 0; i < indices_to_process; i++) {
                         int index = mesh.indices[indices_index + i];
                         bool found = false;
@@ -3055,29 +3108,50 @@ static void frame(void *userdata) {
                             }
                         }
                         if (!found) {
-                            switch (buf.bytes_per_vertex) {
-                                case 0x14: {
-                                    auto verts = (PH2MAP__Vertex14 *)buf.data;
-                                    verts[index].position[axis] += 1000 * sign;
-                                } break;
-                                case 0x18: {
-                                    auto verts = (PH2MAP__Vertex18 *)buf.data;
-                                    verts[index].position[axis] += 1000 * sign;
-                                } break;
-                                case 0x20: {
-                                    auto verts = (PH2MAP__Vertex20 *)buf.data;
-                                    verts[index].position[axis] += 1000 * sign;
-                                } break;
-                                case 0x24: {
-                                    auto verts = (PH2MAP__Vertex24 *)buf.data;
-                                    verts[index].position[axis] += 1000 * sign;
-                                } break;
+                            float (*position)[3] = (float(*)[3])(buf.data + buf.bytes_per_vertex * index);
+                            center.X += (*position)[0];
+                            center.Y += (*position)[1];
+                            center.Z += (*position)[2];
+                            if (move) {
+                                (*position)[0] += displacement.X;
+                                (*position)[1] += displacement.Y;
+                                (*position)[2] += displacement.Z;
+                            } else if (scale) {
+                            } else if (go_to) {
+                            } else {
+                                assert(false);
                             }
                             unique_indices.push(index);
                         }
                     }
+                    center /= (float)unique_indices.count + !unique_indices.count;
+                    if (scale) {
+                        for (auto &idx : unique_indices) {
+                            float (*position)[3] = (float(*)[3])(buf.data + buf.bytes_per_vertex * idx);
+                            (*position)[0] -= center.X;
+                            (*position)[1] -= center.Y;
+                            (*position)[2] -= center.Z;
+                            (*position)[0] *= scaling_factor.X;
+                            (*position)[1] *= scaling_factor.Y;
+                            (*position)[2] *= scaling_factor.Z;
+                            (*position)[0] += center.X;
+                            (*position)[1] += center.Y;
+                            (*position)[2] += center.Z;
+                        }
+                    }
                     g.map_must_update = true;
-                    // Log("Moved!");
+                    // Log("Moved/Scaled!");
+                    if (move) {
+                        // displacement = {};
+                    } else if (scale) {
+                        // scaling_factor = { 1, 1, 1 };
+                    }
+                    if (move || go_to) {
+                        g.cam_pos = center;
+                        g.cam_pos.X *= 1 * SCALE;
+                        g.cam_pos.Y *= -1 * SCALE;
+                        g.cam_pos.Z *= -1 * SCALE;
+                    }
                 }
                 if (duplicate) {
                     int mpg_index = buf.mesh_part_group_index;
@@ -3267,7 +3341,7 @@ static void frame(void *userdata) {
                             if (CopyFileW(filename16, bak_filename16, TRUE)) {
                                 FILE *f = PH2CLD__fopen(g.opened_map_filename, "wb");
                                 if (f) {
-                                    if (false){//if (fwrite(filedata.data, 1, filedata.count, f) == (int)filedata.count) {
+                                    if (fwrite(filedata.data, 1, filedata.count, f) == (int)filedata.count) {
                                         Log("Saved to \"%s\".", g.opened_map_filename);
                                         success = true;
                                     } else {
