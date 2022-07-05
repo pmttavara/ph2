@@ -10,6 +10,7 @@
 #define _NO_CRT_STDIO_INLINE
 
 #include <string.h>
+#include <stdio.h>
 
 #include "stb_leakcheck.h"
 static inline void *stb_leakcheck_calloc(size_t n, size_t s, const char *file, int line) {
@@ -182,3 +183,75 @@ template <class T> struct Array {
         return data + count;
     }
 };
+
+extern "C" {
+    extern __declspec(dllimport) int __stdcall MultiByteToWideChar(unsigned int CodePage, unsigned long dwFlags, const char * lpMultiByteStr, int cbMultiByte, wchar_t * lpWideCharStr, int cchWideChar);
+    extern __declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned int CodePage, unsigned long dwFlags, const wchar_t * lpWideCharStr, int cchWideChar, char * lpMultiByteStr, int cbMultiByte, const char * lpDefaultChar, int * lpUsedDefaultChar);
+}
+//https://docs.microsoft.com/en-us/windows/win32/intl/code-page-identifiers
+#ifndef CP_UTF8
+#define CP_UTF8 65001
+#endif
+//determined empirically
+#ifndef MB_ERR_INVALID_CHARS
+#define MB_ERR_INVALID_CHARS 8
+#endif
+//determined empirically
+#ifndef WC_ERR_INVALID_CHARS
+#define WC_ERR_INVALID_CHARS 128
+#endif
+
+static inline wchar_t *utf8_to_utf16(const char *utf8) {
+    wchar_t *utf16 = nullptr;
+    int utf16len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, nullptr, 0);
+    if (utf16len) { //may fail if the input string is invalid, so this is a handle-able error
+        utf16 = (wchar_t *)malloc(utf16len * sizeof(wchar_t));
+        if (utf16) {
+            int charsWritten = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, utf16, utf16len);
+            if (charsWritten != utf16len || //should always be true
+                utf16[utf16len - 1] != 0) { //should be null terminated
+                free(utf16);
+                utf16 = nullptr;
+            }
+        }
+    }
+    return utf16;
+}
+
+static inline char *utf16_to_utf8(const wchar_t *utf16) {
+    char *utf8 = nullptr;
+    int utf8len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, utf16, -1, nullptr, 0, nullptr, nullptr);
+    if (utf8len) { //may fail if the input string is invalid, so this is a handle-able error
+        utf8 = (char *)malloc(utf8len * sizeof(char));
+        if (utf8) {
+            int charsWritten = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, utf16, -1, utf8, utf8len, nullptr, nullptr);
+            if (charsWritten != utf8len || //should always be true
+                utf8[utf8len - 1] != 0) { //should be null terminated
+                free(utf8);
+                utf8 = nullptr;
+            }
+        }
+    }
+    return utf8;
+}
+
+static inline char *mprintf(const char *fmt, ...) {
+    va_list arg1;
+    va_list arg2;
+    va_start(arg1, fmt);
+    va_copy(arg2, arg1);
+    defer {
+        va_end(arg1);
+        va_end(arg2);
+    };
+    int n = vsnprintf(nullptr, 0, fmt, arg1);
+    if (n < 0) {
+        return nullptr;
+    }
+    char *result = (char *)malloc(n + 1);
+    if (!result) {
+        return nullptr;
+    }
+    vsnprintf(result, n + 1, fmt, arg2);
+    return result;
+}

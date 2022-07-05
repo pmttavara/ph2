@@ -36,7 +36,7 @@ int num_array_resizes = 0;
 #include "sokol_imgui.h"
 
 #include <stdarg.h>
-#include <stdio.h>
+#include <time.h>
 
 struct LogMsg {
     unsigned int colour;// = IM_COL32(127, 127, 127, 255);
@@ -1607,7 +1607,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         PH2MAP__Geometry_Header geometry_header = {};
                         Read(ptr2, geometry_header);
                         assert(geometry_header.group_size > 0);
-                        assert(geometry_header.group_size < 2 * 1024 * 1024);
+                        assert(geometry_header.group_size < 4 * 1024 * 1024);
                         assert(geometry_header.opaque_group_offset >= 0);
                         assert(geometry_header.transparent_group_offset >= 0);
                         assert(geometry_header.decal_group_offset >= 0);
@@ -2661,6 +2661,115 @@ static void frame(void *userdata) {
             g.pitch = 0;
             g.yaw = 0;
         }
+        {
+            static Array<bool> vertices_touched[4] = {};
+            // defer {
+            //     vertices_touched.release();
+            // };
+            static Array<int> vert_remap[4] = {};
+            // defer {
+            //     vert_remap.release();
+            // };
+            auto iterate_mesh = [&] (const char *str, int i, MAP_Mesh &mesh) {
+                int num_untouched = 0;
+                int num_untouched_per_buf[4] = {};
+                for (auto &buf : mesh.vertex_buffers) {
+                    int buf_index = (int)(&buf - mesh.vertex_buffers.data);
+                    assert(buf_index >= 0);
+                    assert(buf_index < 4);
+                    vertices_touched[buf_index].resize(buf.num_vertices);
+                    memset(vertices_touched[buf_index].data, 0, vertices_touched[buf_index].count * sizeof(bool));
+                    int indices_index = 0;
+                    for (auto &group : mesh.mesh_part_groups) {
+                        for (auto &part : group.mesh_parts) {
+                            for (int j = 0; j < part.strip_length * part.strip_count; j++) {
+                                int vert_index = mesh.indices[indices_index];
+                                if ((int)group.section_index == buf_index) {
+                                    vertices_touched[buf_index][vert_index] = true;
+                                }
+                                ++indices_index;
+                            }
+                        }
+                    }
+                    for (auto &touched : vertices_touched[buf_index]) {
+                        if (!touched) {
+                            num_untouched_per_buf[buf_index]++;
+                        }
+                    }
+                }
+                for (auto &num : num_untouched_per_buf) {
+                    assert(num >= 0);
+                    num_untouched += num;
+                }
+                if (num_untouched == 0) {
+                    return;
+                }
+                ImGui::Text("!!! %s #%d has %d unreferenced vertices", str, i, num_untouched);
+                ImGui::SameLine();
+                if (!ImGui::Button("Prune (Delete)")) {
+                    return;
+                }
+                for (auto &buf : mesh.vertex_buffers) {
+                    int buf_index = (int)(&buf - mesh.vertex_buffers.data);
+                    assert(buf_index >= 0);
+                    assert(buf_index < 4);
+                    if (!num_untouched_per_buf[buf_index]) {
+                        continue;
+                    }
+                    assert(vertices_touched[buf_index].count == buf.num_vertices);
+                    vert_remap[buf_index].resize(buf.num_vertices);
+                    int rolling_fixup = 0;
+                    for (int vert_index_to_remove = 0; vert_index_to_remove < buf.num_vertices; vert_index_to_remove++) {
+                        if (vertices_touched[buf_index][vert_index_to_remove]) {
+                            vert_remap[buf_index][vert_index_to_remove] = vert_index_to_remove - rolling_fixup;
+                        } else {
+                            rolling_fixup++;
+                            vert_remap[buf_index][vert_index_to_remove] = -1; // shouldn't ever be touched!!!
+                        }
+                    }
+                    int num_untouched_vertices = rolling_fixup;
+                    assert(num_untouched_vertices == num_untouched_per_buf[buf_index]);
+                    int indices_index = 0;
+                    for (auto &group : mesh.mesh_part_groups) {
+                        for (auto &part : group.mesh_parts) {
+                            for (int j = 0; j < part.strip_length * part.strip_count; j++) {
+                                uint16_t &vert_index = mesh.indices[indices_index];
+                                if ((int)group.section_index == buf_index) {
+                                    int remapped = vert_remap[buf_index][vert_index];
+                                    assert(remapped >= 0);
+                                    assert(remapped < buf.num_vertices - num_untouched_vertices);
+                                    vert_index = (uint16_t)remapped;
+                                }
+                                ++indices_index;
+                            }
+                        }
+                    }
+                    for (int vert_index_to_remove = 0; vert_index_to_remove < buf.num_vertices;) {
+                        if (!vertices_touched[buf_index][vert_index_to_remove]) {
+                            // Ordered removal from the buffer
+                            memmove(buf.data +  vert_index_to_remove      * buf.bytes_per_vertex,
+                                    buf.data + (vert_index_to_remove + 1) * buf.bytes_per_vertex,
+                                    (buf.num_vertices - vert_index_to_remove - 1) * buf.bytes_per_vertex);
+                            buf.data = (char *)realloc(buf.data, buf.num_vertices * buf.bytes_per_vertex);
+                            assert(buf.data);
+                            --buf.num_vertices;
+                            vertices_touched[buf_index].remove_ordered(vert_index_to_remove);
+                        } else {
+                            ++vert_index_to_remove;
+                        }
+                    }
+                }
+            };
+            for (int i = 0; i < g.opaque_meshes.count; i++) {
+                iterate_mesh("Opaque Mesh", i, g.opaque_meshes[i]);
+            }
+            for (int i = 0; i < g.transparent_meshes.count; i++) {
+                iterate_mesh("Transparent Mesh", i, g.transparent_meshes[i]);
+            }
+            for (int i = 0; i < g.decal_meshes.count; i++) {
+                iterate_mesh("Decal Mesh", i, g.decal_meshes[i]);
+            }
+        }
         ImGui::Text("MAP Geometries:");
         for (int i = 0; i < g.map_buffers_count; i++) {
             ImGui::PushID("MAP Mesh Visibility Buttons");
@@ -2681,11 +2790,13 @@ static void frame(void *userdata) {
                     }
                 }
                 Log("Starting at index %d...", indices_index);
+                assert(indices_index < mesh.indices.count);
                 int indices_to_process = 0;
                 for (auto &part : mesh_part_group.mesh_parts) {
                     indices_to_process += part.strip_length * part.strip_count;
                 }
                 Log("We're going to process %d indices...", indices_to_process);
+                assert(indices_index + indices_to_process <= mesh.indices.count);
                 for (int i = 0; i < indices_to_process; i++) {
                     mesh.indices.remove_ordered(indices_index);
                 }
@@ -2717,11 +2828,13 @@ static void frame(void *userdata) {
                     }
                 }
                 Log("Starting at index %d...", indices_index);
+                assert(indices_index < mesh.indices.count);
                 int indices_to_process = 0;
                 for (auto &part : mesh_part_group.mesh_parts) {
                     indices_to_process += part.strip_length * part.strip_count;
                 }
                 Log("We're going to process %d indices...", indices_to_process);
+                assert(indices_index + indices_to_process <= mesh.indices.count);
                 Array<int> unique_indices = {};
                 defer {
                     unique_indices.release();
@@ -2771,11 +2884,13 @@ static void frame(void *userdata) {
                     }
                 }
                 Log("Starting at index %d...", indices_index);
+                assert(indices_index < mesh.indices.count);
                 int indices_to_process = 0;
                 for (auto &part : mesh.mesh_part_groups[mpg_index ].mesh_parts) {
                     indices_to_process += part.strip_length * part.strip_count;
                 }
                 Log("We're going to process %d indices...", indices_to_process);
+                assert(indices_index + indices_to_process <= mesh.indices.count);
                 Array<int> unique_indices = {};
                 defer {
                     unique_indices.release();
@@ -2909,19 +3024,46 @@ static void frame(void *userdata) {
         }
 
         if (ImGui::Button("Save")) {
-            Array<uint8_t> filedata = {};
-            defer {
-                filedata.release();
-            };
-            map_write_to_memory(g, &filedata);
-            if (g.opened_map_filename && strcmp(g.opened_map_filename, "map/ob01 (2).map") == 0) {
-                FILE *f = fopen("map/ob01 (2).map.new", "wb");
-                assert(f);
-                fwrite(filedata.data, filedata.count, 1, f);
-                fclose(f);
-                Log("Saved to \"map/ob01 (2).map.new\" :) :) :)");
+            if (g.opened_map_filename) {
+                char *bak_filename = mprintf("%s.%d.map.bak", g.opened_map_filename, (int)time(nullptr));
+                if (bak_filename) {
+                    wchar_t *filename16 = utf8_to_utf16(g.opened_map_filename);
+                    if (filename16) {
+                        wchar_t *bak_filename16 = utf8_to_utf16(bak_filename);
+                        if (bak_filename16) {
+                            Log("Backing up to \"%s\"...", bak_filename);
+                            if (CopyFileW(filename16, bak_filename16, TRUE)) {
+                                FILE *f = PH2CLD__fopen(g.opened_map_filename, "wb");
+                                if (f) {
+                                    Array<uint8_t> filedata = {};
+                                    defer {
+                                        filedata.release();
+                                    };
+                                    map_write_to_memory(g, &filedata);
+                                    if (fwrite(filedata.data, 1, filedata.count, f) == (int)filedata.count) {
+                                        Log("Saved to \"%s\".", g.opened_map_filename);
+                                    }
+                                    fclose(f);
+                                } else {
+                                    Log("Couldn't open %s for writing", g.opened_map_filename);
+                                }
+                            } else {
+                                Log("Couldn't create backup file!!!");
+                            }
+                            free(bak_filename16);
+                        } else {
+                            Log("Couldn't convert backup filename to utf16!!!");
+                        }
+                        free(filename16);
+                    } else {
+                        Log("Couldn't convert filename to utf16!!!");
+                    }
+                    free(bak_filename);
+                } else {
+                    Log("Couldn't build backup filename!!!");
+                }
             } else {
-                Log("I refuse to save the file -- it's not named \"map/ob01 (2).map\"!!!");
+                Log("No file loaded!!!");
             }
         }
     }
