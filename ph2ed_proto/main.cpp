@@ -2676,6 +2676,135 @@ static void frame(void *userdata) {
             g.pitch = 0;
             g.yaw = 0;
         }
+        if (ImGui::Button("Import Wavefront OBJ")) {
+            FILE *f = PH2CLD__fopen("new_light_FINAL_solo.obj", "r");
+            assert(f);
+            defer {
+                fclose(f);
+            };
+
+            Array<hmm_vec3> positions = {}; defer { positions.release(); };
+            Array<hmm_vec2> uvs = {}; defer { uvs.release(); };
+            Array<hmm_vec3> normals = {}; defer { normals.release(); };
+            // Array<uint32_t> colours = {}; defer { colours.release(); };
+            Array<PH2MAP__Vertex20> verts = {}; defer { verts.release(); };
+            Array<uint16_t> stripped_indices = {}; defer { stripped_indices.release(); };
+            char b[1024];
+            while (fgets(b, sizeof b, f)) {
+                if (char *lf = strrchr(b, '\n')) *lf = 0;
+                char directive[3] = {};
+                char args[4][64] = {};
+                int matches = sscanf(b, " %s %s %s %s %s ", directive, args[0], args[1], args[2], args[3]);
+                if (strcmp("v", directive) == 0) {
+                    // Position
+                    assert(matches == 4);
+                    // Log("Position: (%s, %s, %s)", args[0], args[1], args[2]);
+                    auto &pos = *positions.push();
+                    pos.X = (float)atof(args[0]);
+                    pos.Y = (float)atof(args[1]);
+                    pos.Z = (float)atof(args[2]);
+                } else if (strcmp("vt", directive) == 0) {
+                    // UV
+                    assert(matches == 3);
+                    // Log("UV: (%s, %s)", args[0], args[1]);
+                    auto &uv = *uvs.push();
+                    uv.X = (float)atof(args[0]);
+                    uv.Y = (float)atof(args[1]);
+                } else if (strcmp("vn", directive) == 0) {
+                    // Normal
+                    assert(matches == 4);
+                    // Log("Normal: (%s, %s, %s)", args[0], args[1], args[2]);
+                    auto &normal = *normals.push();
+                    normal.X = (float)atof(args[0]);
+                    normal.Y = (float)atof(args[1]);
+                    normal.Z = (float)atof(args[2]);
+                } else if (strcmp("f", directive) == 0) {
+                    // Triangle/Quad
+                    assert(matches == 4 || matches == 5);
+                    // Log("Triangle/Quad: (%s, %s, %s%s%s)", args[0], args[1], args[2], matches == 5 ? ", " : "", matches == 5 ? args[3] : "");
+                    int indices_uploaded[4] = {};
+                    for (int i = 0; i < matches - 1; i++) {
+                        PH2MAP__Vertex20 vert = {};
+                        int index_pos = 0;
+                        int index_uv = 0;
+                        int index_normal = 0;
+                        int sub_matches = sscanf(args[i], "%d/%d/%d", &index_pos, &index_uv, &index_normal);
+                        if (sub_matches >= 1) { // %d[...]
+                            assert(index_pos > 0);
+                            vert.position[0] = positions[index_pos - 1].X;
+                            vert.position[1] = positions[index_pos - 1].Y;
+                            vert.position[2] = positions[index_pos - 1].Z;
+                        } else {
+                            assert(false); // @Lazy
+                        }
+                        if (sub_matches == 3) { // %d/%d/%d
+                            assert(index_uv > 0);
+                            assert(index_normal > 0);
+                            vert.uv[0] = uvs[index_uv - 1].X;
+                            vert.uv[1] = uvs[index_uv - 1].Y;
+                            vert.normal[0] = normals[index_normal - 1].X;
+                            vert.normal[1] = normals[index_normal - 1].Y;
+                            vert.normal[2] = normals[index_normal - 1].Z;
+                        } else if (sub_matches == 2) { // %d/%d
+                            assert(index_uv > 0);
+                            vert.uv[0] = uvs[index_uv - 1].X;
+                            vert.uv[1] = uvs[index_uv - 1].Y;
+                        } else if (sub_matches == 1) { // %d[...]
+                            int dummy = 0;
+                            sub_matches = sscanf(args[i], "%d//%d", &dummy, &index_normal);
+                            assert(dummy == index_pos);
+                            if (sub_matches == 2) { // %d//%d
+                                assert(index_normal > 0);
+                                vert.normal[0] = normals[index_normal - 1].X;
+                                vert.normal[1] = normals[index_normal - 1].Y;
+                                vert.normal[2] = normals[index_normal - 1].Z;
+                            } else {
+                                assert(false);
+                            }
+                        }
+                        verts.push(vert);
+                        indices_uploaded[i] = (int)verts.count - 1;
+                    }
+                    stripped_indices.push((uint16_t)indices_uploaded[0]);
+                    stripped_indices.push((uint16_t)indices_uploaded[0]);
+                    stripped_indices.push((uint16_t)indices_uploaded[1]);
+                    stripped_indices.push((uint16_t)indices_uploaded[2]);
+                    stripped_indices.push((uint16_t)indices_uploaded[2]);
+                    if (matches == 5) { // Quad - upload another triangle
+                        stripped_indices.push((uint16_t)indices_uploaded[0]);
+                        stripped_indices.push((uint16_t)indices_uploaded[0]);
+                        stripped_indices.push((uint16_t)indices_uploaded[2]);
+                        stripped_indices.push((uint16_t)indices_uploaded[3]);
+                        stripped_indices.push((uint16_t)indices_uploaded[3]);
+                    }
+                }
+                memset(b, 0, sizeof b);
+            }
+            Log("We got %lld positions, %lld uvs, %lld normals.", positions.count, uvs.count, normals.count);
+            Log("We built %lld vertices.", verts.count);
+            Log("We built %lld stripped indices.", stripped_indices.count);
+            MAP_Mesh &mesh = *g.opaque_meshes.push();
+            g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
+            MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
+            assert(verts.count < 65536);
+            assert(stripped_indices.count < 65536);
+            { // Commandeer ownership of the verts array
+                buf.data = (char *)realloc(verts.data, verts.count * sizeof(verts[0]));
+                assert(buf.data);
+                buf.num_vertices = (uint16_t)verts.count;
+                buf.bytes_per_vertex = sizeof(verts[0]);
+                verts = {};
+            }
+            MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
+            group.material_index = 0; // @Todo
+            group.section_index = 0;
+            MAP_Mesh_Part &part = *group.mesh_parts.push();
+            part.strip_count = 1;
+            part.strip_length = (uint16_t)stripped_indices.count;
+            mesh.indices = stripped_indices;
+            stripped_indices = {};
+            g.map_must_update = true;
+        }
         {
             static bool (vertices_touched[4])[UINT16_MAX] = {};
             static int (vertex_remap[4])[UINT16_MAX] = {};
@@ -2808,11 +2937,24 @@ static void frame(void *userdata) {
             }
             auto map_buffer_ui = [&] (MAP_Geometry_Buffer &buf) {
                 const char *source = "I made it up";
+                Array<MAP_Mesh> *meshes = nullptr;
                 switch (buf.source) {
                     using namespace MAP_Geometry_Buffer_Source_;
-                    case Opaque: source = "Opaque"; break;
-                    case Transparent: source = "Transparent"; break;
-                    case Decal: source = "Decal"; break;
+                    case Opaque: {
+                        source = "Opaque";
+                        meshes = &g.opaque_meshes;
+                    } break;
+                    case Transparent: {
+                        source = "Transparent";
+                        meshes = &g.transparent_meshes;
+                    } break;
+                    case Decal: {
+                        source = "Decal";
+                        meshes = &g.decal_meshes;
+                    } break;
+                    default: {
+                        assert(false);
+                    } break;
                 }
                 char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d), %s Mesh #%d, group #%d", buf.global_geometry_index, buf.id, source, buf.global_mesh_index, buf.mesh_part_group_index);
                 ImGui::Checkbox("", &buf.shown);
@@ -2828,7 +2970,7 @@ static void frame(void *userdata) {
                 bool duplicate = false;
                 if (ImGui::Button("Delete")) {
                     int mpg_index = buf.mesh_part_group_index;
-                    auto &mesh = g.opaque_meshes[buf.global_mesh_index];
+                    auto &mesh = (*meshes)[buf.global_mesh_index];
                     auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
                     auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
                     int indices_index = 0;
@@ -2852,6 +2994,21 @@ static void frame(void *userdata) {
                     mesh.mesh_part_groups.remove_ordered(mpg_index);
                     g.map_must_update = true;
                     // Log("Deleted!");
+                }
+                if ((*meshes)[buf.global_mesh_index].mesh_part_groups.count <= 0) {
+                    meshes->remove_ordered(buf.global_mesh_index);
+                    switch (buf.source) {
+                        using namespace MAP_Geometry_Buffer_Source_;
+                        case Opaque: {
+                            g.geometries[buf.global_geometry_index].opaque_mesh_count--;
+                        } break;
+                        case Transparent: {
+                            g.geometries[buf.global_geometry_index].transparent_mesh_count--;
+                        } break;
+                        case Decal: {
+                            g.geometries[buf.global_geometry_index].decal_count--;
+                        } break;
+                    }
                 }
                 ImGui::SameLine(); duplicate = ImGui::Button("Duplicate");
                 bool move = false;
@@ -3093,6 +3250,12 @@ static void frame(void *userdata) {
         }
 
         if (ImGui::Button("Save")) {
+            Array<uint8_t> filedata = {};
+            defer {
+                filedata.release();
+            };
+            map_write_to_memory(g, &filedata);
+            bool success = false;
             if (g.opened_map_filename) {
                 char *bak_filename = mprintf("%s.%d.map.bak", g.opened_map_filename, (int)time(nullptr));
                 if (bak_filename) {
@@ -3104,17 +3267,29 @@ static void frame(void *userdata) {
                             if (CopyFileW(filename16, bak_filename16, TRUE)) {
                                 FILE *f = PH2CLD__fopen(g.opened_map_filename, "wb");
                                 if (f) {
-                                    Array<uint8_t> filedata = {};
-                                    defer {
-                                        filedata.release();
-                                    };
-                                    map_write_to_memory(g, &filedata);
-                                    if (fwrite(filedata.data, 1, filedata.count, f) == (int)filedata.count) {
+                                    if (false){//if (fwrite(filedata.data, 1, filedata.count, f) == (int)filedata.count) {
                                         Log("Saved to \"%s\".", g.opened_map_filename);
+                                        success = true;
+                                    } else {
+                                        Log("Couldn't write file data!!!", g.opened_map_filename);
                                     }
                                     fclose(f);
                                 } else {
                                     Log("Couldn't open %s for writing", g.opened_map_filename);
+                                }
+                                if (!success) {
+                                    // Attempt to recover file contents by overwriting with the backup.
+                                    if (CopyFileW(bak_filename16, filename16, FALSE)) {
+                                        Log("Restored file from backup.");
+                                        // Attempt to delete the backup, because it's redundant data on your disk.
+                                        if (DeleteFileW(bak_filename16)) {
+                                            Log("Deleted backup.");
+                                        } else {
+                                            Log("Couldn't delete backup.");
+                                        }
+                                    } else {
+                                        Log("Couldn't restore file from backup!!!");
+                                    }
                                 }
                             } else {
                                 Log("Couldn't create backup file!!!");

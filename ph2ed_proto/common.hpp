@@ -105,7 +105,9 @@ template <class T> struct Array {
     }
     void release() {
         invariants();
-        free(data);
+        if (data) {
+            free(data);
+        }
         data = nullptr;
         capacity = 0;
         count = 0;
