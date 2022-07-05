@@ -3,7 +3,10 @@
 *.map
 *.map.bak
 *.ilk
-*.obj
+ph2ed_proto/libs.obj
+ph2ed_proto/main.obj
+cld/*.obj
+cld_proto/*.obj
 *.exp
 *.lib
 *.pdb
