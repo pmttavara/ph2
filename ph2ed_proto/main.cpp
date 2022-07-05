@@ -146,8 +146,17 @@ struct MAP_Geometry_Vertex {
     uint32_t color = 0xffffffff;
     float uv[2] = {};
 };
+namespace MAP_Geometry_Buffer_Source_ {
+    enum MAP_Geometry_Buffer_Source {
+        Opaque,
+        Transparent,
+        Decal,
+    };
+}
+typedef MAP_Geometry_Buffer_Source_::MAP_Geometry_Buffer_Source MAP_Geometry_Buffer_Source;
 struct MAP_Geometry_Buffer {
     sg_buffer buf = {};
+    MAP_Geometry_Buffer_Source source = MAP_Geometry_Buffer_Source::Opaque;
     Array<MAP_Geometry_Vertex> vertices = {};
     uint32_t id = 0;
     int subfile_index = 0;
@@ -1870,6 +1879,8 @@ static void map_upload(G &g) {
             for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
                 assert(g.map_buffers_count < g.map_buffers_max);
                 auto &map_buffer = g.map_buffers[g.map_buffers_count++];
+                map_buffer.source = MAP_Geometry_Buffer_Source::Opaque;
+                map_buffer.shown = true;
                 map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
                 assert(map_buffer.vertices.count % 3 == 0);
                 map_buffer.id = g.geometries[rolling_opaque_geo_index].id;
@@ -1898,6 +1909,8 @@ static void map_upload(G &g) {
             for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
                 assert(g.decal_buffers_count < g.decal_buffers_max);
                 auto &decal_buffer = g.decal_buffers[g.decal_buffers_count++];
+                decal_buffer.source = MAP_Geometry_Buffer_Source::Transparent;
+                decal_buffer.shown = true;
                 map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
                 assert(decal_buffer.vertices.count % 3 == 0);
                 decal_buffer.id = g.geometries[rolling_transparent_geo_index].id;
@@ -1925,6 +1938,8 @@ static void map_upload(G &g) {
             for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
                 assert(g.decal_buffers_count < g.decal_buffers_max);
                 auto &decal_buffer = g.decal_buffers[g.decal_buffers_count++];
+                decal_buffer.source = MAP_Geometry_Buffer_Source::Decal;
+                decal_buffer.shown = true;
                 map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
                 assert(decal_buffer.vertices.count % 3 == 0);
                 decal_buffer.id = g.geometries[rolling_decal_geo_index].id;
@@ -2777,24 +2792,32 @@ static void frame(void *userdata) {
                     break;
                 }
             }
+            for (int i = 0; i < g.decal_buffers_count; i++) {
+                if (!g.decal_buffers[i].shown) {
+                    all_buffers_visible = false;
+                    break;
+                }
+            }
             if (all_buffers_visible ? ImGui::Button("Hide All") : ImGui::Button("Show All")) {
                 for (int i = 0; i < g.map_buffers_count; i++) {
                     g.map_buffers[i].shown = !all_buffers_visible;
                 }
+                for (int i = 0; i < g.decal_buffers_count; i++) {
+                    g.decal_buffers[i].shown = !all_buffers_visible;
+                }
             }
-            for (int i = 0; i < g.map_buffers_count; i++) {
-                ImGui::PushID("MAP Mesh Visibility Buttons");
-                // ImGui::SameLine();
-                ImGui::PushID(i);
-                defer {
-                    ImGui::PopID();
-                    ImGui::PopID();
-                };
-                auto &buf = g.map_buffers[i];
-                char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d), mesh #%d, group #%d", buf.global_geometry_index, buf.id, buf.global_mesh_index, buf.mesh_part_group_index);
+            auto map_buffer_ui = [&] (MAP_Geometry_Buffer &buf) {
+                const char *source = "I made it up";
+                switch (buf.source) {
+                    using namespace MAP_Geometry_Buffer_Source_;
+                    case Opaque: source = "Opaque"; break;
+                    case Transparent: source = "Transparent"; break;
+                    case Decal: source = "Decal"; break;
+                }
+                char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d), %s Mesh #%d, group #%d", buf.global_geometry_index, buf.id, source, buf.global_mesh_index, buf.mesh_part_group_index);
                 ImGui::Checkbox("", &buf.shown);
                 ImGui::SameLine(); if (!ImGui::CollapsingHeader(b)) {
-                    continue;
+                    return;
                 }
                 ImGui::Indent();
                 defer {
@@ -2802,6 +2825,7 @@ static void frame(void *userdata) {
                     ImGui::NewLine();
                 };
 
+                bool duplicate = false;
                 if (ImGui::Button("Delete")) {
                     int mpg_index = buf.mesh_part_group_index;
                     auto &mesh = g.opaque_meshes[buf.global_mesh_index];
@@ -2813,13 +2837,13 @@ static void frame(void *userdata) {
                             indices_index += part.strip_length * part.strip_count;
                         }
                     }
-                    Log("Starting at index %d...", indices_index);
+                    // Log("Starting at index %d...", indices_index);
                     assert(indices_index < mesh.indices.count);
                     int indices_to_process = 0;
                     for (auto &part : mesh_part_group.mesh_parts) {
                         indices_to_process += part.strip_length * part.strip_count;
                     }
-                    Log("We're going to process %d indices...", indices_to_process);
+                    // Log("We're going to process %d indices...", indices_to_process);
                     assert(indices_index + indices_to_process <= mesh.indices.count);
                     for (int i = 0; i < indices_to_process; i++) {
                         mesh.indices.remove_ordered(indices_index);
@@ -2827,8 +2851,9 @@ static void frame(void *userdata) {
                     mesh_part_group.mesh_parts.release();
                     mesh.mesh_part_groups.remove_ordered(mpg_index);
                     g.map_must_update = true;
-                    Log("Deleted!");
+                    // Log("Deleted!");
                 }
+                ImGui::SameLine(); duplicate = ImGui::Button("Duplicate");
                 bool move = false;
                 int axis = 0;
                 int sign = + 1;
@@ -2851,13 +2876,13 @@ static void frame(void *userdata) {
                             indices_index += part.strip_length * part.strip_count;
                         }
                     }
-                    Log("Starting at index %d...", indices_index);
+                    // Log("Starting at index %d...", indices_index);
                     assert(indices_index < mesh.indices.count);
                     int indices_to_process = 0;
                     for (auto &part : mesh_part_group.mesh_parts) {
                         indices_to_process += part.strip_length * part.strip_count;
                     }
-                    Log("We're going to process %d indices...", indices_to_process);
+                    // Log("We're going to process %d indices...", indices_to_process);
                     assert(indices_index + indices_to_process <= mesh.indices.count);
                     Array<int> unique_indices = {};
                     defer {
@@ -2895,9 +2920,9 @@ static void frame(void *userdata) {
                         }
                     }
                     g.map_must_update = true;
-                    Log("Moved!");
+                    // Log("Moved!");
                 }
-                if (ImGui::Button("Dupe")) {
+                if (duplicate) {
                     int mpg_index = buf.mesh_part_group_index;
                     auto &mesh = g.opaque_meshes[buf.global_mesh_index];
                     auto &buf = mesh.vertex_buffers[mesh.mesh_part_groups[mpg_index].section_index];
@@ -2907,14 +2932,17 @@ static void frame(void *userdata) {
                             indices_index += part.strip_length * part.strip_count;
                         }
                     }
-                    Log("Starting at index %d...", indices_index);
+                    // Log("Starting at index %d...", indices_index);
                     assert(indices_index < mesh.indices.count);
                     int indices_to_process = 0;
                     for (auto &part : mesh.mesh_part_groups[mpg_index ].mesh_parts) {
                         indices_to_process += part.strip_length * part.strip_count;
                     }
-                    Log("We're going to process %d indices...", indices_to_process);
+                    // Log("We're going to process %d indices...", indices_to_process);
                     assert(indices_index + indices_to_process <= mesh.indices.count);
+
+                    // @Note: I think this is a GGGAAAARRRRRBBBBBAAAGGGEE way to dupe a mesh.
+                    //        Yikes! It would be nice to have a better way to do so later.
                     Array<int> unique_indices = {};
                     defer {
                         unique_indices.release();
@@ -2968,8 +2996,28 @@ static void frame(void *userdata) {
                         new_group.mesh_parts.push(part);
                     }
                     g.map_must_update = true;
-                    Log("Duped!");
+                    // Log("Duped!");
                 }
+            };
+            for (int i = 0; i < g.map_buffers_count; i++) {
+                ImGui::PushID("MAP Opaque Mesh Visibility Buttons");
+                ImGui::PushID(i);
+                defer {
+                    ImGui::PopID();
+                    ImGui::PopID();
+                };
+                auto &buf = g.map_buffers[i];
+                map_buffer_ui(buf);
+            }
+            for (int i = 0; i < g.decal_buffers_count; i++) {
+                ImGui::PushID("MAP Transparent/Decal Mesh Visibility Buttons");
+                ImGui::PushID(i);
+                defer {
+                    ImGui::PopID();
+                    ImGui::PopID();
+                };
+                auto &buf = g.decal_buffers[i];
+                map_buffer_ui(buf);
             }
         }
         ImGui::Text("CLD Subgroups:");
@@ -3113,27 +3161,38 @@ static void frame(void *userdata) {
             }
         }
         ImGui::SameLine(0, -1);
-        if (g.texture_ui_selected != -1) {
+        if (g.texture_ui_selected >= 0) {
             ImGui::BeginChild("texture_panel");
             defer {
                 ImGui::EndChild();
             };
-            auto &tex = g.textures[g.texture_ui_selected];
-            float w = (float)tex.width; 
-            float h = (float)tex.height;
-            float aspect = w / h;
-            w = size.x - 99; // yucky hack
-            h = size.y - 49; // yucky hack
-            if (w > size.x - 100) {
-                w = size.x - 100;
-                h = w / aspect;
-            }
-            if (h > size.y - 50) {
-                h = size.y - 50;
-                w = h * aspect;
-            }
-            if (w > 0 && h > 0) {
-                ImGui::Image((ImTextureID)(uintptr_t)tex.image.id, ImVec2(w, h));
+            
+            if (ImGui::Button("Delete")) {
+                g.textures[g.texture_ui_selected].release();
+                g.textures.remove_ordered(g.texture_ui_selected);
+                if (g.texture_ui_selected < 0 ||
+                    g.texture_ui_selected >= g.textures.count) {
+                    g.texture_ui_selected = -1;
+                }
+            } else {
+                auto &tex = g.textures[g.texture_ui_selected];
+                
+                float w = (float)tex.width;
+                float h = (float)tex.height;
+                float aspect = w / h;
+                w = size.x - 99; // yucky hack
+                h = size.y - 49; // yucky hack
+                if (w > size.x - 100) {
+                    w = size.x - 100;
+                    h = w / aspect;
+                }
+                if (h > size.y - 50) {
+                    h = size.y - 50;
+                    w = h * aspect;
+                }
+                if (w > 0 && h > 0) {
+                    ImGui::Image((ImTextureID)(uintptr_t)tex.image.id, ImVec2(w, h));
+                }
             }
         }
     }
