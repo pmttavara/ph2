@@ -2662,14 +2662,8 @@ static void frame(void *userdata) {
             g.yaw = 0;
         }
         {
-            static Array<bool> vertices_touched[4] = {};
-            // defer {
-            //     vertices_touched.release();
-            // };
-            static Array<int> vert_remap[4] = {};
-            // defer {
-            //     vert_remap.release();
-            // };
+            static bool (vertices_touched[4])[UINT16_MAX] = {};
+            static int (vertex_remap[4])[UINT16_MAX] = {};
             auto iterate_mesh = [&] (const char *str, int i, MAP_Mesh &mesh) {
                 int num_untouched = 0;
                 int num_untouched_per_buf[4] = {};
@@ -2677,8 +2671,7 @@ static void frame(void *userdata) {
                     int buf_index = (int)(&buf - mesh.vertex_buffers.data);
                     assert(buf_index >= 0);
                     assert(buf_index < 4);
-                    vertices_touched[buf_index].resize(buf.num_vertices);
-                    memset(vertices_touched[buf_index].data, 0, vertices_touched[buf_index].count * sizeof(bool));
+                    memset(vertices_touched[buf_index], 0, buf.num_vertices);
                     int indices_index = 0;
                     for (auto &group : mesh.mesh_part_groups) {
                         for (auto &part : group.mesh_parts) {
@@ -2691,8 +2684,8 @@ static void frame(void *userdata) {
                             }
                         }
                     }
-                    for (auto &touched : vertices_touched[buf_index]) {
-                        if (!touched) {
+                    for (int j = 0; j < buf.num_vertices; j++) {
+                        if (!vertices_touched[buf_index][j]) {
                             num_untouched_per_buf[buf_index]++;
                         }
                     }
@@ -2716,15 +2709,13 @@ static void frame(void *userdata) {
                     if (!num_untouched_per_buf[buf_index]) {
                         continue;
                     }
-                    assert(vertices_touched[buf_index].count == buf.num_vertices);
-                    vert_remap[buf_index].resize(buf.num_vertices);
                     int rolling_fixup = 0;
                     for (int vert_index_to_remove = 0; vert_index_to_remove < buf.num_vertices; vert_index_to_remove++) {
                         if (vertices_touched[buf_index][vert_index_to_remove]) {
-                            vert_remap[buf_index][vert_index_to_remove] = vert_index_to_remove - rolling_fixup;
+                            vertex_remap[buf_index][vert_index_to_remove] = vert_index_to_remove - rolling_fixup;
                         } else {
                             rolling_fixup++;
-                            vert_remap[buf_index][vert_index_to_remove] = -1; // shouldn't ever be touched!!!
+                            vertex_remap[buf_index][vert_index_to_remove] = -1; // shouldn't ever be touched!!!
                         }
                     }
                     int num_untouched_vertices = rolling_fixup;
@@ -2735,7 +2726,7 @@ static void frame(void *userdata) {
                             for (int j = 0; j < part.strip_length * part.strip_count; j++) {
                                 uint16_t &vert_index = mesh.indices[indices_index];
                                 if ((int)group.section_index == buf_index) {
-                                    int remapped = vert_remap[buf_index][vert_index];
+                                    int remapped = vertex_remap[buf_index][vert_index];
                                     assert(remapped >= 0);
                                     assert(remapped < buf.num_vertices - num_untouched_vertices);
                                     vert_index = (uint16_t)remapped;
@@ -2746,14 +2737,17 @@ static void frame(void *userdata) {
                     }
                     for (int vert_index_to_remove = 0; vert_index_to_remove < buf.num_vertices;) {
                         if (!vertices_touched[buf_index][vert_index_to_remove]) {
-                            // Ordered removal from the buffer
+                            // Ordered removal from the vertex buffer
                             memmove(buf.data +  vert_index_to_remove      * buf.bytes_per_vertex,
                                     buf.data + (vert_index_to_remove + 1) * buf.bytes_per_vertex,
                                     (buf.num_vertices - vert_index_to_remove - 1) * buf.bytes_per_vertex);
                             buf.data = (char *)realloc(buf.data, buf.num_vertices * buf.bytes_per_vertex);
                             assert(buf.data);
+                            // Ordered removal from the vertices_touched array
+                            memmove(&vertices_touched[buf_index][vert_index_to_remove],
+                                    &vertices_touched[buf_index][vert_index_to_remove + 1],
+                                    (buf.num_vertices - vert_index_to_remove - 1) * sizeof(vertices_touched[buf_index][0]));
                             --buf.num_vertices;
-                            vertices_touched[buf_index].remove_ordered(vert_index_to_remove);
                         } else {
                             ++vert_index_to_remove;
                         }
@@ -2770,187 +2764,214 @@ static void frame(void *userdata) {
                 iterate_mesh("Decal Mesh", i, g.decal_meshes[i]);
             }
         }
-        ImGui::Text("MAP Geometries:");
-        for (int i = 0; i < g.map_buffers_count; i++) {
-            ImGui::PushID("MAP Mesh Visibility Buttons");
-            // ImGui::SameLine();
-            ImGui::PushID(i);
-            auto &buf = g.map_buffers[i];
-            char b[128]; snprintf(b, sizeof b, "Geo #%d (ID %d), mesh #%d, group #%d", buf.global_geometry_index, buf.id, buf.global_mesh_index, buf.mesh_part_group_index);
-            ImGui::Checkbox(b, &buf.shown);
-            if (ImGui::Button("Delete")) {
-                int mpg_index = buf.mesh_part_group_index;
-                auto &mesh = g.opaque_meshes[buf.global_mesh_index];
-                auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
-                auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
-                int indices_index = 0;
-                for (int i = 0; i < mpg_index; i++) {
-                    for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
-                        indices_index += part.strip_length * part.strip_count;
-                    }
+        ImGui::Checkbox("MAP Textured", &g.textured); ImGui::SameLine(); ImGui::Checkbox("MAP Lit", &g.lit);
+        if (ImGui::CollapsingHeader("MAP Geometries")) {
+            ImGui::Indent();
+            defer {
+                ImGui::Unindent();
+            };
+            bool all_buffers_visible = true;
+            for (int i = 0; i < g.map_buffers_count; i++) {
+                if (!g.map_buffers[i].shown) {
+                    all_buffers_visible = false;
+                    break;
                 }
-                Log("Starting at index %d...", indices_index);
-                assert(indices_index < mesh.indices.count);
-                int indices_to_process = 0;
-                for (auto &part : mesh_part_group.mesh_parts) {
-                    indices_to_process += part.strip_length * part.strip_count;
-                }
-                Log("We're going to process %d indices...", indices_to_process);
-                assert(indices_index + indices_to_process <= mesh.indices.count);
-                for (int i = 0; i < indices_to_process; i++) {
-                    mesh.indices.remove_ordered(indices_index);
-                }
-                mesh_part_group.mesh_parts.release();
-                mesh.mesh_part_groups.remove_ordered(mpg_index);
-                g.map_must_update = true;
-                Log("Deleted!");
             }
-            bool move = false;
-            int axis = 0;
-            int sign = +1;
-            ImGui::Text("Move:");
-            ImGui::SameLine(); if (ImGui::Button("+X")) { move = true; axis = 0; sign = +1; }
-            ImGui::SameLine(); if (ImGui::Button("-X")) { move = true; axis = 0; sign = -1; }
-            ImGui::SameLine(); if (ImGui::Button("+Y")) { move = true; axis = 1; sign = +1; }
-            ImGui::SameLine(); if (ImGui::Button("-Y")) { move = true; axis = 1; sign = -1; }
-            ImGui::SameLine(); if (ImGui::Button("+Z")) { move = true; axis = 2; sign = +1; }
-            ImGui::SameLine(); if (ImGui::Button("-Z")) { move = true; axis = 2; sign = -1; }
-            if (move) {
-                int mpg_index = buf.mesh_part_group_index;
-                auto &mesh = g.opaque_meshes[buf.global_mesh_index];
-                mesh.bbox_override = false;
-                auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
-                auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
-                int indices_index = 0;
-                for (int i = 0; i < mpg_index; i++) {
-                    for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
-                        indices_index += part.strip_length * part.strip_count;
-                    }
+            if (all_buffers_visible ? ImGui::Button("Hide All") : ImGui::Button("Show All")) {
+                for (int i = 0; i < g.map_buffers_count; i++) {
+                    g.map_buffers[i].shown = !all_buffers_visible;
                 }
-                Log("Starting at index %d...", indices_index);
-                assert(indices_index < mesh.indices.count);
-                int indices_to_process = 0;
-                for (auto &part : mesh_part_group.mesh_parts) {
-                    indices_to_process += part.strip_length * part.strip_count;
-                }
-                Log("We're going to process %d indices...", indices_to_process);
-                assert(indices_index + indices_to_process <= mesh.indices.count);
-                Array<int> unique_indices = {};
+            }
+            for (int i = 0; i < g.map_buffers_count; i++) {
+                ImGui::PushID("MAP Mesh Visibility Buttons");
+                // ImGui::SameLine();
+                ImGui::PushID(i);
                 defer {
-                    unique_indices.release();
+                    ImGui::PopID();
+                    ImGui::PopID();
                 };
-                for (int i = 0; i < indices_to_process; i++) {
-                    int index = mesh.indices[indices_index + i];
-                    bool found = false;
-                    for (auto &idx : unique_indices) {
-                        if (idx == index) {
-                            found = true;
-                            break;
+                auto &buf = g.map_buffers[i];
+                char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d), mesh #%d, group #%d", buf.global_geometry_index, buf.id, buf.global_mesh_index, buf.mesh_part_group_index);
+                ImGui::Checkbox("", &buf.shown);
+                ImGui::SameLine(); if (!ImGui::CollapsingHeader(b)) {
+                    continue;
+                }
+                ImGui::Indent();
+                defer {
+                    ImGui::Unindent();
+                    ImGui::NewLine();
+                };
+
+                if (ImGui::Button("Delete")) {
+                    int mpg_index = buf.mesh_part_group_index;
+                    auto &mesh = g.opaque_meshes[buf.global_mesh_index];
+                    auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
+                    auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
+                    int indices_index = 0;
+                    for (int i = 0; i < mpg_index; i++) {
+                        for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
+                            indices_index += part.strip_length * part.strip_count;
                         }
                     }
-                    if (!found) {
-                        switch (buf.bytes_per_vertex) {
-                            case 0x14: {
-                                auto verts = (PH2MAP__Vertex14 *)buf.data;
-                                verts[index].position[axis] += 1000 * sign;
-                            } break;
-                            case 0x18: {
-                                auto verts = (PH2MAP__Vertex18 *)buf.data;
-                                verts[index].position[axis] += 1000 * sign;
-                            } break;
-                            case 0x20: {
-                                auto verts = (PH2MAP__Vertex20 *)buf.data;
-                                verts[index].position[axis] += 1000 * sign;
-                            } break;
-                            case 0x24: {
-                                auto verts = (PH2MAP__Vertex24 *)buf.data;
-                                verts[index].position[axis] += 1000 * sign;
-                            } break;
+                    Log("Starting at index %d...", indices_index);
+                    assert(indices_index < mesh.indices.count);
+                    int indices_to_process = 0;
+                    for (auto &part : mesh_part_group.mesh_parts) {
+                        indices_to_process += part.strip_length * part.strip_count;
+                    }
+                    Log("We're going to process %d indices...", indices_to_process);
+                    assert(indices_index + indices_to_process <= mesh.indices.count);
+                    for (int i = 0; i < indices_to_process; i++) {
+                        mesh.indices.remove_ordered(indices_index);
+                    }
+                    mesh_part_group.mesh_parts.release();
+                    mesh.mesh_part_groups.remove_ordered(mpg_index);
+                    g.map_must_update = true;
+                    Log("Deleted!");
+                }
+                bool move = false;
+                int axis = 0;
+                int sign = + 1;
+                ImGui::Text("Move:");
+                ImGui::SameLine(); if (ImGui::Button("+X")) { move = true; axis = 0; sign = + 1; }
+                ImGui::SameLine(); if (ImGui::Button("-X")) { move = true; axis = 0; sign = -1; }
+                ImGui::SameLine(); if (ImGui::Button("+Y")) { move = true; axis = 1; sign = + 1; }
+                ImGui::SameLine(); if (ImGui::Button("-Y")) { move = true; axis = 1; sign = -1; }
+                ImGui::SameLine(); if (ImGui::Button("+Z")) { move = true; axis = 2; sign = + 1; }
+                ImGui::SameLine(); if (ImGui::Button("-Z")) { move = true; axis = 2; sign = -1; }
+                if (move) {
+                    int mpg_index = buf.mesh_part_group_index;
+                    auto &mesh = g.opaque_meshes[buf.global_mesh_index];
+                    mesh.bbox_override = false;
+                    auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
+                    auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
+                    int indices_index = 0;
+                    for (int i = 0; i < mpg_index; i++) {
+                        for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
+                            indices_index += part.strip_length * part.strip_count;
+                        }
+                    }
+                    Log("Starting at index %d...", indices_index);
+                    assert(indices_index < mesh.indices.count);
+                    int indices_to_process = 0;
+                    for (auto &part : mesh_part_group.mesh_parts) {
+                        indices_to_process += part.strip_length * part.strip_count;
+                    }
+                    Log("We're going to process %d indices...", indices_to_process);
+                    assert(indices_index + indices_to_process <= mesh.indices.count);
+                    Array<int> unique_indices = {};
+                    defer {
+                        unique_indices.release();
+                    };
+                    for (int i = 0; i < indices_to_process; i++) {
+                        int index = mesh.indices[indices_index + i];
+                        bool found = false;
+                        for (auto &idx : unique_indices) {
+                            if (idx == index) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            switch (buf.bytes_per_vertex) {
+                                case 0x14: {
+                                    auto verts = (PH2MAP__Vertex14 *)buf.data;
+                                    verts[index].position[axis] += 1000 * sign;
+                                } break;
+                                case 0x18: {
+                                    auto verts = (PH2MAP__Vertex18 *)buf.data;
+                                    verts[index].position[axis] += 1000 * sign;
+                                } break;
+                                case 0x20: {
+                                    auto verts = (PH2MAP__Vertex20 *)buf.data;
+                                    verts[index].position[axis] += 1000 * sign;
+                                } break;
+                                case 0x24: {
+                                    auto verts = (PH2MAP__Vertex24 *)buf.data;
+                                    verts[index].position[axis] += 1000 * sign;
+                                } break;
+                            }
+                            unique_indices.push(index);
+                        }
+                    }
+                    g.map_must_update = true;
+                    Log("Moved!");
+                }
+                if (ImGui::Button("Dupe")) {
+                    int mpg_index = buf.mesh_part_group_index;
+                    auto &mesh = g.opaque_meshes[buf.global_mesh_index];
+                    auto &buf = mesh.vertex_buffers[mesh.mesh_part_groups[mpg_index].section_index];
+                    int indices_index = 0;
+                    for (int i = 0; i < mpg_index; i++) {
+                        for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
+                            indices_index += part.strip_length * part.strip_count;
+                        }
+                    }
+                    Log("Starting at index %d...", indices_index);
+                    assert(indices_index < mesh.indices.count);
+                    int indices_to_process = 0;
+                    for (auto &part : mesh.mesh_part_groups[mpg_index ].mesh_parts) {
+                        indices_to_process += part.strip_length * part.strip_count;
+                    }
+                    Log("We're going to process %d indices...", indices_to_process);
+                    assert(indices_index + indices_to_process <= mesh.indices.count);
+                    Array<int> unique_indices = {};
+                    defer {
+                        unique_indices.release();
+                    };
+                    for (int i = 0; i < indices_to_process; i++) {
+                        int index = mesh.indices[indices_index + i];
+                        bool found = false;
+                        for (auto &idx : unique_indices) {
+                            if (idx == index) {
+                                found = true;
+                                break;
+                            }
                         }
                         unique_indices.push(index);
                     }
-                }
-                g.map_must_update = true;
-                Log("Moved!");
-            }
-            if (ImGui::Button("Dupe")) {
-                int mpg_index = buf.mesh_part_group_index;
-                auto &mesh = g.opaque_meshes[buf.global_mesh_index];
-                auto &buf = mesh.vertex_buffers[mesh.mesh_part_groups[mpg_index].section_index];
-                int indices_index = 0;
-                for (int i = 0; i < mpg_index; i++) {
-                    for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
-                        indices_index += part.strip_length * part.strip_count;
-                    }
-                }
-                Log("Starting at index %d...", indices_index);
-                assert(indices_index < mesh.indices.count);
-                int indices_to_process = 0;
-                for (auto &part : mesh.mesh_part_groups[mpg_index ].mesh_parts) {
-                    indices_to_process += part.strip_length * part.strip_count;
-                }
-                Log("We're going to process %d indices...", indices_to_process);
-                assert(indices_index + indices_to_process <= mesh.indices.count);
-                Array<int> unique_indices = {};
-                defer {
-                    unique_indices.release();
-                };
-                for (int i = 0; i < indices_to_process; i++) {
-                    int index = mesh.indices[indices_index + i];
-                    bool found = false;
-                    for (auto &idx : unique_indices) {
-                        if (idx == index) {
-                            found = true;
-                            break;
+                    // int min_vertex = 0;
+                    // int max_vertex = 65535;
+                    buf.data = (char *)realloc(buf.data, (buf.num_vertices + indices_to_process) * buf.bytes_per_vertex);
+                    assert(buf.data);
+                    for (int i = 0; i < indices_to_process; i++) {
+                        int vert_index = mesh.indices[indices_index + i];
+                        switch (buf.bytes_per_vertex) {
+                            case 0x14: {
+                                auto verts = (PH2MAP__Vertex14 *)buf.data;
+                                verts[buf.num_vertices + i] = verts[vert_index];
+                                verts[buf.num_vertices + i].position[0] += 1000;
+                            } break;
+                            case 0x18: {
+                                auto verts = (PH2MAP__Vertex18 *)buf.data;
+                                verts[buf.num_vertices + i] = verts[vert_index];
+                                verts[buf.num_vertices + i].position[0] += 1000;
+                            } break;
+                            case 0x20: {
+                                auto verts = (PH2MAP__Vertex20 *)buf.data;
+                                verts[buf.num_vertices + i] = verts[vert_index];
+                                verts[buf.num_vertices + i].position[0] += 1000;
+                            } break;
+                            case 0x24: {
+                                auto verts = (PH2MAP__Vertex24 *)buf.data;
+                                verts[buf.num_vertices + i] = verts[vert_index];
+                                verts[buf.num_vertices + i].position[0] += 1000;
+                            } break;
                         }
+                        mesh.indices.push((uint16_t)(buf.num_vertices + i));
                     }
-                    unique_indices.push(index);
-                }
-                // int min_vertex = 0;
-                // int max_vertex = 65535;
-                buf.data = (char *)realloc(buf.data, (buf.num_vertices + indices_to_process) * buf.bytes_per_vertex);
-                assert(buf.data);
-                for (int i = 0; i < indices_to_process; i++) {
-                    int vert_index = mesh.indices[indices_index + i];
-                    switch (buf.bytes_per_vertex) {
-                        case 0x14: {
-                            auto verts = (PH2MAP__Vertex14 *)buf.data;
-                            verts[buf.num_vertices + i] = verts[vert_index];
-                            verts[buf.num_vertices + i].position[0] += 1000;
-                        } break;
-                        case 0x18: {
-                            auto verts = (PH2MAP__Vertex18 *)buf.data;
-                            verts[buf.num_vertices + i] = verts[vert_index];
-                            verts[buf.num_vertices + i].position[0] += 1000;
-                        } break;
-                        case 0x20: {
-                            auto verts = (PH2MAP__Vertex20 *)buf.data;
-                            verts[buf.num_vertices + i] = verts[vert_index];
-                            verts[buf.num_vertices + i].position[0] += 1000;
-                        } break;
-                        case 0x24: {
-                            auto verts = (PH2MAP__Vertex24 *)buf.data;
-                            verts[buf.num_vertices + i] = verts[vert_index];
-                            verts[buf.num_vertices + i].position[0] += 1000;
-                        } break;
+                    buf.num_vertices += indices_to_process;
+                    auto &new_group = *mesh.mesh_part_groups.push();
+                    new_group = mesh.mesh_part_groups[mpg_index];
+                    new_group.mesh_parts = {};
+                    for (auto &part : mesh.mesh_part_groups[mpg_index].mesh_parts) {
+                        new_group.mesh_parts.push(part);
                     }
-                    mesh.indices.push((uint16_t)(buf.num_vertices + i));
+                    g.map_must_update = true;
+                    Log("Duped!");
                 }
-                buf.num_vertices += indices_to_process;
-                auto &new_group = *mesh.mesh_part_groups.push();
-                new_group = mesh.mesh_part_groups[mpg_index];
-                new_group.mesh_parts = {};
-                for (auto &part : mesh.mesh_part_groups[mpg_index].mesh_parts) {
-                    new_group.mesh_parts.push(part);
-                }
-                g.map_must_update = true;
-                Log("Duped!");
             }
-            ImGui::PopID();
-            ImGui::PopID();
         }
-        ImGui::Checkbox("MAP Textured", &g.textured);
-        ImGui::Checkbox("MAP Lit", &g.lit);
         ImGui::Text("CLD Subgroups:");
         {
             ImGui::PushID("CLD Subgroup Visibility Buttons");
