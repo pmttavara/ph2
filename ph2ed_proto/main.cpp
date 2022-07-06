@@ -65,6 +65,7 @@ void LogC_(uint32_t c, const char *fmt, ...) {
 #include <io.h> // @Debug @Temporary @Remove
 
 #include "shaders.glsl.h"
+#include <ddraw.h>
 
 sg_context_desc sapp_sgcontext(void);
 
@@ -225,7 +226,7 @@ struct MAP_Mesh {
 struct MAP_Material {
     uint32_t subfile_index = 0;
     int16_t mode;
-    int16_t texture_id;
+    uint16_t texture_id;
     uint32_t material_color;
     uint32_t overlay_color;
     float specularity;
@@ -575,7 +576,7 @@ struct PH2MAP__Vertex_Section_Header {
 };
 struct PH2MAP__Material {
     int16_t mode;
-    int16_t texture_id;
+    uint16_t texture_id;
     uint32_t material_color;
     uint32_t overlay_color;
     float specularity;
@@ -745,7 +746,10 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh>
             header.indices_offset = mapmesh_header.indices_offset;
             header.indices_length = mapmesh_header.indices_length;
             header.count = mapmesh_header.mesh_part_group_count;
-            assert(mapmesh_header.indices_offset + mapmesh_header.indices_length - mapmesh_header.unknown >= 6);
+            // @Note: I saved off some edited maps as having an offset of 0, but it doesn't seem to adversely
+            //        impact the in-game parsing, so maybe we can just set it to 0 when it's editor-overridden. (???)
+            assert(mapmesh_header.indices_offset + mapmesh_header.indices_length - mapmesh_header.unknown == 0 ||
+                   mapmesh_header.indices_offset + mapmesh_header.indices_length - mapmesh_header.unknown >= 6);
             assert(mapmesh_header.indices_offset + mapmesh_header.indices_length - mapmesh_header.unknown <= 20);
             mesh.diff_between_unknown_value_and_index_buffer_end = (uint8_t)(mapmesh_header.indices_offset + mapmesh_header.indices_length - mapmesh_header.unknown);
 
@@ -2684,7 +2688,7 @@ static void frame(void *userdata) {
         }
         static char obj_file_buf[1024];
         ImGui::InputText("OBJ File", obj_file_buf, sizeof(obj_file_buf));
-        ImGui::SameLine(); if (ImGui::Button("Import")) {
+        ImGui::SameLine(); if (ImGui::Button("Import###OBJ file import")) {
             FILE *f = PH2CLD__fopen(obj_file_buf, "r");
             if (f) {
                 defer {
@@ -2695,8 +2699,8 @@ static void frame(void *userdata) {
                 Array<hmm_vec2> uvs = {}; defer { uvs.release(); };
                 Array<hmm_vec3> normals = {}; defer { normals.release(); };
                 // Array<uint32_t> colours = {}; defer { colours.release(); };
-                Array<PH2MAP__Vertex20> verts = {}; defer { verts.release(); };
-                Array<uint16_t> stripped_indices = {}; defer { stripped_indices.release(); };
+                Array<PH2MAP__Vertex20> verts = {}; defer { verts.release(); }; // @Errdefer
+                Array<uint16_t> stripped_indices = {}; defer { stripped_indices.release(); }; // @Errdefer
                 char b[1024];
                 hmm_vec3 center = {};
                 while (fgets(b, sizeof b, f)) {
@@ -2833,12 +2837,121 @@ static void frame(void *userdata) {
                 MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "OBJ Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
             }
         }
-        { // Texture import
-            // DXT1 -> BC1
-            // DXT2 -> BC2
-            // DXT3 -> BC2
-            // DXT4 -> BC3
-            // DXT5 -> BC3
+        static char dds_file_buf[1024] = "qp01.map_tex_012.dds";
+        ImGui::InputText("DDS File", dds_file_buf, sizeof(dds_file_buf));
+        ImGui::SameLine(); if (ImGui::Button("Import###DDS file import")) { // Texture import
+            FILE *f = PH2CLD__fopen(dds_file_buf, "rb");
+            if (f) {
+                defer {
+                    fclose(f);
+                };
+
+                char magic[4];
+                assert(fread(magic, 4, 1, f) == 1);
+                assert(strncmp(magic, "DDS\x20", 4) == 0);
+                struct my_dds_header {
+                    uint32_t size;
+                    uint32_t flags;
+                    uint32_t height;
+                    uint32_t width;
+                    uint32_t pitch_or_linear_size;
+                    uint32_t depth;
+                    uint32_t mip_map_count;
+                    uint32_t idontcare[11];
+                    uint32_t pixelformat_size;
+                    uint32_t pixelformat_flags;
+                    uint32_t pixelformat_four_cc;
+                    uint32_t idontcare2[10];
+                };
+                my_dds_header header = {};
+                static_assert(sizeof(header) == 128 - 4, "");
+                assert(fread(&header, sizeof(header), 1, f) == 1);
+                assert(header.size == sizeof(header));
+
+                assert(offsetof(my_dds_header, height) == 0x08);
+                assert(offsetof(my_dds_header, width) == 0x0C);
+                assert(offsetof(my_dds_header, pitch_or_linear_size) == 0x10);
+                assert(offsetof(my_dds_header, mip_map_count) == 0x18);
+                assert(offsetof(my_dds_header, pixelformat_four_cc) == 0x50);
+
+                // DDSD_CAPS Required in every .dds file. 0x1
+                // DDSD_HEIGHT Required in every .dds file. 0x2
+                // DDSD_WIDTH Required in every .dds file. 0x4
+                // DDSD_PITCH Required when pitch is provided for an uncompressed texture. 0x8
+                // DDSD_PIXELFORMAT Required in every .dds file. 0x1000
+                // DDSD_MIPMAPCOUNT Required in a mipmapped texture. 0x20000
+                // DDSD_LINEARSIZE Required when pitch is provided for a compressed texture. 0x80000
+                // DDSD_DEPTH Required in a depth texture. 0x800000
+                assert(!!(header.flags & DDSD_CAPS));
+                assert(!!(header.flags & DDSD_HEIGHT));
+                assert(!!(header.flags & DDSD_WIDTH));
+                assert( !(header.flags & DDSD_PITCH));
+                assert(!!(header.flags & DDSD_PIXELFORMAT));
+                assert( !(header.flags & DDSD_MIPMAPCOUNT));
+                assert(!!(header.flags & DDSD_LINEARSIZE));
+                assert( !(header.flags & DDSD_DEPTH));
+
+                assert(header.pixelformat_size == 32);
+
+                assert(header.pixelformat_four_cc == FOURCC_DXT1 ||
+                       header.pixelformat_four_cc == FOURCC_DXT2 ||
+                       header.pixelformat_four_cc == FOURCC_DXT3 ||
+                       header.pixelformat_four_cc == FOURCC_DXT4 ||
+                       header.pixelformat_four_cc == FOURCC_DXT5);
+
+                assert((header.width & (header.width - 1)) == 0);
+                assert((header.height & (header.height - 1)) == 0);
+                assert(header.width < 65536);
+                assert(header.height < 65536);
+
+                assert(header.pitch_or_linear_size > 0);
+                assert(header.pitch_or_linear_size <= 4096 * 4096 / 4); // rough estimate, it's whatever.
+
+                MAP_Texture tex = {};
+
+                tex.id = 0xffff;
+                tex.width = (uint16_t)header.width;
+                tex.height = (uint16_t)header.height;
+                tex.material = 1;
+                tex.sprite_count = 1;
+                tex.sprite_metadata[0].id = 1;
+                switch (header.pixelformat_four_cc) {
+                    case FOURCC_DXT1: { tex.format = (uint8_t)MAP_Texture_Format_BC1; } break;
+                    case FOURCC_DXT2: { tex.format = (uint8_t)MAP_Texture_Format_BC2; } break;
+                    case FOURCC_DXT3: { tex.format = (uint8_t)MAP_Texture_Format_BC2; } break;
+                    case FOURCC_DXT4: { tex.format = (uint8_t)MAP_Texture_Format_BC3; } break;
+                    case FOURCC_DXT5: { tex.format = (uint8_t)MAP_Texture_Format_BC3; } break;
+                    default: { assert(false); } break;
+                }
+                // @Note: *PRETTY* sure this is fine??
+                switch (tex.format) {
+                    case MAP_Texture_Format_BC1: { tex.sprite_metadata[0].format = 0x100; } break;
+                    case MAP_Texture_Format_BC2: { tex.sprite_metadata[0].format = 0x102; } break;
+                    case MAP_Texture_Format_BC3: { tex.sprite_metadata[0].format = 0x103; } break;
+                    default: { assert(false); } break;
+                }
+
+                tex.pixel_bytes = header.pitch_or_linear_size;
+                tex.pixel_data = malloc(header.pitch_or_linear_size);
+                assert(tex.pixel_data);
+                defer { // @Errdefer
+                    free(tex.pixel_data);
+                };
+
+                assert(fread(tex.pixel_data, tex.pixel_bytes, 1, f) == 1);
+
+                g.textures.push(tex);
+                tex = {};
+                g.texture_subfiles[g.texture_subfiles.count - 1].texture_count++;
+
+                g.map_must_update = true;
+
+                MessageBoxA((HWND)sapp_win32_get_hwnd(), "Imported!", "OBJ Import", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+            } else {
+                auto msg = mprintf("Couldn't open file \"%s\"!!", obj_file_buf);
+                defer { free(msg); };
+                MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "DDS Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+            }
         }
         {
             static bool (vertices_touched[4])[UINT16_MAX] = {};
@@ -3014,6 +3127,22 @@ static void frame(void *userdata) {
                     ImGui::Unindent();
                     ImGui::NewLine();
                 };
+
+                if (!g.map_must_update) { // @HACK !!!!!!!!!!!!!!!! @@@@@@ !!!!!!!!
+                    auto &mesh = (*meshes)[buf.global_mesh_index];
+                    auto &mesh_part_group = mesh.mesh_part_groups[buf.mesh_part_group_index];
+                    int mat_index = mesh_part_group.material_index;
+                    if (ImGui::InputInt("Material Index", &mat_index)) {
+                        while (mat_index < 0) {
+                            mat_index += (int)g.materials.count + !g.materials.count;
+                        }
+                        if (g.materials.count > 0) {
+                            mat_index %= g.materials.count;
+                        }
+                        mesh_part_group.material_index = mat_index;
+                        g.map_must_update = true;
+                    }
+                }
 
                 bool duplicate = false;
                 if (ImGui::Button("Delete")) {
@@ -3401,6 +3530,11 @@ static void frame(void *userdata) {
             }
         }
     }
+    // @Hack: the map updates after Imgui gets an Image() call, but before Imgui renders,
+    //        so we just make it never call Image() on a frame that reuploads textures
+    if (g.map_must_update) {
+        g.texture_ui_selected = -1;
+    }
     {
         ImGui::SetNextWindowPos(ImVec2 { 60, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(256, 256), ImGuiCond_FirstUseEver);
@@ -3451,7 +3585,7 @@ static void frame(void *userdata) {
                 }
                 {
                     int x = tex.material;
-                    ImGui::InputInt("Material", &x);
+                    ImGui::InputInt("\"Material\" (?)", &x);
                     x = clamp(x, 0, 255);
                     tex.material = (uint8_t)x;
                 }
@@ -3473,6 +3607,76 @@ static void frame(void *userdata) {
                     ImGui::Image((ImTextureID)(uintptr_t)tex.image.id, ImVec2(w, h));
                 }
             }
+        }
+    }
+    {
+        ImGui::SetNextWindowPos(ImVec2 { 60 + 256 + 20, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(512, 256), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Materials");
+        defer {
+            ImGui::End();
+        };
+        int delete_mat = -1;
+        for (int i = 0; i < g.materials.count; i++) {
+            ImGui::PushID("Material iteration");
+            ImGui::PushID(i);
+            ImGui::Text("Material #%d", i); {
+                if (g.materials.count > 1) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Delete###Delete material")) {
+                        delete_mat = i;
+                    }
+                }
+
+                ImGui::Indent();
+                defer {
+                    ImGui::Unindent();
+                };
+                auto &mat = g.materials[i];
+                ImGui::Columns(2);
+                {
+                    int x = mat.mode;
+                    ImGui::InputInt("Mode", &x);
+                    x = clamp(x, -32768, 32767);
+                    mat.mode = (int16_t)x;
+                }
+                ImGui::NextColumn();
+                {
+                    int x = mat.texture_id;
+                    ImGui::InputInt("TexID", &x);
+                    x = clamp(x, 0, 65535);
+                    mat.texture_id = (uint16_t)x;
+                }
+                ImGui::Columns(1);
+                {
+                    auto c = ImGui::ColorConvertU32ToFloat4(mat.material_color);
+                    ImGui::ColorEdit4("Color", &c.x);
+                    mat.material_color = ImGui::ColorConvertFloat4ToU32(c);
+                }
+                {
+                    auto c = ImGui::ColorConvertU32ToFloat4(mat.overlay_color);
+                    ImGui::ColorEdit4("Overlay Color", &c.x);
+                    mat.overlay_color = ImGui::ColorConvertFloat4ToU32(c);
+                }
+                ImGui::DragFloat("Specularity", &mat.specularity);
+            }
+            ImGui::PopID();
+            ImGui::PopID();
+        }
+        if (delete_mat >= 0) {
+            g.materials.remove_ordered(delete_mat);
+            // @Todo @@@: Index patching on EVERY SINGLE mesh group!!!!!!!!!!!!!!!!! @@@
+        }
+        if (ImGui::Button("New Material")) {
+            MAP_Material mat = {};
+            assert(g.materials.count > 0);
+            mat.subfile_index = g.materials[g.materials.count - 1].subfile_index;
+            mat.mode = 1;
+            mat.texture_id = 0;
+            mat.material_color = 0xffffffff;
+            mat.overlay_color = 0;
+            mat.specularity = 0;
+            g.materials.push(mat);
         }
     }
     if (g.cld_must_update) {
@@ -3598,27 +3802,24 @@ static void frame(void *userdata) {
                 }
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
                 sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
-                sg_image tex = {};
-                assert(g.materials[g.map_buffers[i].material_index].texture_id >= 0);
-                assert(g.materials[g.map_buffers[i].material_index].texture_id < 65536);
-                auto map_tex = map_get_texture_by_id(g.textures, g.materials[g.map_buffers[i].material_index].texture_id);
-                if (g.materials[g.map_buffers[i].material_index].texture_id == 0) {
-                    // @Todo: how do we render a mesh with no valid texture ID?
-                    tex = g.missing_texture;
-                } else if (!map_tex) {
-                    // @Todo: how do we render a mesh with a texture ID that references a nonexistent texture in the file?
-                    // Does that texture ID refer to some external information in another file, such as a non-numbered map file?
-                    tex = g.missing_texture;
-                } else {
-                    assert(map_tex->image.id);
-                    tex = map_tex->image;
+                sg_image tex = g.missing_texture;
+                auto &buf = g.map_buffers[i];
+                assert(buf.material_index >= 0);
+                if (buf.material_index < g.materials.count) {
+                    assert(g.materials[buf.material_index].texture_id >= 0);
+                    assert(g.materials[buf.material_index].texture_id < 65536);
+                    auto map_tex = map_get_texture_by_id(g.textures, g.materials[buf.material_index].texture_id);
+                    if (map_tex) {
+                        assert(map_tex->image.id);
+                        tex = map_tex->image;
+                    }
                 }
                 {
                     sg_bindings b = {};
-                    b.vertex_buffers[0] = g.map_buffers[i].buf;
+                    b.vertex_buffers[0] = buf.buf;
                     b.fs_images[0] = tex;
                     sg_apply_bindings(b);
-                    sg_draw(0, (int)g.map_buffers[i].vertices.count, 1);
+                    sg_draw(0, (int)buf.vertices.count, 1);
                 }
             }
             fs_params.do_a2c_sharpening = false;
@@ -3631,27 +3832,24 @@ static void frame(void *userdata) {
                 }
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
                 sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
-                sg_image tex = {};
-                assert(g.materials[g.decal_buffers[i].material_index].texture_id >= 0);
-                assert(g.materials[g.decal_buffers[i].material_index].texture_id < 65536);
-                auto map_tex = map_get_texture_by_id(g.textures, g.materials[g.decal_buffers[i].material_index].texture_id);
-                if (g.materials[g.decal_buffers[i].material_index].texture_id == 0) {
-                    // @Todo: how do we render a mesh with no valid texture ID?
-                    tex = g.missing_texture;
-                } else if (!map_tex) {
-                    // @Todo: how do we render a mesh with a texture ID that references a nonexistent texture in the file?
-                    // Does that texture ID refer to some external information in another file, such as a non-numbered map file?
-                    tex = g.missing_texture;
-                } else {
-                    assert(map_tex->image.id);
-                    tex = map_tex->image;
+                sg_image tex = g.missing_texture;
+                auto &buf = g.decal_buffers[i];
+                assert(buf.material_index >= 0);
+                if (buf.material_index < g.materials.count) {
+                    assert(g.materials[buf.material_index].texture_id >= 0);
+                    assert(g.materials[buf.material_index].texture_id < 65536);
+                    auto map_tex = map_get_texture_by_id(g.textures, g.materials[buf.material_index].texture_id);
+                    if (map_tex) {
+                        assert(map_tex->image.id);
+                        tex = map_tex->image;
+                    }
                 }
                 {
                     sg_bindings b = {};
-                    b.vertex_buffers[0] = g.decal_buffers[i].buf;
+                    b.vertex_buffers[0] = buf.buf;
                     b.fs_images[0] = tex;
                     sg_apply_bindings(b);
-                    sg_draw(0, (int)g.decal_buffers[i].vertices.count, 1);
+                    sg_draw(0, (int)buf.vertices.count, 1);
                 }
             }
         }

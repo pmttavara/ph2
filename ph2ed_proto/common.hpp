@@ -46,6 +46,8 @@ template<typename T, size_t N> constexpr size_t countof(T (&)[N]) {
     return N;
 }
 
+// #define offsetof(T, m) ((size_t)&(((T *)0)->m))
+
 // assert
 #ifdef _WIN32
 #ifdef __cplusplus
