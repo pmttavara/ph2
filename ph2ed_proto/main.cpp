@@ -1345,7 +1345,8 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
             bc_texture_header.material = tex.material;
             bc_texture_header.material2 = tex.material;
             Write(bc_texture_header);
-        
+            assert(tex.sprite_count > 0 && tex.sprite_count <= 64);
+
             for (int sprite_index = 0; sprite_index < tex.sprite_count; sprite_index++) {
                 PH2MAP__Sprite_Header sprite_header = {};
                 sprite_header.id = tex.sprite_metadata[sprite_index].id;
@@ -2681,148 +2682,163 @@ static void frame(void *userdata) {
             g.pitch = 0;
             g.yaw = 0;
         }
-        if (ImGui::Button("Import Wavefront OBJ")) {
-            FILE *f = PH2CLD__fopen("new_light_FINAL_solo.obj", "r");
-            assert(f);
-            defer {
-                fclose(f);
-            };
+        static char obj_file_buf[1024];
+        ImGui::InputText("OBJ File", obj_file_buf, sizeof(obj_file_buf));
+        ImGui::SameLine(); if (ImGui::Button("Import")) {
+            FILE *f = PH2CLD__fopen(obj_file_buf, "r");
+            if (f) {
+                defer {
+                    fclose(f);
+                };
 
-            Array<hmm_vec3> positions = {}; defer { positions.release(); };
-            Array<hmm_vec2> uvs = {}; defer { uvs.release(); };
-            Array<hmm_vec3> normals = {}; defer { normals.release(); };
-            // Array<uint32_t> colours = {}; defer { colours.release(); };
-            Array<PH2MAP__Vertex20> verts = {}; defer { verts.release(); };
-            Array<uint16_t> stripped_indices = {}; defer { stripped_indices.release(); };
-            char b[1024];
-            hmm_vec3 center = {};
-            while (fgets(b, sizeof b, f)) {
-                if (char *lf = strrchr(b, '\n')) *lf = 0;
-                char directive[3] = {};
-                char args[4][64] = {};
-                int matches = sscanf(b, " %s %s %s %s %s ", directive, args[0], args[1], args[2], args[3]);
-                if (strcmp("v", directive) == 0) {
-                    // Position
-                    assert(matches == 4);
-                    // Log("Position: (%s, %s, %s)", args[0], args[1], args[2]);
-                    auto &pos = *positions.push();
-                    pos.X = (float)atof(args[0]);
-                    pos.Y = (float)atof(args[1]);
-                    pos.Z = (float)atof(args[2]);
-                    center += pos;
-                } else if (strcmp("vt", directive) == 0) {
-                    // UV
-                    assert(matches == 3);
-                    // Log("UV: (%s, %s)", args[0], args[1]);
-                    auto &uv = *uvs.push();
-                    uv.X = (float)atof(args[0]);
-                    uv.Y = (float)atof(args[1]);
-                } else if (strcmp("vn", directive) == 0) {
-                    // Normal
-                    assert(matches == 4);
-                    // Log("Normal: (%s, %s, %s)", args[0], args[1], args[2]);
-                    auto &normal = *normals.push();
-                    normal.X = (float)atof(args[0]);
-                    normal.Y = (float)atof(args[1]);
-                    normal.Z = (float)atof(args[2]);
-                } else if (strcmp("f", directive) == 0) {
-                    // Triangle/Quad
-                    assert(matches == 4 || matches == 5);
-                    // Log("Triangle/Quad: (%s, %s, %s%s%s)", args[0], args[1], args[2], matches == 5 ? ", " : "", matches == 5 ? args[3] : "");
-                    int indices_uploaded[4] = {};
-                    for (int i = 0; i < matches - 1; i++) {
-                        PH2MAP__Vertex20 vert = {};
-                        int index_pos = 0;
-                        int index_uv = 0;
-                        int index_normal = 0;
-                        int sub_matches = sscanf(args[i], "%d/%d/%d", &index_pos, &index_uv, &index_normal);
-                        if (sub_matches >= 1) { // %d[...]
-                            assert(index_pos > 0);
-                            vert.position[0] = positions[index_pos - 1].X;
-                            vert.position[1] = positions[index_pos - 1].Y;
-                            vert.position[2] = positions[index_pos - 1].Z;
-                        } else {
-                            assert(false); // @Lazy
-                        }
-                        if (sub_matches == 3) { // %d/%d/%d
-                            assert(index_uv > 0);
-                            assert(index_normal > 0);
-                            vert.uv[0] = uvs[index_uv - 1].X;
-                            vert.uv[1] = uvs[index_uv - 1].Y;
-                            vert.normal[0] = normals[index_normal - 1].X;
-                            vert.normal[1] = normals[index_normal - 1].Y;
-                            vert.normal[2] = normals[index_normal - 1].Z;
-                        } else if (sub_matches == 2) { // %d/%d
-                            assert(index_uv > 0);
-                            vert.uv[0] = uvs[index_uv - 1].X;
-                            vert.uv[1] = uvs[index_uv - 1].Y;
-                        } else if (sub_matches == 1) { // %d[...]
-                            int dummy = 0;
-                            sub_matches = sscanf(args[i], "%d//%d", &dummy, &index_normal);
-                            assert(dummy == index_pos);
-                            if (sub_matches == 2) { // %d//%d
+                Array<hmm_vec3> positions = {}; defer { positions.release(); };
+                Array<hmm_vec2> uvs = {}; defer { uvs.release(); };
+                Array<hmm_vec3> normals = {}; defer { normals.release(); };
+                // Array<uint32_t> colours = {}; defer { colours.release(); };
+                Array<PH2MAP__Vertex20> verts = {}; defer { verts.release(); };
+                Array<uint16_t> stripped_indices = {}; defer { stripped_indices.release(); };
+                char b[1024];
+                hmm_vec3 center = {};
+                while (fgets(b, sizeof b, f)) {
+                    if (char *lf = strrchr(b, '\n')) *lf = 0;
+                    char directive[3] = {};
+                    char args[4][64] = {};
+                    int matches = sscanf(b, " %s %s %s %s %s ", directive, args[0], args[1], args[2], args[3]);
+                    if (strcmp("v", directive) == 0) {
+                        // Position
+                        assert(matches == 4);
+                        // Log("Position: (%s, %s, %s)", args[0], args[1], args[2]);
+                        auto &pos = *positions.push();
+                        pos.X = (float)atof(args[0]);
+                        pos.Y = (float)atof(args[1]);
+                        pos.Z = (float)atof(args[2]);
+                        center += pos;
+                    } else if (strcmp("vt", directive) == 0) {
+                        // UV
+                        assert(matches == 3);
+                        // Log("UV: (%s, %s)", args[0], args[1]);
+                        auto &uv = *uvs.push();
+                        uv.X = (float)atof(args[0]);
+                        uv.Y = (float)atof(args[1]);
+                    } else if (strcmp("vn", directive) == 0) {
+                        // Normal
+                        assert(matches == 4);
+                        // Log("Normal: (%s, %s, %s)", args[0], args[1], args[2]);
+                        auto &normal = *normals.push();
+                        normal.X = (float)atof(args[0]);
+                        normal.Y = (float)atof(args[1]);
+                        normal.Z = (float)atof(args[2]);
+                    } else if (strcmp("f", directive) == 0) {
+                        // Triangle/Quad
+                        assert(matches == 4 || matches == 5);
+                        // Log("Triangle/Quad: (%s, %s, %s%s%s)", args[0], args[1], args[2], matches == 5 ? ", " : "", matches == 5 ? args[3] : "");
+                        int indices_uploaded[4] = {};
+                        for (int i = 0; i < matches - 1; i++) {
+                            PH2MAP__Vertex20 vert = {};
+                            int index_pos = 0;
+                            int index_uv = 0;
+                            int index_normal = 0;
+                            int sub_matches = sscanf(args[i], "%d/%d/%d", &index_pos, &index_uv, &index_normal);
+                            if (sub_matches >= 1) { // %d[...]
+                                assert(index_pos > 0);
+                                vert.position[0] = positions[index_pos - 1].X;
+                                vert.position[1] = positions[index_pos - 1].Y;
+                                vert.position[2] = positions[index_pos - 1].Z;
+                            } else {
+                                assert(false); // @Lazy
+                            }
+                            if (sub_matches == 3) { // %d/%d/%d
+                                assert(index_uv > 0);
                                 assert(index_normal > 0);
+                                vert.uv[0] = uvs[index_uv - 1].X;
+                                vert.uv[1] = uvs[index_uv - 1].Y;
                                 vert.normal[0] = normals[index_normal - 1].X;
                                 vert.normal[1] = normals[index_normal - 1].Y;
                                 vert.normal[2] = normals[index_normal - 1].Z;
-                            } else {
-                                assert(false);
+                            } else if (sub_matches == 2) { // %d/%d
+                                assert(index_uv > 0);
+                                vert.uv[0] = uvs[index_uv - 1].X;
+                                vert.uv[1] = uvs[index_uv - 1].Y;
+                            } else if (sub_matches == 1) { // %d[...]
+                                int dummy = 0;
+                                sub_matches = sscanf(args[i], "%d//%d", &dummy, &index_normal);
+                                assert(dummy == index_pos);
+                                if (sub_matches == 2) { // %d//%d
+                                    assert(index_normal > 0);
+                                    vert.normal[0] = normals[index_normal - 1].X;
+                                    vert.normal[1] = normals[index_normal - 1].Y;
+                                    vert.normal[2] = normals[index_normal - 1].Z;
+                                } else {
+                                    assert(false);
+                                }
                             }
+                            verts.push(vert);
+                            indices_uploaded[i] = (int)verts.count - 1;
                         }
-                        verts.push(vert);
-                        indices_uploaded[i] = (int)verts.count - 1;
-                    }
-                    stripped_indices.push((uint16_t)indices_uploaded[0]);
-                    stripped_indices.push((uint16_t)indices_uploaded[0]);
-                    stripped_indices.push((uint16_t)indices_uploaded[2]);
-                    stripped_indices.push((uint16_t)indices_uploaded[1]);
-                    stripped_indices.push((uint16_t)indices_uploaded[1]);
-                    if (matches == 5) { // Quad - upload another triangle
                         stripped_indices.push((uint16_t)indices_uploaded[0]);
                         stripped_indices.push((uint16_t)indices_uploaded[0]);
                         stripped_indices.push((uint16_t)indices_uploaded[2]);
-                        stripped_indices.push((uint16_t)indices_uploaded[3]);
-                        stripped_indices.push((uint16_t)indices_uploaded[3]);
+                        stripped_indices.push((uint16_t)indices_uploaded[1]);
+                        stripped_indices.push((uint16_t)indices_uploaded[1]);
+                        if (matches == 5) { // Quad - upload another triangle
+                            stripped_indices.push((uint16_t)indices_uploaded[0]);
+                            stripped_indices.push((uint16_t)indices_uploaded[0]);
+                            stripped_indices.push((uint16_t)indices_uploaded[2]);
+                            stripped_indices.push((uint16_t)indices_uploaded[3]);
+                            stripped_indices.push((uint16_t)indices_uploaded[3]);
+                        }
                     }
+                    memset(b, 0, sizeof b);
                 }
-                memset(b, 0, sizeof b);
-            }
-            // Log("We got %lld positions, %lld uvs, %lld normals.", positions.count, uvs.count, normals.count);
-            // Log("We built %lld vertices.", verts.count);
-            // Log("We built %lld stripped indices.", stripped_indices.count);
-            MAP_Mesh &mesh = *g.opaque_meshes.push();
-            g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
-            MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
-            assert(verts.count < 65536);
-            assert(stripped_indices.count < 65536);
-            { // Commandeer ownership of the verts array
-                buf.data = (char *)realloc(verts.data, verts.count * sizeof(verts[0]));
-                assert(buf.data);
-                buf.num_vertices = (uint16_t)verts.count;
-                buf.bytes_per_vertex = sizeof(verts[0]);
-                verts = {};
-            }
-            MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
-            group.material_index = 0; // @Todo
-            group.section_index = 0;
-            MAP_Mesh_Part &part = *group.mesh_parts.push();
-            part.strip_count = 1;
-            part.strip_length = (uint16_t)stripped_indices.count;
-            mesh.indices = stripped_indices;
-            stripped_indices = {};
-            g.map_must_update = true;
+                // Log("We got %lld positions, %lld uvs, %lld normals.", positions.count, uvs.count, normals.count);
+                // Log("We built %lld vertices.", verts.count);
+                // Log("We built %lld stripped indices.", stripped_indices.count);
+                MAP_Mesh &mesh = *g.opaque_meshes.push();
+                g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
+                MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
+                assert(verts.count < 65536);
+                assert(stripped_indices.count < 65536);
+                { // Commandeer ownership of the verts array
+                    buf.data = (char *)realloc(verts.data, verts.count * sizeof(verts[0]));
+                    assert(buf.data);
+                    buf.num_vertices = (uint16_t)verts.count;
+                    buf.bytes_per_vertex = sizeof(verts[0]);
+                    verts = {};
+                }
+                MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
+                group.material_index = 0; // @Todo
+                group.section_index = 0;
+                MAP_Mesh_Part &part = *group.mesh_parts.push();
+                part.strip_count = 1;
+                part.strip_length = (uint16_t)stripped_indices.count;
+                mesh.indices = stripped_indices;
+                stripped_indices = {};
+                g.map_must_update = true;
 
-            assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_count > 0);
-            assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_length > 0);
+                assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_count > 0);
+                assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_length > 0);
 
-            assert(positions.count);
-            if (positions.count) {
-                center /= (float)positions.count;
-                g.cam_pos = center;
-                g.cam_pos.X *= 1 * SCALE;
-                g.cam_pos.Y *= -1 * SCALE;
-                g.cam_pos.Z *= -1 * SCALE;
+                assert(positions.count);
+                if (positions.count) {
+                    center /= (float)positions.count;
+                    g.cam_pos = center;
+                    g.cam_pos.X *= 1 * SCALE;
+                    g.cam_pos.Y *= -1 * SCALE;
+                    g.cam_pos.Z *= -1 * SCALE;
+                }
+                MessageBoxA((HWND)sapp_win32_get_hwnd(), "Imported!", "OBJ Import", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+            } else {
+                auto msg = mprintf("Couldn't open file \"%s\"!!", obj_file_buf);
+                defer { free(msg); };
+                MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "OBJ Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
             }
+        }
+        { // Texture import
+            // DXT1 -> BC1
+            // DXT2 -> BC2
+            // DXT3 -> BC2
+            // DXT4 -> BC3
+            // DXT5 -> BC3
         }
         {
             static bool (vertices_touched[4])[UINT16_MAX] = {};
@@ -3412,7 +3428,9 @@ static void frame(void *userdata) {
         ImGui::SameLine(0, -1);
         if (g.texture_ui_selected >= 0) {
             ImGui::BeginChild("texture_panel");
+            ImGui::PushID(g.texture_ui_selected);
             defer {
+                ImGui::PopID();
                 ImGui::EndChild();
             };
             
@@ -3425,6 +3443,18 @@ static void frame(void *userdata) {
                 }
             } else {
                 auto &tex = g.textures[g.texture_ui_selected];
+                {
+                    int x = tex.id;
+                    ImGui::InputInt("ID", &x);
+                    x = clamp(x, 0, 65535);
+                    tex.id = (uint16_t)x;
+                }
+                {
+                    int x = tex.material;
+                    ImGui::InputInt("Material", &x);
+                    x = clamp(x, 0, 255);
+                    tex.material = (uint8_t)x;
+                }
                 
                 float w = (float)tex.width;
                 float h = (float)tex.height;

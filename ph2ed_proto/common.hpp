@@ -37,6 +37,11 @@ template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
 #define defer auto DEFER(__LINE__) = defer_dummy{} *[&]()
 #endif // defer
 
+template<typename T, typename U, typename V> auto clamp(T &&t, U &&u, V &&v) {
+    // assert(u <= v);
+    return t < u ? u : t > v ? v : t;
+}
+
 template<typename T, size_t N> constexpr size_t countof(T (&)[N]) {
     return N;
 }
