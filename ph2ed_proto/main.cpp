@@ -2674,6 +2674,29 @@ static void frame(void *userdata) {
     } else {
         ImGui::GetStyle().Alpha = 1;
     }
+    struct my_dds_header {
+        uint32_t size;
+        uint32_t flags;
+        uint32_t height;
+        uint32_t width;
+        uint32_t pitch_or_linear_size;
+        uint32_t depth;
+        uint32_t mip_map_count;
+        uint32_t reserved1[11];
+        uint32_t pixelformat_size;
+        uint32_t pixelformat_flags;
+        uint32_t pixelformat_four_cc;
+        uint32_t pixelformat_rgb_bit_count;
+        uint32_t pixelformat_r_bit_mask;
+        uint32_t pixelformat_g_bit_mask;
+        uint32_t pixelformat_b_bit_mask;
+        uint32_t pixelformat_a_bit_mask;
+        uint32_t caps;
+        uint32_t caps2;
+        uint32_t caps3;
+        uint32_t caps4;
+        uint32_t reserved2;
+    };
     {
         ImGui::Begin("Editor", nullptr, ImGuiWindowFlags_MenuBar);
         defer {
@@ -2849,20 +2872,6 @@ static void frame(void *userdata) {
                 char magic[4];
                 assert(fread(magic, 4, 1, f) == 1);
                 assert(strncmp(magic, "DDS\x20", 4) == 0);
-                struct my_dds_header {
-                    uint32_t size;
-                    uint32_t flags;
-                    uint32_t height;
-                    uint32_t width;
-                    uint32_t pitch_or_linear_size;
-                    uint32_t depth;
-                    uint32_t mip_map_count;
-                    uint32_t idontcare[11];
-                    uint32_t pixelformat_size;
-                    uint32_t pixelformat_flags;
-                    uint32_t pixelformat_four_cc;
-                    uint32_t idontcare2[10];
-                };
                 my_dds_header header = {};
                 static_assert(sizeof(header) == 128 - 4, "");
                 assert(fread(&header, sizeof(header), 1, f) == 1);
@@ -2887,7 +2896,7 @@ static void frame(void *userdata) {
                 assert(!!(header.flags & DDSD_WIDTH));
                 assert( !(header.flags & DDSD_PITCH));
                 assert(!!(header.flags & DDSD_PIXELFORMAT));
-                assert( !(header.flags & DDSD_MIPMAPCOUNT));
+                assert( !(header.flags & DDSD_MIPMAPCOUNT) || header.mip_map_count <= 1);
                 assert(!!(header.flags & DDSD_LINEARSIZE));
                 assert( !(header.flags & DDSD_DEPTH));
 
@@ -3569,14 +3578,114 @@ static void frame(void *userdata) {
             };
             
             if (ImGui::Button("Delete")) {
+                // Perform index patching on subfiles.
+                int rolling_texture_index = 0;
+                for (auto &sub : g.texture_subfiles) {
+                    int start = rolling_texture_index;
+                    int end = rolling_texture_index + sub.texture_count;
+                    if (g.texture_ui_selected >= start && g.texture_ui_selected < end) {
+                        sub.texture_count--;
+                        break;
+                    }
+                    rolling_texture_index = end;
+                }
                 g.textures[g.texture_ui_selected].release();
                 g.textures.remove_ordered(g.texture_ui_selected);
-                if (g.texture_ui_selected < 0 ||
-                    g.texture_ui_selected >= g.textures.count) {
+                if (g.texture_ui_selected >= g.textures.count) {
                     g.texture_ui_selected = -1;
                 }
             } else {
                 auto &tex = g.textures[g.texture_ui_selected];
+                static char dds_export_path[512] = "";
+                ImGui::SameLine(); if (ImGui::Button("Export DDS...")) {
+                    ImGui::OpenPopup("export_dds_dialog");
+                    memset(dds_export_path, 0, sizeof(dds_export_path));
+                }
+
+                auto write = [&] {
+                    FILE *f = PH2CLD__fopen(dds_export_path, "wb");
+                    if (f) {
+                        defer {
+                            fclose(f);
+                        };
+                        assert(fwrite("DDS\x20", 4, 1, f) == 1);
+                        my_dds_header header = {};
+                        header.size = 0x7c;
+                        header.flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_LINEARSIZE;
+                        header.height = tex.height;
+                        header.width = tex.width;
+                        header.pitch_or_linear_size = tex.pixel_bytes;
+                        header.pixelformat_size = 32;
+                        header.pixelformat_flags = 4;
+                        // @Note: *PRETTY* sure this is fine??
+                        switch (tex.format) {
+                            case MAP_Texture_Format_BC1: { header.pixelformat_four_cc = FOURCC_DXT1; } break;
+                            case MAP_Texture_Format_BC2: { header.pixelformat_four_cc = FOURCC_DXT3; } break;
+                            case MAP_Texture_Format_BC3: { header.pixelformat_four_cc = FOURCC_DXT5; } break;
+                            default: { assert(false); } break;
+                        }
+                        header.caps = DDSCAPS_TEXTURE;
+                        assert(fwrite(&header, sizeof(header), 1, f) == 1);
+                        assert(fwrite(tex.pixel_data, tex.pixel_bytes, 1, f) == 1);
+
+                        MessageBoxA((HWND)sapp_win32_get_hwnd(), "Exported!", "DDS Export", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+                    } else {
+                        auto msg = mprintf("Couldn't open file \"%s\"!!", dds_export_path);
+                        defer { free(msg); };
+                        MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "DDS Export Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+                    }
+                };
+
+                bool open_overwrite_dialog = false;
+                bool reopen_export_dialog = false;
+                if (ImGui::BeginPopup("export_dds_dialog")) {
+                    ImGui::PushID(g.texture_ui_selected);
+                    ImGui::PushID("Path:");
+                    defer {
+                        ImGui::PopID();
+                        ImGui::PopID();
+                        ImGui::EndPopup();
+                    };
+                    ImGui::Text("Path:");
+                    ImGui::SameLine(); ImGui::InputText("", dds_export_path, sizeof(dds_export_path));
+                    ImGui::SameLine(); if (ImGui::Button("Save")) {
+                        Log("Export to %s", dds_export_path);
+                        auto exists_test = PH2CLD__fopen(dds_export_path, "rb");
+                        if (exists_test) {
+                            Log("EXISTS!!!");
+                            ImGui::CloseCurrentPopup();
+                            open_overwrite_dialog = true;
+                            fclose(exists_test);
+                        } else {
+                            Log("Doesn't exist.");
+                            write();
+                        }
+                    }
+                }
+                if (open_overwrite_dialog) {
+                    ImGui::OpenPopup("overwite_file_dds_export");
+                }
+                if (ImGui::BeginPopup("overwite_file_dds_export")) {
+                    ImGui::PushID(g.texture_ui_selected);
+                    ImGui::PushID("File exists!");
+                    defer {
+                        ImGui::PopID();
+                        ImGui::PopID();
+                        ImGui::EndPopup();
+                    };
+                    ImGui::Text("File exists! Overwrite?");
+                    ImGui::SameLine(); if (ImGui::Button("Yes")) {
+                        write();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine(); if (ImGui::Button("No")) {
+                        ImGui::CloseCurrentPopup();
+                        reopen_export_dialog = true;
+                    }
+                }
+                if (reopen_export_dialog) {
+                    ImGui::OpenPopup("export_dds_dialog");
+                }
                 {
                     int x = tex.id;
                     ImGui::InputInt("ID", &x);
