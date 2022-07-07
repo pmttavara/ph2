@@ -22,6 +22,20 @@ static inline void *stb_leakcheck_calloc(size_t n, size_t s, const char *file, i
     return result;
 }
 #define calloc(n, s) stb_leakcheck_calloc(n, s, __FILE__, __LINE__)
+static inline char *stb_leakcheck_strdup(const char *s) {
+    if (!s) {
+        return nullptr;
+    }
+    size_t n = strlen(s) + 1;
+    char *result = (char *)malloc(n);
+    if (!result) {
+        return nullptr;
+    }
+    memcpy(result, s, n);
+    return result;
+}
+#define strdup stb_leakcheck_strdup
+
 
 #define WIN32_LEAN_AND_MEAN
 #define VC_EXTRALEAN
@@ -37,9 +51,15 @@ template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
 #define defer auto DEFER(__LINE__) = defer_dummy{} *[&]()
 #endif // defer
 
-template<typename T, typename U, typename V> auto clamp(T &&t, U &&u, V &&v) {
+template <typename T, typename U, typename V> auto clamp(T &&t, U &&u, V &&v) {
     // assert(u <= v);
     return t < u ? u : t > v ? v : t;
+}
+template <typename T, typename U> auto max(T &&t, U &&u) {
+    return t > u ? t : u;
+}
+template <typename T, typename U> auto min(T &&t, U &&u) {
+    return t < u ? t : u;
 }
 
 template<typename T, size_t N> constexpr size_t countof(T (&)[N]) {

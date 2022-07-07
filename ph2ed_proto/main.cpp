@@ -58,6 +58,21 @@ void LogC_(uint32_t c, const char *fmt, ...) {
 #define LogC(c, ...) LogC_(c, "" __VA_ARGS__)
 #define Log(...) LogC(IM_COL32(127,127,127,255), "" __VA_ARGS__)
 
+void MsgBox_(const char *title, int flag, const char *msg, ...) {
+    va_list arg;
+    va_start(arg, msg);
+    defer {
+        va_end(arg);
+    };
+    char buf[1024];
+    if (vsnprintf(buf, sizeof buf, msg, arg) > 0) {
+        MessageBoxA((HWND)sapp_win32_get_hwnd(), buf, title, MB_OK | flag | MB_SYSTEMMODAL);
+    }
+}
+#define MsgErr(title, ...) MsgBox_(title, MB_ICONERROR, "" __VA_ARGS__);
+#define MsgWarn(title, ...) MsgBox_(title, MB_ICONWARNING, "" __VA_ARGS__);
+#define MsgInfo(title, ...) MsgBox_(title, MB_ICONINFORMATION, "" __VA_ARGS__);
+
 #include "HandmadeMath.h"
 
 #define PH2CLD_IMPLEMENTATION
@@ -67,6 +82,7 @@ void LogC_(uint32_t c, const char *fmt, ...) {
 #include "shaders.glsl.h"
 #include <ddraw.h>
 #include <commdlg.h>
+#include <shellapi.h>
 
 sg_context_desc sapp_sgcontext(void);
 
@@ -282,6 +298,12 @@ struct G {
 
     ControlState control_state = {};
     float fov = FOV_DEFAULT;
+
+    // These are REALLY dumb. But they work.
+    bool control_s = false;
+    bool control_shift_s = false;
+
+    bool control_o = false;
 
     hmm_vec3 cam_pos = {0, 0, 0};
     float yaw = 0;
@@ -1557,7 +1579,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             }
         }
     }
-    // sapp_set_window_title(filename);
     int prev_num_array_resizes = num_array_resizes;
     defer {
         // Log("%d array resizes", num_array_resizes - prev_num_array_resizes);
@@ -1850,15 +1871,13 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     }
 
     g.map_must_update = true;
-    assert(filename);
-    assert(strlen(filename));
     if (g.opened_map_filename) {
         free(g.opened_map_filename);
         g.opened_map_filename = nullptr;
     }
-    g.opened_map_filename = (char *)malloc(strlen(filename) + 1);
+    g.opened_map_filename = strdup(filename);
     assert(g.opened_map_filename);
-    memcpy(g.opened_map_filename, filename, strlen(filename) + 1);
+
     for (auto &buf : g.map_buffers) {
         buf.shown = true;
     }
@@ -2150,7 +2169,7 @@ static void init(void *userdata) {
     double init_time = -get_time();
     defer {
         init_time += get_time();
-        Log("Init() took %f seconds.", init_time);
+        // Log("Init() took %f seconds.", init_time);
     };
     MoveWindow(GetConsoleWindow(), -1925, 0, 1500, 800, true);
     MoveWindow((HWND)sapp_win32_get_hwnd(), -1870, 50, 1500, 800, true);
@@ -2245,11 +2264,6 @@ static void init(void *userdata) {
         for (auto &buffer : g.decal_buffers) {
             buffer.buf = sg_make_buffer(d);
         }
-    }
-    {
-        // cld_load(g, "../cld/cld/ob01.cld");
-        // map_load(g, "map/ap100.map");
-        map_load(g, "map/ob01 (2).map");
     }
     if (0) {
         test_all_maps(g);
@@ -2498,6 +2512,17 @@ static void event(const sapp_event *e_, void *userdata) {
             }
         }
     }
+    if (e.type == SAPP_EVENTTYPE_KEY_DOWN) {
+        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_S && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+            g.control_s = true;
+            if (e.modifiers & SAPP_MODIFIER_SHIFT) {
+                g.control_shift_s = true;
+            }
+        }
+        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_O && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+            g.control_o = true;
+        }
+    }
     if (e.type == SAPP_EVENTTYPE_MOUSE_MOVE) {
         if (g.control_state == ControlState::Orbiting) {
             g.yaw += -e.mouse_dx * 3 * (0.022f * (TAU32 / 360));
@@ -2688,30 +2713,28 @@ char *win_import_or_export_dialog(LPWSTR formats, LPWSTR title, bool import = tr
         if (result) {
             // Success!
         } else {
-            MessageBoxA((HWND)sapp_win32_get_hwnd(), "Error generating filename!!\n\nSorry.", "OBJ Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+            MsgErr("OBJ Load Error", "Error generating filename!!\n\nSorry.");
         }
     } else {
         auto commdlg_err = CommDlgExtendedError();
         if (commdlg_err == 0) {
             // User closed/cancelled. No biggie! :D
         } else {
-            MessageBoxA((HWND)sapp_win32_get_hwnd(), "Couldn't open dialog box!!\n\nSorry.", "OBJ Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+            MsgErr("OBJ Load Error", "Couldn't open dialog box!!\n\nSorry.");
         }
     }
     return result;
 }
-bool dds_import(char *filename, MAP_Texture &result) {
-    FILE *f = PH2CLD__fopen(filename, "rb");
 #define FailIfFalse(e, s, ...) do { \
-    if (!(e)) { \
-    auto msg = mprintf("DDS import error:\n\n" s "\n\nSorry!", ##__VA_ARGS__); \
-    defer { free(msg); }; \
-    MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "DDS Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL); \
-    return false; \
-    } \
+        if (!(e)) { \
+            MsgErr("DDS Load Error", "DDS import error:\n\n" s "\n\nSorry!", ##__VA_ARGS__); \
+            return false; \
+        } \
     } while (0)
 
-        FailIfFalse(f, "File \"%s\" couldn't be opened.", filename);
+bool dds_import(char *filename, MAP_Texture &result) {
+    FILE *f = PH2CLD__fopen(filename, "rb");
+    FailIfFalse(f, "File \"%s\" couldn't be opened.", filename);
     defer {
         if (f) {
             fclose(f);
@@ -2801,7 +2824,7 @@ bool dds_import(char *filename, MAP_Texture &result) {
     result = tex;
     tex = {};
 
-    MessageBoxA((HWND)sapp_win32_get_hwnd(), "Imported!", "OBJ Import", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+    MsgInfo("DDS Import", "Imported!");
 
     return true;
 }
@@ -2818,19 +2841,102 @@ static void frame(void *userdata) {
         g.last_time = next;
     }
     simgui_new_frame({ sapp_width(), sapp_height(), dt, sapp_dpi_scale() });
-    ImGui::DockSpaceOverViewport(nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
-    {
-        ImGui::BeginMainMenuBar();
+    char *obj_file_buf = nullptr;
+    defer {
+        free(obj_file_buf);
+    };
+    char *dds_file_buf = nullptr;
+    defer {
+        free(dds_file_buf);
+    };
+    char *requested_save_filename = nullptr;
+    defer {
+        free(requested_save_filename);
+    };
+    if (ImGui::BeginMainMenuBar()) {
+        defer { ImGui::EndMainMenuBar(); };
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open...")) {
-
+            defer { ImGui::EndMenu(); };
+            if (ImGui::MenuItem("Open...", "Ctrl-O")) {
+                g.control_o = true;
             }
-            if (ImGui::MenuItem("Save")) {
-
+            if (ImGui::MenuItem("Save MAP", "Ctrl-S")) {
+                g.control_s = true;
+            }
+            if (ImGui::MenuItem("Save MAP As...", "Ctrl-Shift-S")) {
+                g.control_s = false;
+                g.control_shift_s = false;
+            }
+            if (ImGui::MenuItem("Import OBJ Model...")) {
+                obj_file_buf = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
+                                                            "All Files\0" "*.*\0",
+                                                           L"Open OBJ", true);
+            }
+            if (ImGui::MenuItem("Import DDS Texture...")) {
+                dds_file_buf = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds\0"
+                                                            "All Files\0" "*.*\0",
+                                                           L"Open DDS", true);
+            }
+            if (ImGui::MenuItem("Exit")) {
+                sapp_request_quit();
             }
         }
-        ImGui::EndMainMenuBar();
+        if (ImGui::BeginMenu("About")) {
+            defer { ImGui::EndMenu(); };
+            ImGui::MenuItem("Psilent pHill 2 Editor v0.001", nullptr, false, false);
+            ImGui::MenuItem("Built On: " __DATE__ " " __TIME__, nullptr, false, false);
+            ImGui::Separator();
+#define URL "https://github.com/pmttavara/ph2"
+            if (ImGui::MenuItem(URL)) {
+                // Okay, we'll be nice people and ask for confirmation.
+                if (MessageBoxA((HWND)sapp_win32_get_hwnd(),
+                    "This will open your browser to " URL ". Go?",
+                    "Open Site",
+                    MB_YESNO | MB_ICONINFORMATION | MB_SYSTEMMODAL) == IDYES) {
+                    ShellExecuteW(0, L"open", L"" URL, 0, 0, SW_SHOW);
+                }
+            }
+        }
     }
+    if (g.control_state != ControlState::Normal); // drop CTRL-S etc when orbiting/dragging
+    else if (g.control_o) {
+        char *load = win_import_or_export_dialog(L"Silent Hill 2 Files (*.map; *.cld)\0" "*.map;*.cld;*.map.bak\0",
+                                                 L"Open", true);
+        defer {
+            free(load);
+        };
+        // SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_CREATE, NULL, &wszPath
+        if (load) {
+            size_t n = strlen(load);
+            char *slash = max(strrchr(load, '/'), strrchr(load, '\\'));
+            char *dot = strrchr(load, '.');
+            if (dot > slash) {
+                if (strcmp(dot, ".cld") == 0) {
+                    cld_load(g, load);
+                } else if (strcmp(dot, ".map") == 0) {
+                    map_load(g, load);
+                } else {
+                    size_t mapbaklen = (sizeof(".map.bak") - 1);
+                    if (n >= mapbaklen && strcmp(load + n - mapbaklen, ".map.bak") == 0) {
+                        map_load(g, load);
+                    } else {
+                        MsgErr("File Load Error", "The file \"%s\"\ndoesn't have the file extension .CLD or .MAP.\nThe editor can only open files ending in .CLD or .MAP. Sorry!!", load);
+                    }
+                }
+            }
+        }
+    } else if (g.control_shift_s) {
+        requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
+                                                               "All Files\0" "*.*\0",
+                                                              L"Save MAP", false);
+    } else if (g.control_s) {
+        requested_save_filename = strdup(g.opened_map_filename);
+    }
+    // God, this is dumb. Lol. But it works!!!
+    g.control_s = false;
+    g.control_shift_s = false;
+    g.control_o = false;
+    ImGui::DockSpaceOverViewport(nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
     imgui_do_console(g);
     sapp_lock_mouse(g.control_state == ControlState::Orbiting);
     // sapp_show_mouse(g.control_state != ControlState::Dragging);
@@ -2875,15 +2981,6 @@ static void frame(void *userdata) {
             g.cam_pos = {};
             g.pitch = 0;
             g.yaw = 0;
-        }
-        char *obj_file_buf = nullptr;
-        defer {
-            free(obj_file_buf);
-        };
-        if (ImGui::Button("Import OBJ Model...")) {
-            obj_file_buf = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj;\0"
-                                                        "All Files\0" "*.*\0", 
-                                                        L"Open OBJ", true);
         }
         if (obj_file_buf) {
             FILE *f = PH2CLD__fopen(obj_file_buf, "r");
@@ -3050,21 +3147,11 @@ static void frame(void *userdata) {
                     g.cam_pos.Y *= -1 * SCALE;
                     g.cam_pos.Z *= -1 * SCALE;
                 }
-                MessageBoxA((HWND)sapp_win32_get_hwnd(), "Imported!", "OBJ Import", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+                
+                MsgInfo("OBJ Import", "Imported!");
             } else {
-                auto msg = mprintf("Couldn't open file \"%s\"!!", obj_file_buf);
-                defer { free(msg); };
-                MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "OBJ Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+                MsgErr("OBJ Load Error", "Couldn't open file \"%s\"!!", obj_file_buf);
             }
-        }
-        char *dds_file_buf = nullptr;
-        defer {
-            free(dds_file_buf);
-        };
-        if (ImGui::Button("Import DDS Texture...")) {
-            dds_file_buf = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds;\0"
-                                                        "All Files\0" "*.*\0",
-                                                       L"Open DDS", true);
         }
         if (dds_file_buf) { // Texture import
             MAP_Texture tex = {};
@@ -3590,35 +3677,44 @@ static void frame(void *userdata) {
             }
         }
 
-        if (ImGui::Button("Save")) {
+        if (requested_save_filename) {
             Array<uint8_t> filedata = {};
             defer {
                 filedata.release();
             };
             map_write_to_memory(g, &filedata);
             bool success = false;
-            if (g.opened_map_filename) {
-                char *bak_filename = mprintf("%s.%d.map.bak", g.opened_map_filename, (int)time(nullptr));
+            if (requested_save_filename) {
+                char *bak_filename = mprintf("%s.%d.map.bak", requested_save_filename, (int)time(nullptr));
                 if (bak_filename) {
-                    uint16_t *filename16 = utf8_to_utf16(g.opened_map_filename);
+                    uint16_t *filename16 = utf8_to_utf16(requested_save_filename);
                     if (filename16) {
+                        DWORD attr = GetFileAttributesW((LPCWSTR)filename16);
+                        // If the file exists, we need to back it up.
+                        bool backup = attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
                         uint16_t *bak_filename16 = utf8_to_utf16(bak_filename);
                         if (bak_filename16) {
-                            Log("Backing up to \"%s\"...", bak_filename);
-                            if (CopyFileW((LPCWSTR)filename16, (LPCWSTR)bak_filename16, TRUE)) {
-                                FILE *f = PH2CLD__fopen(g.opened_map_filename, "wb");
+                            if (backup) {
+                                Log("Backing up to \"%s\"...", bak_filename);
+                            }
+                            if (!backup || CopyFileW((LPCWSTR)filename16, (LPCWSTR)bak_filename16, TRUE)) {
+                                FILE *f = PH2CLD__fopen(requested_save_filename, "wb");
                                 if (f) {
                                     if (fwrite(filedata.data, 1, filedata.count, f) == (int)filedata.count) {
-                                        Log("Saved to \"%s\".", g.opened_map_filename);
+                                        Log("Saved to \"%s\".", requested_save_filename);
                                         success = true;
+                                        // Semi awful: commandeer the requested save filename
+                                        free(g.opened_map_filename);
+                                        g.opened_map_filename = requested_save_filename;
+                                        requested_save_filename = nullptr;
                                     } else {
-                                        Log("Couldn't write file data!!!", g.opened_map_filename);
+                                        Log("Couldn't write file data!!!");
                                     }
                                     fclose(f);
                                 } else {
-                                    Log("Couldn't open %s for writing", g.opened_map_filename);
+                                    Log("Couldn't open %s for writing", requested_save_filename);
                                 }
-                                if (!success) {
+                                if (!success && backup) {
                                     // Attempt to recover file contents by overwriting with the backup.
                                     if (CopyFileW((LPCWSTR)bak_filename16, (LPCWSTR)filename16, FALSE)) {
                                         Log("Restored file from backup.");
@@ -3633,7 +3729,9 @@ static void frame(void *userdata) {
                                     }
                                 }
                             } else {
-                                Log("Couldn't create backup file!!!");
+                                if (backup) {
+                                    Log("Couldn't create backup file!!!");
+                                }
                             }
                             free(bak_filename16);
                         } else {
@@ -3650,6 +3748,13 @@ static void frame(void *userdata) {
             } else {
                 Log("No file loaded!!!");
             }
+        }
+    }
+    {
+        auto s = mprintf("Psilent pHill 2 Editor%s%s", g.opened_map_filename ? " - " : "", g.opened_map_filename ? g.opened_map_filename : "");
+        if (s) {
+            sapp_set_window_title(s);
+            free(s);
         }
     }
     // @Hack: the map updates after Imgui gets an Image() call, but before Imgui renders,
@@ -3711,7 +3816,7 @@ static void frame(void *userdata) {
                 auto &tex = g.textures[g.texture_ui_selected];
                 char *dds_export_path = nullptr;
                 ImGui::SameLine(); if (ImGui::Button("Export DDS...")) {
-                    dds_export_path = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds;\0"
+                    dds_export_path = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds\0"
                                                                   "All Files\0" "*.*\0",
                                                                   L"Save DDS", false);
                 }
@@ -3740,12 +3845,9 @@ static void frame(void *userdata) {
                         header.caps = DDSCAPS_TEXTURE;
                         assert(fwrite(&header, sizeof(header), 1, f) == 1);
                         assert(fwrite(tex.pixel_data, tex.pixel_bytes, 1, f) == 1);
-
-                        MessageBoxA((HWND)sapp_win32_get_hwnd(), "Exported!", "DDS Export", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+                        MsgErr("DDS Export", "Exported!");
                     } else {
-                        auto msg = mprintf("Couldn't open file \"%s\"!!", dds_export_path);
-                        defer { free(msg); };
-                        MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "DDS Export Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+                        MsgErr("DDS Export Error", "Couldn't open file \"%s\"!!", dds_export_path);
                     }
                 };
                 if (dds_export_path) {
@@ -3754,7 +3856,7 @@ static void frame(void *userdata) {
 
                 char *dds_import_buf = nullptr;
                 ImGui::SameLine(); if (ImGui::Button("Replace with DDS...")) {
-                    dds_import_buf = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds;\0"
+                    dds_import_buf = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds\0"
                                                                   "All Files\0" "*.*\0",
                                                                  L"Open DDS", true);
                 }
@@ -4148,10 +4250,7 @@ static void cleanup(void *userdata) {
 }
 
 static void fail(const char *str) {
-    char b[512];
-    snprintf(b, sizeof(b), "There was an error during startup:\n    \"%s\"", str);
-    Log("%s", b);
-    MessageBoxA(0, b, "Fatal Error", MB_OK | MB_ICONERROR | MB_SYSTEMMODAL);
+    MsgErr("Fatal Error", "There was an error during startup:\n    \"%s\"", str);
 }
 
 char g_[sizeof(G)];
