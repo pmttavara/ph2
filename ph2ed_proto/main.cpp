@@ -1622,7 +1622,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         PH2MAP__Geometry_Header geometry_header = {};
                         Read(ptr2, geometry_header);
                         assert(geometry_header.group_size > 0);
-                        assert(geometry_header.group_size < 4 * 1024 * 1024);
+                        assert(geometry_header.group_size < 1024 * 1024 * 1024); // please have map files smaller than a gig, i guess.
                         assert(geometry_header.opaque_group_offset >= 0);
                         assert(geometry_header.transparent_group_offset >= 0);
                         assert(geometry_header.decal_group_offset >= 0);
@@ -2171,6 +2171,8 @@ static void init(void *userdata) {
     {
         ImGuiIO &io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        io.ConfigWindowsMoveFromTitleBarOnly = true;
+        io.ConfigWindowsResizeFromEdges = true; // Why doesn't this work???
 
         ImFontConfig fontCfg;
         fontCfg.FontDataOwnedByAtlas = false;
@@ -2335,10 +2337,12 @@ static Ray screen_to_ray(G &g, hmm_vec2 mouse_xy) {
 
 static void event(const sapp_event *e_, void *userdata) {
     G &g = *(G *)userdata;
-    simgui_handle_event(e_);
     const sapp_event &e = *e_;
-    if (ImGui::GetIO().WantCaptureMouse || ImGui::GetIO().WantCaptureKeyboard) {
-        return;
+    simgui_handle_event(&e);
+    if (g.control_state == ControlState::Normal) {
+        if (ImGui::GetIO().WantCaptureMouse || ImGui::GetIO().WantCaptureKeyboard) {
+            return;
+        }
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
         if (e.mouse_button == SAPP_MOUSEBUTTON_LEFT) {
@@ -2483,7 +2487,16 @@ static void event(const sapp_event *e_, void *userdata) {
         g.control_state = ControlState::Normal;
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_UP) {
-        g.control_state = ControlState::Normal;
+        if (g.control_state == ControlState::Orbiting) {
+            if (e.mouse_button == SAPP_MOUSEBUTTON_RIGHT) {
+                g.control_state = ControlState::Normal;
+            }
+        }
+        if (g.control_state == ControlState::Dragging) {
+            if (e.mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+                g.control_state = ControlState::Normal;
+            }
+        }
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_MOVE) {
         if (g.control_state == ControlState::Orbiting) {
@@ -2805,6 +2818,19 @@ static void frame(void *userdata) {
         g.last_time = next;
     }
     simgui_new_frame({ sapp_width(), sapp_height(), dt, sapp_dpi_scale() });
+    ImGui::DockSpaceOverViewport(nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+    {
+        ImGui::BeginMainMenuBar();
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Open...")) {
+
+            }
+            if (ImGui::MenuItem("Save")) {
+
+            }
+        }
+        ImGui::EndMainMenuBar();
+    }
     imgui_do_console(g);
     sapp_lock_mouse(g.control_state == ControlState::Orbiting);
     // sapp_show_mouse(g.control_state != ControlState::Dragging);
@@ -2839,7 +2865,7 @@ static void frame(void *userdata) {
         ImGui::GetStyle().Alpha = 1;
     }
     {
-        ImGui::Begin("Editor", nullptr, ImGuiWindowFlags_MenuBar);
+        ImGui::Begin("Editor");
         defer {
             ImGui::End();
         };
