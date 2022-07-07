@@ -3660,13 +3660,8 @@ static void frame(void *userdata) {
                 }
             } else {
                 auto &tex = g.textures[g.texture_ui_selected];
-                /*static char dds_export_path[512] = "";
-                ImGui::SameLine(); if (ImGui::Button("Export DDS...")) {
-                    ImGui::OpenPopup("export_dds_dialog");
-                    memset(dds_export_path, 0, sizeof(dds_export_path));
-                }*/
                 char *dds_export_path = nullptr;
-                if (ImGui::Button("Export DDS...")) {
+                ImGui::SameLine(); if (ImGui::Button("Export DDS...")) {
                     dds_export_path = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds;\0"
                                                                   "All Files\0" "*.*\0",
                                                                   L"Save DDS", false);
@@ -3709,7 +3704,7 @@ static void frame(void *userdata) {
                 }
 
                 char *dds_import_buf = nullptr;
-                if (ImGui::Button("Replace with DDS...")) {
+                ImGui::SameLine(); if (ImGui::Button("Replace with DDS...")) {
                     dds_import_buf = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds;\0"
                                                                   "All Files\0" "*.*\0",
                                                                  L"Open DDS", true);
