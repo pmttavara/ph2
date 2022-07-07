@@ -12,6 +12,7 @@
 #include <string.h>
 #include <stdio.h>
 
+#ifndef NDEBUG
 #include "stb_leakcheck.h"
 static inline void *stb_leakcheck_calloc(size_t n, size_t s, const char *file, int line) {
     size_t bytes = n * s;
@@ -35,6 +36,9 @@ static inline char *stb_leakcheck_strdup(const char *s) {
     return result;
 }
 #define strdup stb_leakcheck_strdup
+#else
+#include <stdlib.h>
+#endif
 
 
 #define WIN32_LEAN_AND_MEAN

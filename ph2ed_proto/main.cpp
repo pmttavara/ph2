@@ -8,6 +8,14 @@
 
 int num_array_resizes = 0;
 
+// Path to MVP:
+// - Multimesh movement
+// - Better move UX
+// - OBJ export
+// - Undo/redo
+// - MAP mesh vertex snapping
+
+
 // With editor widgets, you should probably be able to:
 //  - Box-select a group of vertices or edges
 //      - Drag that selection as a group in any direction (with or without axis- and plane-alignment)
@@ -114,6 +122,13 @@ static inline double get_time(void) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
 }
+#endif
+
+#ifdef NDEBUG
+#pragma comment(linker, "/subsystem:windows")
+#include "libs.cpp"
+#else
+#pragma comment(linker, "/subsystem:console")
 #endif
 
 // How's this done for Linux/etc?
@@ -298,6 +313,11 @@ struct G {
 
     ControlState control_state = {};
     float fov = FOV_DEFAULT;
+
+    float view_x = 0; // in PIXELS!
+    float view_y = 0;
+    float view_w = 1;
+    float view_h = 1;
 
     // These are REALLY dumb. But they work.
     bool control_s = false;
@@ -2164,6 +2184,12 @@ Ray_Vs_Plane_Result ray_vs_triangle(Ray ray, hmm_vec3 a, hmm_vec3 b, hmm_vec3 c)
     return raycast;
 }
 
+static bool file_exists(const uint16_t *filename16) {
+    DWORD attr = GetFileAttributesW((LPCWSTR)filename16);
+    return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+static bool file_exists(LPCWSTR filename16) { return file_exists((const uint16_t *)filename16); }
+
 void *operator new(size_t, void *ptr) { return ptr; }
 static void init(void *userdata) {
     double init_time = -get_time();
@@ -2171,8 +2197,10 @@ static void init(void *userdata) {
         init_time += get_time();
         // Log("Init() took %f seconds.", init_time);
     };
+#ifndef NDEBUG
     MoveWindow(GetConsoleWindow(), -1925, 0, 1500, 800, true);
     MoveWindow((HWND)sapp_win32_get_hwnd(), -1870, 50, 1500, 800, true);
+#endif
     G &g = *(G *)userdata;
     new (userdata) G{};
     g.last_time = get_time();
@@ -2183,14 +2211,68 @@ static void init(void *userdata) {
     simgui_desc_t simgui_desc = {};
     simgui_desc.no_default_font = true;
     simgui_desc.sample_count = sapp_sample_count();
-#ifdef NDEBUG
+    // @Note: Someday move imgui.ini to appdata? ==> // SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_CREATE, NULL, &wszPath);
     simgui_desc.ini_filename = "imgui.ini";
-#endif
     simgui_setup(&simgui_desc);
+    if (!file_exists(L"imgui.ini")) {
+        // Giga-@Hack.
+        ImGui::LoadIniSettingsFromMemory(R"(
+[Window][DockSpaceViewport_11111111]
+Pos=0,20
+Size=1536,789
+Collapsed=0
+
+[Window][Debug##Default]
+Pos=60,60
+Size=400,400
+Collapsed=0
+
+[Window][Console]
+Pos=1080,553
+Size=456,256
+Collapsed=0
+DockId=0x0000000A,0
+
+[Window][Editor]
+Pos=0,20
+Size=432,531
+Collapsed=0
+DockId=0x00000003,0
+
+[Window][Textures]
+Pos=0,553
+Size=470,256
+Collapsed=0
+DockId=0x00000007,0
+
+[Window][Materials]
+Pos=472,553
+Size=606,256
+Collapsed=0
+DockId=0x00000009,0
+
+[Window][View]
+Pos=434,20
+Size=1102,531
+Collapsed=0
+DockId=0x00000004,0
+
+[Docking][Data]
+DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y
+  DockNode      ID=0x00000005 Parent=0x8B93E3BD SizeRef=1484,483 Split=X
+    DockNode    ID=0x00000003 Parent=0x00000005 SizeRef=432,741 Selected=0x9F27EDF6
+    DockNode    ID=0x00000004 Parent=0x00000005 SizeRef=1050,741 CentralNode=1 Selected=0x530C566C
+  DockNode      ID=0x00000006 Parent=0x8B93E3BD SizeRef=1484,256 Split=X Selected=0xFC744897
+    DockNode    ID=0x00000007 Parent=0x00000006 SizeRef=454,256 Selected=0xFC744897
+    DockNode    ID=0x00000008 Parent=0x00000006 SizeRef=1028,256 Split=X Selected=0x6AE1E39D
+      DockNode  ID=0x00000009 Parent=0x00000008 SizeRef=585,256 Selected=0x6AE1E39D
+      DockNode  ID=0x0000000A Parent=0x00000008 SizeRef=441,256 Selected=0x49278EEE
+)");
+    }
     {
         ImGuiIO &io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        io.ConfigWindowsMoveFromTitleBarOnly = true;
+        io.ConfigWindowsMoveFromTitleBarOnly = false; // only really needed because the resize widget is in the bottom right corner and we can't resize from edges for some reason...
         io.ConfigWindowsResizeFromEdges = true; // Why doesn't this work???
 
         ImFontConfig fontCfg;
@@ -2338,12 +2420,12 @@ static Ray screen_to_ray(G &g, hmm_vec2 mouse_xy) {
     Ray ray = {};
     ray.pos = { g.cam_pos.X, g.cam_pos.Y, g.cam_pos.Z };
     hmm_vec2 ndc = { mouse_xy.X, mouse_xy.Y };
-    ndc.X = ndc.X / sapp_widthf() * 2 - 1;
-    ndc.Y = ndc.Y / sapp_heightf() * -2 + 1;
+    ndc.X = ((ndc.X - g.view_x) / g.view_w) * 2 - 1;
+    ndc.Y = ((ndc.Y - g.view_y) / g.view_h) * -2 + 1;
     //Log("NDC %f, %f", ndc.X, ndc.Y);
     hmm_vec4 ray_dir4 = { ndc.X, ndc.Y, -1, 0 };
     ray_dir4.XY *= tanf(g.fov / 2);
-    ray_dir4.X *= sapp_widthf() / sapp_heightf();
+    ray_dir4.X *= g.view_w / g.view_h;
     ray_dir4 = camera_rot(g) * ray_dir4;
     ray.dir = HMM_Normalize(ray_dir4.XYZ);
     return ray;
@@ -2352,9 +2434,42 @@ static Ray screen_to_ray(G &g, hmm_vec2 mouse_xy) {
 static void event(const sapp_event *e_, void *userdata) {
     G &g = *(G *)userdata;
     const sapp_event &e = *e_;
+    if (e.type == SAPP_EVENTTYPE_UNFOCUSED) {
+        g.control_state = ControlState::Normal;
+    }
+    if (e.type == SAPP_EVENTTYPE_MOUSE_UP) {
+        if (g.control_state == ControlState::Orbiting) {
+            if (e.mouse_button == SAPP_MOUSEBUTTON_RIGHT) {
+                g.control_state = ControlState::Normal;
+            }
+        }
+        if (g.control_state == ControlState::Dragging) {
+            if (e.mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+                g.control_state = ControlState::Normal;
+            }
+        }
+    }
+    if (e.type == SAPP_EVENTTYPE_KEY_DOWN) {
+        if (!e.key_repeat &&
+            (e.key_code == SAPP_KEYCODE_F11) ||
+            (e.key_code == SAPP_KEYCODE_ENTER && (e.modifiers & SAPP_MODIFIER_ALT))) {
+            sapp_toggle_fullscreen();
+        }
+        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_S && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+            g.control_s = true;
+            if (e.modifiers & SAPP_MODIFIER_SHIFT) {
+                g.control_shift_s = true;
+            }
+        }
+        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_O && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+            g.control_o = true;
+        }
+    }
     simgui_handle_event(&e);
     if (g.control_state == ControlState::Normal) {
-        if (ImGui::GetIO().WantCaptureMouse || ImGui::GetIO().WantCaptureKeyboard) {
+        bool mouse_in_viewport = (e.mouse_x >= g.view_x && e.mouse_x <= g.view_x + g.view_w &&
+                                  e.mouse_y >= g.view_y && e.mouse_y <= g.view_y + g.view_h);
+        if (!mouse_in_viewport || ImGui::GetIO().WantCaptureKeyboard) {
             return;
         }
     }
@@ -2495,32 +2610,6 @@ static void event(const sapp_event *e_, void *userdata) {
         }
         if (e.mouse_button == SAPP_MOUSEBUTTON_RIGHT) {
             g.control_state = ControlState::Orbiting;
-        }
-    }
-    if (e.type == SAPP_EVENTTYPE_UNFOCUSED) {
-        g.control_state = ControlState::Normal;
-    }
-    if (e.type == SAPP_EVENTTYPE_MOUSE_UP) {
-        if (g.control_state == ControlState::Orbiting) {
-            if (e.mouse_button == SAPP_MOUSEBUTTON_RIGHT) {
-                g.control_state = ControlState::Normal;
-            }
-        }
-        if (g.control_state == ControlState::Dragging) {
-            if (e.mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-                g.control_state = ControlState::Normal;
-            }
-        }
-    }
-    if (e.type == SAPP_EVENTTYPE_KEY_DOWN) {
-        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_S && (e.modifiers & SAPP_MODIFIER_CTRL)) {
-            g.control_s = true;
-            if (e.modifiers & SAPP_MODIFIER_SHIFT) {
-                g.control_shift_s = true;
-            }
-        }
-        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_O && (e.modifiers & SAPP_MODIFIER_CTRL)) {
-            g.control_o = true;
         }
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_MOVE) {
@@ -2691,7 +2780,7 @@ struct my_dds_header {
     uint32_t caps4;
     uint32_t reserved2;
 };
-char *win_import_or_export_dialog(LPWSTR formats, LPWSTR title, bool import = true) {
+char *win_import_or_export_dialog(LPCWSTR formats, LPCWSTR title, bool import = true) {
     char *result = nullptr;
     assert(formats);
     OPENFILENAMEW ofn = {};
@@ -2829,6 +2918,7 @@ bool dds_import(char *filename, MAP_Texture &result) {
     return true;
 }
 
+static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd);
 static void frame(void *userdata) {
     G &g = *(G *)userdata;
     float dt = 0;
@@ -2905,7 +2995,6 @@ static void frame(void *userdata) {
         defer {
             free(load);
         };
-        // SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_CREATE, NULL, &wszPath
         if (load) {
             size_t n = strlen(load);
             char *slash = max(strrchr(load, '/'), strrchr(load, '\\'));
@@ -2965,11 +3054,10 @@ static void frame(void *userdata) {
         translate = camera_rot(g) * translate;
         g.cam_pos += translate.XYZ;
     }
-    if (g.control_state != ControlState::Normal) {
-        ImGui::GetStyle().Alpha = 0.333f;
-    } else {
-        ImGui::GetStyle().Alpha = 1;
-    }
+    ImGui::GetStyle().Alpha = 1;
+    // if (g.control_state != ControlState::Normal) {
+    //     ImGui::GetStyle().Alpha = 0.333f;
+    // }
     {
         ImGui::Begin("Editor");
         defer {
@@ -3689,9 +3777,8 @@ static void frame(void *userdata) {
                 if (bak_filename) {
                     uint16_t *filename16 = utf8_to_utf16(requested_save_filename);
                     if (filename16) {
-                        DWORD attr = GetFileAttributesW((LPCWSTR)filename16);
                         // If the file exists, we need to back it up.
-                        bool backup = attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+                        bool backup = file_exists(filename16);
                         uint16_t *bak_filename16 = utf8_to_utf16(bak_filename);
                         if (bak_filename16) {
                             if (backup) {
@@ -3845,7 +3932,7 @@ static void frame(void *userdata) {
                         header.caps = DDSCAPS_TEXTURE;
                         assert(fwrite(&header, sizeof(header), 1, f) == 1);
                         assert(fwrite(tex.pixel_data, tex.pixel_bytes, 1, f) == 1);
-                        MsgErr("DDS Export", "Exported!");
+                        MsgInfo("DDS Export", "Exported!");
                     } else {
                         MsgErr("DDS Export Error", "Couldn't open file \"%s\"!!", dds_export_path);
                     }
@@ -3980,6 +4067,24 @@ static void frame(void *userdata) {
             g.materials.push(mat);
         }
     }
+    {
+        ImGui::SetNextWindowPos(ImVec2 { sapp_width() * 0.5f, 20 }, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(sapp_width() * 0.5f, sapp_height() * 0.5f - 20), ImGuiCond_FirstUseEver);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 1);
+        ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 1);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, {0, 0, 0, 1});
+        defer {
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor();
+        };
+        if (ImGui::Begin("View")) {
+            defer {
+                ImGui::End();
+            };
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            dl->AddCallback(viewport_callback, &g);
+        }
+    }
     if (g.cld_must_update) {
         bool can_update = true;
         for (auto &buf : g.cld_face_buffers) {
@@ -4018,9 +4123,36 @@ static void frame(void *userdata) {
         p.depth.action = SG_ACTION_CLEAR;
         p.depth.value = 0;
         sg_begin_default_pass(p, sapp_width(), sapp_height());
-        defer {
-            sg_end_pass();
-        };
+        // ImDrawCmd cmd = {};
+        // cmd.UserCallbackData = &g;
+        // viewport_callback(nullptr, &cmd);
+        simgui_render();
+        sg_end_pass();
+        sg_commit();
+    }
+}
+static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
+    (void)dl;
+    G &g = *(G *)cmd->UserCallbackData;
+    // first set the viewport rectangle to render in, same as
+    // the ImGui draw command's clip rect
+    const int cx = (int) cmd->ClipRect.x;
+    const int cy = (int) cmd->ClipRect.y;
+    const int cw = (int) (cmd->ClipRect.z - cmd->ClipRect.x);
+    const int ch = (int) (cmd->ClipRect.w - cmd->ClipRect.y);
+    sg_apply_scissor_rect((int)(cx * sapp_dpi_scale()),
+                          (int)(cy * sapp_dpi_scale()),
+                          (int)(cw * sapp_dpi_scale()),
+                          (int)(ch * sapp_dpi_scale()), true);
+    sg_apply_viewport((int)(cx * sapp_dpi_scale()),
+                      (int)(cy * sapp_dpi_scale()),
+                      (int)(cw * sapp_dpi_scale()),
+                      (int)(ch * sapp_dpi_scale()), true);
+    g.view_x = (float)cx * sapp_dpi_scale();
+    g.view_y = (float)cy * sapp_dpi_scale();
+    g.view_w = (float)cw * sapp_dpi_scale();
+    g.view_h = (float)ch * sapp_dpi_scale();
+    {
         hmm_mat4 perspective = {};
         {
             if (g.fov < FOV_MIN) {
@@ -4032,7 +4164,7 @@ static void frame(void *userdata) {
             const float cot_half_fov = 1 / tanf(g.fov / 2);
             const float near_z = 0.01f;
             const float far_z = 1000.0f;
-            float aspect_ratio = sapp_widthf() / sapp_heightf();
+            float aspect_ratio = (float)cw / ch;
             // @Note: This is not the right projection matrix for default OpenGL, because its clip range is [-1,+1].
             //        You can call glClipControl to fix it, except in GLES2 where you need to fudge the matrix. Too bad!
             //perspective = hmm_mat4 {
@@ -4236,9 +4368,7 @@ static void frame(void *userdata) {
                 }
             }
         }
-        simgui_render();
     }
-    sg_commit();
 }
 
 static void cleanup(void *userdata) {
@@ -4246,7 +4376,9 @@ static void cleanup(void *userdata) {
     g.release();
     simgui_shutdown();
     sg_shutdown();
+#ifndef NDEBUG
     stb_leakcheck_dumpmem();
+#endif
 }
 
 static void fail(const char *str) {

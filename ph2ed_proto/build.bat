@@ -1,5 +1,8 @@
 @echo off
+
 sokol-shdc -i shaders.glsl -o shaders.glsl.h --slang hlsl5 --bytecode || exit /b 1
+
+:: Debug modes:
 
 cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -EHa- main.cpp -c -Fomain.obj || exit /b 1
 cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -EHa- libs.cpp -c -Folibs.obj || exit /b 1
@@ -9,3 +12,8 @@ cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -EHa- libs.cpp -c -Fo
 :: link -debug -incremental:no -nologo main.obj libs.obj /out:ph2ed_proto.exe legacy_stdio_definitions.lib comdlg32.lib || exit /b 1
 lld-link -debug -incremental:no -nologo main.obj libs.obj /out:ph2ed_proto.exe legacy_stdio_definitions.lib comdlg32.lib || exit /b 1
 :: clang -fuse-ld=lld -g -gfull main.obj libs.obj -o ph2ed_proto.exe -fsanitize=address -fsanitize=undefined -llegacy_stdio_definitions -lcomdlg32 || exit /b 1
+
+:: Release mode:
+
+:: clang-cl -fuse-ld=lld -DNDEBUG -O2 -Z7 -nologo -EHa- main.cpp -c -Fomain.obj || exit /b 1
+:: clang -fuse-ld=lld -g -gfull main.obj -o ph2ed_proto.exe -llegacy_stdio_definitions -lcomdlg32 || exit /b 1
