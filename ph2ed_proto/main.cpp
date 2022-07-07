@@ -2871,7 +2871,9 @@ static void frame(void *userdata) {
                 Array<hmm_vec3> normals = {}; defer { normals.release(); };
                 // Array<uint32_t> colours = {}; defer { colours.release(); };
                 Array<PH2MAP__Vertex20> verts = {}; defer { verts.release(); }; // @Errdefer
-                Array<uint16_t> stripped_indices = {}; defer { stripped_indices.release(); }; // @Errdefer
+
+                Array<uint16_t> unstripped_indices = {}; defer { unstripped_indices.release(); };
+
                 char b[1024];
                 hmm_vec3 center = {};
                 while (fgets(b, sizeof b, f)) {
@@ -2907,7 +2909,7 @@ static void frame(void *userdata) {
                         // Triangle/Quad
                         assert(matches == 4 || matches == 5);
                         // Log("Triangle/Quad: (%s, %s, %s%s%s)", args[0], args[1], args[2], matches == 5 ? ", " : "", matches == 5 ? args[3] : "");
-                        int indices_uploaded[4] = {};
+                        int indices_to_push[4] = {};
                         for (int i = 0; i < matches - 1; i++) {
                             PH2MAP__Vertex20 vert = {};
                             int index_pos = 0;
@@ -2948,19 +2950,15 @@ static void frame(void *userdata) {
                                 }
                             }
                             verts.push(vert);
-                            indices_uploaded[i] = (int)verts.count - 1;
+                            indices_to_push[i] = (int)verts.count - 1;
                         }
-                        stripped_indices.push((uint16_t)indices_uploaded[0]);
-                        stripped_indices.push((uint16_t)indices_uploaded[0]);
-                        stripped_indices.push((uint16_t)indices_uploaded[2]);
-                        stripped_indices.push((uint16_t)indices_uploaded[1]);
-                        stripped_indices.push((uint16_t)indices_uploaded[1]);
+                        unstripped_indices.push((uint16_t)indices_to_push[0]);
+                        unstripped_indices.push((uint16_t)indices_to_push[1]);
+                        unstripped_indices.push((uint16_t)indices_to_push[2]);
                         if (matches == 5) { // Quad - upload another triangle
-                            stripped_indices.push((uint16_t)indices_uploaded[0]);
-                            stripped_indices.push((uint16_t)indices_uploaded[0]);
-                            stripped_indices.push((uint16_t)indices_uploaded[2]);
-                            stripped_indices.push((uint16_t)indices_uploaded[3]);
-                            stripped_indices.push((uint16_t)indices_uploaded[3]);
+                            unstripped_indices.push((uint16_t)indices_to_push[0]);
+                            unstripped_indices.push((uint16_t)indices_to_push[2]);
+                            unstripped_indices.push((uint16_t)indices_to_push[3]);
                         }
                     }
                     memset(b, 0, sizeof b);
@@ -2968,30 +2966,55 @@ static void frame(void *userdata) {
                 // Log("We got %lld positions, %lld uvs, %lld normals.", positions.count, uvs.count, normals.count);
                 // Log("We built %lld vertices.", verts.count);
                 // Log("We built %lld stripped indices.", stripped_indices.count);
-                MAP_Mesh &mesh = *g.opaque_meshes.push();
-                g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
-                MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
-                assert(verts.count < 65536);
-                assert(stripped_indices.count < 65536);
-                { // Commandeer ownership of the verts array
-                    buf.data = (char *)realloc(verts.data, verts.count * sizeof(verts[0]));
-                    assert(buf.data);
-                    buf.num_vertices = (uint16_t)verts.count;
-                    buf.bytes_per_vertex = sizeof(verts[0]);
-                    verts = {};
-                }
-                MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
-                group.material_index = 0; // @Todo
-                group.section_index = 0;
-                MAP_Mesh_Part &part = *group.mesh_parts.push();
-                part.strip_count = 1;
-                part.strip_length = (uint16_t)stripped_indices.count;
-                mesh.indices = stripped_indices;
-                stripped_indices = {};
-                g.map_must_update = true;
+                MAP_Mesh mesh = {}; defer { mesh.release(); }; // @Errdefer
 
-                assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_count > 0);
-                assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_length > 0);
+                static PH2MAP__Vertex20 mesh_verts[65536] = {};
+                int mesh_verts_count = 0;
+
+                auto flush_mesh = [&] { // @Todo: return bool
+                    MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
+                    buf.data = (char *)malloc(mesh_verts_count * sizeof(mesh_verts[0]));
+                    assert(buf.data);
+                    buf.num_vertices = mesh_verts_count;
+                    buf.bytes_per_vertex = sizeof(mesh_verts[0]);
+                    memcpy(buf.data, mesh_verts, mesh_verts_count * sizeof(mesh_verts[0]));
+
+                    MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
+                    group.material_index = 0; // @Todo
+                    group.section_index = 0;
+                    MAP_Mesh_Part &part = *group.mesh_parts.push();
+                    part.strip_count = 1;
+                    part.strip_length = (uint16_t)mesh.indices.count;
+                    assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_count > 0);
+                    assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_length > 0);
+
+                    g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
+                    g.opaque_meshes.push(mesh);
+                    mesh = {};
+                    mesh_verts_count = 0;
+                };
+
+                int64_t rolling_indices_index = 0;
+                for (int64_t i = 0; i < unstripped_indices.count; i += 3) {
+                    mesh_verts[mesh_verts_count++] = verts[unstripped_indices[i + 0]];
+                    mesh_verts[mesh_verts_count++] = verts[unstripped_indices[i + 1]];
+                    mesh_verts[mesh_verts_count++] = verts[unstripped_indices[i + 2]];
+                    assert(i + 0 - rolling_indices_index >= 0);
+                    assert(i + 2 - rolling_indices_index < 65536);
+                    mesh.indices.push((int16_t)(i + 0 - rolling_indices_index));
+                    mesh.indices.push((int16_t)(i + 0 - rolling_indices_index));
+                    mesh.indices.push((int16_t)(i + 1 - rolling_indices_index));
+                    mesh.indices.push((int16_t)(i + 2 - rolling_indices_index));
+                    mesh.indices.push((int16_t)(i + 2 - rolling_indices_index));
+                    if (mesh_verts_count >= 65535 - 3 ||
+                        mesh.indices.count >= 65535 - 3) {
+                        rolling_indices_index += mesh_verts_count;
+                        flush_mesh();
+                    }
+                }
+                flush_mesh();
+
+                g.map_must_update = true;
 
                 assert(positions.count);
                 if (positions.count) {
