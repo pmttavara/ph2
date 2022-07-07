@@ -66,6 +66,7 @@ void LogC_(uint32_t c, const char *fmt, ...) {
 
 #include "shaders.glsl.h"
 #include <ddraw.h>
+#include <commdlg.h>
 
 sg_context_desc sapp_sgcontext(void);
 
@@ -1562,7 +1563,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         // Log("%d array resizes", num_array_resizes - prev_num_array_resizes);
     };
     
-    enum { MAP_FILE_DATA_LENGTH_MAX = 16 * 1024 * 1024 }; // @Temporary?    
+    enum { MAP_FILE_DATA_LENGTH_MAX = 32 * 1024 * 1024 }; // @Temporary?    
     static char filedata_do_not_modify_me_please[MAP_FILE_DATA_LENGTH_MAX]; // @Temporary
     uint32_t file_len_do_not_modify_me_please = 0;
     {
@@ -2629,6 +2630,169 @@ static void event(const sapp_event *e_, void *userdata) {
     }
 }
 
+struct my_dds_header {
+    uint32_t size;
+    uint32_t flags;
+    uint32_t height;
+    uint32_t width;
+    uint32_t pitch_or_linear_size;
+    uint32_t depth;
+    uint32_t mip_map_count;
+    uint32_t reserved1[11];
+    uint32_t pixelformat_size;
+    uint32_t pixelformat_flags;
+    uint32_t pixelformat_four_cc;
+    uint32_t pixelformat_rgb_bit_count;
+    uint32_t pixelformat_r_bit_mask;
+    uint32_t pixelformat_g_bit_mask;
+    uint32_t pixelformat_b_bit_mask;
+    uint32_t pixelformat_a_bit_mask;
+    uint32_t caps;
+    uint32_t caps2;
+    uint32_t caps3;
+    uint32_t caps4;
+    uint32_t reserved2;
+};
+char *win_import_or_export_dialog(LPWSTR formats, LPWSTR title, bool import = true) {
+    char *result = nullptr;
+    assert(formats);
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = (HWND)sapp_win32_get_hwnd();
+    ofn.lpstrFilter = formats;
+    ofn.nFilterIndex = 1;
+    uint16_t buf[65536] = {};
+    ofn.lpstrFile = (LPWSTR)buf;
+    ofn.nMaxFile = (DWORD)countof(buf) - 1;
+    ofn.lpstrTitle = title;
+    ofn.Flags |= OFN_DONTADDTORECENT;
+    ofn.Flags |= OFN_FILEMUSTEXIST;
+    if (!import) {
+        ofn.Flags |= OFN_OVERWRITEPROMPT;
+    }
+    if (import ? GetOpenFileNameW(&ofn) : GetSaveFileNameW(&ofn)) {
+        result = utf16_to_utf8(buf);
+        if (result) {
+            // Success!
+        } else {
+            MessageBoxA((HWND)sapp_win32_get_hwnd(), "Error generating filename!!\n\nSorry.", "OBJ Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+        }
+    } else {
+        auto commdlg_err = CommDlgExtendedError();
+        if (commdlg_err == 0) {
+            // User closed/cancelled. No biggie! :D
+        } else {
+            MessageBoxA((HWND)sapp_win32_get_hwnd(), "Couldn't open dialog box!!\n\nSorry.", "OBJ Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+        }
+    }
+    return result;
+}
+bool dds_import(char *filename, MAP_Texture &result) {
+    FILE *f = PH2CLD__fopen(filename, "rb");
+#define FailIfFalse(e, s, ...) do { \
+    if (!(e)) { \
+    auto msg = mprintf("DDS import error:\n\n" s "\n\nSorry!", ##__VA_ARGS__); \
+    defer { free(msg); }; \
+    MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "DDS Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL); \
+    return false; \
+    } \
+    } while (0)
+
+        FailIfFalse(f, "File \"%s\" couldn't be opened.", filename);
+    defer {
+        if (f) {
+            fclose(f);
+        }
+    };
+
+    char magic[4];
+    FailIfFalse(fread(magic, 4, 1, f) == 1, "File read error. (4 byte magic number read failed)");
+    FailIfFalse(strncmp(magic, "DDS\x20", 4) == 0, "File doesn't seem to be a DDS file. (Magic bytes \"DDS\\x20\" not present)");
+    my_dds_header header = {};
+    static_assert(sizeof(header) == 128 - 4, "");
+    FailIfFalse(fread(&header, sizeof(header), 1, f) == 1, "File read error. (Couldn't read header)");
+    FailIfFalse(header.size == sizeof(header), "DDS file seems corrupt or unsupported by this editor. (Header's size field was wrong - should be 124, was %d)", header.size);
+
+    // DDSD_CAPS Required in every .dds file. 0x1
+    // DDSD_HEIGHT Required in every .dds file. 0x2
+    // DDSD_WIDTH Required in every .dds file. 0x4
+    // DDSD_PITCH Required when pitch is provided for an uncompressed texture. 0x8
+    // DDSD_PIXELFORMAT Required in every .dds file. 0x1000
+    // DDSD_MIPMAPCOUNT Required in a mipmapped texture. 0x20000
+    // DDSD_LINEARSIZE Required when pitch is provided for a compressed texture. 0x80000
+    // DDSD_DEPTH Required in a depth texture. 0x800000
+    FailIfFalse(!!(header.flags & DDSD_CAPS), "DDS file seems corrupt. (Header flags doesn't have DDSD_CAPS set)");
+    FailIfFalse(!!(header.flags & DDSD_HEIGHT), "DDS file seems corrupt. (Header flags doesn't have DDSD_HEIGHT set)");
+    FailIfFalse(!!(header.flags & DDSD_WIDTH), "DDS file seems corrupt. (Header flags doesn't have DDSD_WIDTH set)");
+    FailIfFalse( !(header.flags & DDSD_PITCH), "DDS file seems like an uncompressed format --\nthat doesn't work for SH2!\n(Header flags has DDSD_PITCH set)");
+    FailIfFalse(!!(header.flags & DDSD_PIXELFORMAT), "DDS file seems corrupt. (Header flags doesn't have DDSD_PIXELFORMAT set)");
+    FailIfFalse( !(header.flags & DDSD_MIPMAPCOUNT) || header.mip_map_count <= 1, "DDS file has mipmaps -- that doesn't work for SH2!\n(Header flags has DDSD_MIPMAPCOUNT set and the count is > 1)");
+    FailIfFalse(!!(header.flags & DDSD_LINEARSIZE), "DDS file doesn't have compressed length --\nthis must be known to import!\n(Header flags doesn't have DDSD_LINEARSIZE set)");
+    FailIfFalse( !(header.flags & DDSD_DEPTH), "DDS file apparently has multiple depth layers --\nthat's doesn't work for SH2!\n(Header flags has DDSD_DEPTH set)");
+
+    FailIfFalse(header.pixelformat_size == 32, "DDS pixel format is broken/corrupt. (Pixel format size field isn't set to 32)");
+
+    FailIfFalse(header.pixelformat_four_cc == FOURCC_DXT1 ||
+        header.pixelformat_four_cc == FOURCC_DXT2 ||
+        header.pixelformat_four_cc == FOURCC_DXT3 ||
+        header.pixelformat_four_cc == FOURCC_DXT4 ||
+        header.pixelformat_four_cc == FOURCC_DXT5,
+        "DDS file has a format that isn't\n"
+        "DXT1/DXT2/DXT3/DXT4/DXT5 (BC1/BC2/BC3) --\n"
+        "that doesn't work for SH2!\n"
+        "(FourCC == \"%c%c%c%c\")",
+        ((header.pixelformat_four_cc >>  0) & 255),
+        ((header.pixelformat_four_cc >>  8) & 255),
+        ((header.pixelformat_four_cc >> 16) & 255),
+        ((header.pixelformat_four_cc >> 24) & 255));
+
+    FailIfFalse((header.width & (header.width - 1)) == 0, "DDS texture must be a power of 2 in width. (Width is %d)", header.width);
+    FailIfFalse((header.height & (header.height - 1)) == 0, "DDS texture must be a power of 2 in height. (Height is %d)", header.height);
+    FailIfFalse(header.width <= 4096, "DDS texture must be less than 4096x4096. Width is too big! (Texture is %dx%d)", header.width, header.height);
+    FailIfFalse(header.height <= 4096, "DDS texture must be less than 4096x4096. Height is too big! (Texture is %dx%d)", header.width, header.height);
+
+    FailIfFalse(header.pitch_or_linear_size > 0, "DDS texture looks to be empty! (Compressed texture size is %d)", header.pitch_or_linear_size);
+    FailIfFalse(header.pitch_or_linear_size <= 4096 * 4096 * 4 / 4, "DDS texture can't be too big! (Compressed texture size is %d)", header.pitch_or_linear_size); // rough estimate, it's whatever.
+
+    MAP_Texture tex = {};
+    defer { // @Errdefer
+        tex.release();
+    };
+    tex.id = 0xffff;
+    tex.width = (uint16_t)header.width;
+    tex.height = (uint16_t)header.height;
+    tex.material = 1;
+    tex.sprite_count = 1;
+    tex.sprite_metadata[0].id = 1;
+    switch (header.pixelformat_four_cc) {
+        case FOURCC_DXT1: { tex.format = (uint8_t)MAP_Texture_Format_BC1; } break;
+        case FOURCC_DXT2: { tex.format = (uint8_t)MAP_Texture_Format_BC2; } break;
+        case FOURCC_DXT3: { tex.format = (uint8_t)MAP_Texture_Format_BC2; } break;
+        case FOURCC_DXT4: { tex.format = (uint8_t)MAP_Texture_Format_BC3; } break;
+        case FOURCC_DXT5: { tex.format = (uint8_t)MAP_Texture_Format_BC3; } break;
+        default: { assert(false); } break;
+    }
+    // @Note: *PRETTY* sure this is fine??
+    switch (tex.format) {
+        case MAP_Texture_Format_BC1: { tex.sprite_metadata[0].format = 0x100; } break;
+        case MAP_Texture_Format_BC2: { tex.sprite_metadata[0].format = 0x102; } break;
+        case MAP_Texture_Format_BC3: { tex.sprite_metadata[0].format = 0x103; } break;
+        default: { assert(false); } break;
+    }
+
+    tex.pixel_bytes = header.pitch_or_linear_size;
+    tex.pixel_data = malloc(header.pitch_or_linear_size);
+    FailIfFalse(tex.pixel_data, "Texture data couldn't be allocated in memory.");
+    FailIfFalse(fread(tex.pixel_data, tex.pixel_bytes, 1, f) == 1, "File read error reading the texture data. File too small?");
+
+    result = tex;
+    tex = {};
+
+    MessageBoxA((HWND)sapp_win32_get_hwnd(), "Imported!", "OBJ Import", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+
+    return true;
+}
+
 static void frame(void *userdata) {
     G &g = *(G *)userdata;
     float dt = 0;
@@ -2674,29 +2838,6 @@ static void frame(void *userdata) {
     } else {
         ImGui::GetStyle().Alpha = 1;
     }
-    struct my_dds_header {
-        uint32_t size;
-        uint32_t flags;
-        uint32_t height;
-        uint32_t width;
-        uint32_t pitch_or_linear_size;
-        uint32_t depth;
-        uint32_t mip_map_count;
-        uint32_t reserved1[11];
-        uint32_t pixelformat_size;
-        uint32_t pixelformat_flags;
-        uint32_t pixelformat_four_cc;
-        uint32_t pixelformat_rgb_bit_count;
-        uint32_t pixelformat_r_bit_mask;
-        uint32_t pixelformat_g_bit_mask;
-        uint32_t pixelformat_b_bit_mask;
-        uint32_t pixelformat_a_bit_mask;
-        uint32_t caps;
-        uint32_t caps2;
-        uint32_t caps3;
-        uint32_t caps4;
-        uint32_t reserved2;
-    };
     {
         ImGui::Begin("Editor", nullptr, ImGuiWindowFlags_MenuBar);
         defer {
@@ -2709,9 +2850,16 @@ static void frame(void *userdata) {
             g.pitch = 0;
             g.yaw = 0;
         }
-        static char obj_file_buf[1024];
-        ImGui::InputText("OBJ File", obj_file_buf, sizeof(obj_file_buf));
-        ImGui::SameLine(); if (ImGui::Button("Import###OBJ file import")) {
+        char *obj_file_buf = nullptr;
+        defer {
+            free(obj_file_buf);
+        };
+        if (ImGui::Button("Import OBJ Model...")) {
+            obj_file_buf = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj;\0"
+                                                        "All Files\0" "*.*\0", 
+                                                        L"Open OBJ", true);
+        }
+        if (obj_file_buf) {
             FILE *f = PH2CLD__fopen(obj_file_buf, "r");
             if (f) {
                 defer {
@@ -2860,106 +3008,22 @@ static void frame(void *userdata) {
                 MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "OBJ Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
             }
         }
-        static char dds_file_buf[1024] = "qp01.map_tex_012.dds";
-        ImGui::InputText("DDS File", dds_file_buf, sizeof(dds_file_buf));
-        ImGui::SameLine(); if (ImGui::Button("Import###DDS file import")) { // Texture import
-            FILE *f = PH2CLD__fopen(dds_file_buf, "rb");
-            if (f) {
-                defer {
-                    fclose(f);
-                };
-
-                char magic[4];
-                assert(fread(magic, 4, 1, f) == 1);
-                assert(strncmp(magic, "DDS\x20", 4) == 0);
-                my_dds_header header = {};
-                static_assert(sizeof(header) == 128 - 4, "");
-                assert(fread(&header, sizeof(header), 1, f) == 1);
-                assert(header.size == sizeof(header));
-
-                assert(offsetof(my_dds_header, height) == 0x08);
-                assert(offsetof(my_dds_header, width) == 0x0C);
-                assert(offsetof(my_dds_header, pitch_or_linear_size) == 0x10);
-                assert(offsetof(my_dds_header, mip_map_count) == 0x18);
-                assert(offsetof(my_dds_header, pixelformat_four_cc) == 0x50);
-
-                // DDSD_CAPS Required in every .dds file. 0x1
-                // DDSD_HEIGHT Required in every .dds file. 0x2
-                // DDSD_WIDTH Required in every .dds file. 0x4
-                // DDSD_PITCH Required when pitch is provided for an uncompressed texture. 0x8
-                // DDSD_PIXELFORMAT Required in every .dds file. 0x1000
-                // DDSD_MIPMAPCOUNT Required in a mipmapped texture. 0x20000
-                // DDSD_LINEARSIZE Required when pitch is provided for a compressed texture. 0x80000
-                // DDSD_DEPTH Required in a depth texture. 0x800000
-                assert(!!(header.flags & DDSD_CAPS));
-                assert(!!(header.flags & DDSD_HEIGHT));
-                assert(!!(header.flags & DDSD_WIDTH));
-                assert( !(header.flags & DDSD_PITCH));
-                assert(!!(header.flags & DDSD_PIXELFORMAT));
-                assert( !(header.flags & DDSD_MIPMAPCOUNT) || header.mip_map_count <= 1);
-                assert(!!(header.flags & DDSD_LINEARSIZE));
-                assert( !(header.flags & DDSD_DEPTH));
-
-                assert(header.pixelformat_size == 32);
-
-                assert(header.pixelformat_four_cc == FOURCC_DXT1 ||
-                       header.pixelformat_four_cc == FOURCC_DXT2 ||
-                       header.pixelformat_four_cc == FOURCC_DXT3 ||
-                       header.pixelformat_four_cc == FOURCC_DXT4 ||
-                       header.pixelformat_four_cc == FOURCC_DXT5);
-
-                assert((header.width & (header.width - 1)) == 0);
-                assert((header.height & (header.height - 1)) == 0);
-                assert(header.width < 65536);
-                assert(header.height < 65536);
-
-                assert(header.pitch_or_linear_size > 0);
-                assert(header.pitch_or_linear_size <= 4096 * 4096 / 4); // rough estimate, it's whatever.
-
-                MAP_Texture tex = {};
-
-                tex.id = 0xffff;
-                tex.width = (uint16_t)header.width;
-                tex.height = (uint16_t)header.height;
-                tex.material = 1;
-                tex.sprite_count = 1;
-                tex.sprite_metadata[0].id = 1;
-                switch (header.pixelformat_four_cc) {
-                    case FOURCC_DXT1: { tex.format = (uint8_t)MAP_Texture_Format_BC1; } break;
-                    case FOURCC_DXT2: { tex.format = (uint8_t)MAP_Texture_Format_BC2; } break;
-                    case FOURCC_DXT3: { tex.format = (uint8_t)MAP_Texture_Format_BC2; } break;
-                    case FOURCC_DXT4: { tex.format = (uint8_t)MAP_Texture_Format_BC3; } break;
-                    case FOURCC_DXT5: { tex.format = (uint8_t)MAP_Texture_Format_BC3; } break;
-                    default: { assert(false); } break;
-                }
-                // @Note: *PRETTY* sure this is fine??
-                switch (tex.format) {
-                    case MAP_Texture_Format_BC1: { tex.sprite_metadata[0].format = 0x100; } break;
-                    case MAP_Texture_Format_BC2: { tex.sprite_metadata[0].format = 0x102; } break;
-                    case MAP_Texture_Format_BC3: { tex.sprite_metadata[0].format = 0x103; } break;
-                    default: { assert(false); } break;
-                }
-
-                tex.pixel_bytes = header.pitch_or_linear_size;
-                tex.pixel_data = malloc(header.pitch_or_linear_size);
-                assert(tex.pixel_data);
-                defer { // @Errdefer
-                    free(tex.pixel_data);
-                };
-
-                assert(fread(tex.pixel_data, tex.pixel_bytes, 1, f) == 1);
-
+        char *dds_file_buf = nullptr;
+        defer {
+            free(dds_file_buf);
+        };
+        if (ImGui::Button("Import DDS Texture...")) {
+            dds_file_buf = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds;\0"
+                                                        "All Files\0" "*.*\0",
+                                                       L"Open DDS", true);
+        }
+        if (dds_file_buf) { // Texture import
+            MAP_Texture tex = {};
+            bool success = dds_import(dds_file_buf, tex);
+            if (success) {
                 g.textures.push(tex);
-                tex = {};
                 g.texture_subfiles[g.texture_subfiles.count - 1].texture_count++;
-
                 g.map_must_update = true;
-
-                MessageBoxA((HWND)sapp_win32_get_hwnd(), "Imported!", "OBJ Import", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
-            } else {
-                auto msg = mprintf("Couldn't open file \"%s\"!!", obj_file_buf);
-                defer { free(msg); };
-                MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "DDS Load Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
             }
         }
         {
@@ -3487,12 +3551,12 @@ static void frame(void *userdata) {
             if (g.opened_map_filename) {
                 char *bak_filename = mprintf("%s.%d.map.bak", g.opened_map_filename, (int)time(nullptr));
                 if (bak_filename) {
-                    wchar_t *filename16 = utf8_to_utf16(g.opened_map_filename);
+                    uint16_t *filename16 = utf8_to_utf16(g.opened_map_filename);
                     if (filename16) {
-                        wchar_t *bak_filename16 = utf8_to_utf16(bak_filename);
+                        uint16_t *bak_filename16 = utf8_to_utf16(bak_filename);
                         if (bak_filename16) {
                             Log("Backing up to \"%s\"...", bak_filename);
-                            if (CopyFileW(filename16, bak_filename16, TRUE)) {
+                            if (CopyFileW((LPCWSTR)filename16, (LPCWSTR)bak_filename16, TRUE)) {
                                 FILE *f = PH2CLD__fopen(g.opened_map_filename, "wb");
                                 if (f) {
                                     if (fwrite(filedata.data, 1, filedata.count, f) == (int)filedata.count) {
@@ -3507,10 +3571,10 @@ static void frame(void *userdata) {
                                 }
                                 if (!success) {
                                     // Attempt to recover file contents by overwriting with the backup.
-                                    if (CopyFileW(bak_filename16, filename16, FALSE)) {
+                                    if (CopyFileW((LPCWSTR)bak_filename16, (LPCWSTR)filename16, FALSE)) {
                                         Log("Restored file from backup.");
                                         // Attempt to delete the backup, because it's redundant data on your disk.
-                                        if (DeleteFileW(bak_filename16)) {
+                                        if (DeleteFileW((LPCWSTR)bak_filename16)) {
                                             Log("Deleted backup.");
                                         } else {
                                             Log("Couldn't delete backup.");
@@ -3596,12 +3660,17 @@ static void frame(void *userdata) {
                 }
             } else {
                 auto &tex = g.textures[g.texture_ui_selected];
-                static char dds_export_path[512] = "";
+                /*static char dds_export_path[512] = "";
                 ImGui::SameLine(); if (ImGui::Button("Export DDS...")) {
                     ImGui::OpenPopup("export_dds_dialog");
                     memset(dds_export_path, 0, sizeof(dds_export_path));
+                }*/
+                char *dds_export_path = nullptr;
+                if (ImGui::Button("Export DDS...")) {
+                    dds_export_path = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds;\0"
+                                                                  "All Files\0" "*.*\0",
+                                                                  L"Save DDS", false);
                 }
-
                 auto write = [&] {
                     FILE *f = PH2CLD__fopen(dds_export_path, "wb");
                     if (f) {
@@ -3635,85 +3704,62 @@ static void frame(void *userdata) {
                         MessageBoxA((HWND)sapp_win32_get_hwnd(), msg, "DDS Export Error", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
                     }
                 };
+                if (dds_export_path) {
+                    write();
+                }
 
-                bool open_overwrite_dialog = false;
-                bool reopen_export_dialog = false;
-                if (ImGui::BeginPopup("export_dds_dialog")) {
-                    ImGui::PushID(g.texture_ui_selected);
-                    ImGui::PushID("Path:");
-                    defer {
-                        ImGui::PopID();
-                        ImGui::PopID();
-                        ImGui::EndPopup();
-                    };
-                    ImGui::Text("Path:");
-                    ImGui::SameLine(); ImGui::InputText("", dds_export_path, sizeof(dds_export_path));
-                    ImGui::SameLine(); if (ImGui::Button("Save")) {
-                        Log("Export to %s", dds_export_path);
-                        auto exists_test = PH2CLD__fopen(dds_export_path, "rb");
-                        if (exists_test) {
-                            Log("EXISTS!!!");
-                            ImGui::CloseCurrentPopup();
-                            open_overwrite_dialog = true;
-                            fclose(exists_test);
-                        } else {
-                            Log("Doesn't exist.");
-                            write();
-                        }
+                char *dds_import_buf = nullptr;
+                if (ImGui::Button("Replace with DDS...")) {
+                    dds_import_buf = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds;\0"
+                                                                  "All Files\0" "*.*\0",
+                                                                 L"Open DDS", true);
+                }
+                bool import_success = false;
+                if (dds_import_buf) { // Texture import
+                    MAP_Texture new_tex = {};
+                    import_success = dds_import(dds_import_buf, new_tex);
+                    if (import_success) {
+                        new_tex.id = tex.id;
+                        new_tex.material = tex.material;
+                        new_tex.sprite_count = tex.sprite_count;
+                        memcpy(new_tex.sprite_metadata, tex.sprite_metadata, sizeof(tex.sprite_metadata));
+                        tex.release();
+                        tex = new_tex;
+                        g.map_must_update = true;
                     }
                 }
-                if (open_overwrite_dialog) {
-                    ImGui::OpenPopup("overwite_file_dds_export");
-                }
-                if (ImGui::BeginPopup("overwite_file_dds_export")) {
-                    ImGui::PushID(g.texture_ui_selected);
-                    ImGui::PushID("File exists!");
-                    defer {
-                        ImGui::PopID();
-                        ImGui::PopID();
-                        ImGui::EndPopup();
-                    };
-                    ImGui::Text("File exists! Overwrite?");
-                    ImGui::SameLine(); if (ImGui::Button("Yes")) {
-                        write();
-                        ImGui::CloseCurrentPopup();
+                // Semi-@Hack: If we import and fudge up all the textures on reupload,
+                //             we don't wanna send Imgui a stale texture id.
+                if (!import_success) {
+                    {
+                        int x = tex.id;
+                        ImGui::InputInt("ID", &x);
+                        x = clamp(x, 0, 65535);
+                        tex.id = (uint16_t)x;
                     }
-                    ImGui::SameLine(); if (ImGui::Button("No")) {
-                        ImGui::CloseCurrentPopup();
-                        reopen_export_dialog = true;
+                    {
+                        int x = tex.material;
+                        ImGui::InputInt("\"Material\" (?)", &x);
+                        x = clamp(x, 0, 255);
+                        tex.material = (uint8_t)x;
                     }
-                }
-                if (reopen_export_dialog) {
-                    ImGui::OpenPopup("export_dds_dialog");
-                }
-                {
-                    int x = tex.id;
-                    ImGui::InputInt("ID", &x);
-                    x = clamp(x, 0, 65535);
-                    tex.id = (uint16_t)x;
-                }
-                {
-                    int x = tex.material;
-                    ImGui::InputInt("\"Material\" (?)", &x);
-                    x = clamp(x, 0, 255);
-                    tex.material = (uint8_t)x;
-                }
-                
-                float w = (float)tex.width;
-                float h = (float)tex.height;
-                float aspect = w / h;
-                w = size.x - 99; // yucky hack
-                h = size.y - 49; // yucky hack
-                if (w > size.x - 100) {
-                    w = size.x - 100;
-                    h = w / aspect;
-                }
-                if (h > size.y - 50) {
-                    h = size.y - 50;
-                    w = h * aspect;
-                }
-                if (w > 0 && h > 0) {
-                    ImGui::Image((ImTextureID)(uintptr_t)tex.image.id, ImVec2(w, h));
+                    
+                    float w = (float)tex.width;
+                    float h = (float)tex.height;
+                    float aspect = w / h;
+                    w = size.x - 99; // yucky hack
+                    h = size.y - 49; // yucky hack
+                    if (w > size.x - 100) {
+                        w = size.x - 100;
+                        h = w / aspect;
+                    }
+                    if (h > size.y - 50) {
+                        h = size.y - 50;
+                        w = h * aspect;
+                    }
+                    if (w > 0 && h > 0) {
+                        ImGui::Image((ImTextureID)(uintptr_t)tex.image.id, ImVec2(w, h));
+                    }
                 }
             }
         }

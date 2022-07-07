@@ -210,13 +210,13 @@ extern "C" {
 #define WC_ERR_INVALID_CHARS 128
 #endif
 
-static inline wchar_t *utf8_to_utf16(const char *utf8) {
-    wchar_t *utf16 = nullptr;
+static inline uint16_t *utf8_to_utf16(const char *utf8) {
+    uint16_t *utf16 = nullptr;
     int utf16len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, nullptr, 0);
     if (utf16len) { //may fail if the input string is invalid, so this is a handle-able error
-        utf16 = (wchar_t *)malloc(utf16len * sizeof(wchar_t));
+        utf16 = (uint16_t *)malloc(utf16len * sizeof(uint16_t));
         if (utf16) {
-            int charsWritten = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, utf16, utf16len);
+            int charsWritten = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, (LPWSTR)utf16, utf16len);
             if (charsWritten != utf16len || //should always be true
                 utf16[utf16len - 1] != 0) { //should be null terminated
                 free(utf16);
@@ -227,13 +227,13 @@ static inline wchar_t *utf8_to_utf16(const char *utf8) {
     return utf16;
 }
 
-static inline char *utf16_to_utf8(const wchar_t *utf16) {
+static inline char *utf16_to_utf8(const uint16_t *utf16) {
     char *utf8 = nullptr;
-    int utf8len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, utf16, -1, nullptr, 0, nullptr, nullptr);
+    int utf8len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, (LPCWSTR)utf16, -1, nullptr, 0, nullptr, nullptr);
     if (utf8len) { //may fail if the input string is invalid, so this is a handle-able error
         utf8 = (char *)malloc(utf8len * sizeof(char));
         if (utf8) {
-            int charsWritten = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, utf16, -1, utf8, utf8len, nullptr, nullptr);
+            int charsWritten = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, (LPCWSTR)utf16, -1, utf8, utf8len, nullptr, nullptr);
             if (charsWritten != utf8len || //should always be true
                 utf8[utf8len - 1] != 0) { //should be null terminated
                 free(utf8);
