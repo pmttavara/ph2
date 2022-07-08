@@ -3426,6 +3426,7 @@ static void frame(void *userdata) {
                         assert(false);
                     } break;
                 }
+
                 char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d), %s Mesh #%d, group #%d", buf.global_geometry_index, buf.id, source, buf.global_mesh_index, buf.mesh_part_group_index);
                 ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_OpenOnArrow;
                 if (buf.selected) {
@@ -3464,9 +3465,183 @@ static void frame(void *userdata) {
                         g.map_must_update = true;
                     }
                 }
+            };
+            for (int i = 0; i < g.map_buffers_count; i++) {
+                ImGui::PushID("MAP Opaque Mesh Selection Nodes");
+                ImGui::PushID(i);
+                defer {
+                    ImGui::PopID();
+                    ImGui::PopID();
+                };
+                auto &buf = g.map_buffers[i];
+                map_buffer_ui(buf);
+            }
+            for (int i = 0; i < g.decal_buffers_count; i++) {
+                ImGui::PushID("MAP Transparent/Decal Mesh Selection Nodes");
+                ImGui::PushID(i);
+                defer {
+                    ImGui::PopID();
+                    ImGui::PopID();
+                };
+                auto &buf = g.decal_buffers[i];
+                map_buffer_ui(buf);
+            }
+        }
+        ImGui::Text("CLD Subgroups:");
+        {
+            ImGui::PushID("CLD Subgroup Visibility Buttons");
+            defer {
+                ImGui::PopID();
+            };
+            bool all_subgroups_on = true;
+            for (int i = 0; i < 16; i++) {
+                ImGui::SameLine();
+                ImGui::PushID(i);
+                if (ImGui::Checkbox("###CLD Subgroup Visible", &g.subgroup_visible[i])) {
+                    g.cld_must_update = true;
+                }
+                if (!g.subgroup_visible[i]) {
+                    all_subgroups_on = false;
+                }
+                ImGui::PopID();
+            }
+            ImGui::SameLine();
+            if (!all_subgroups_on) {
+                if (ImGui::Button("All")) {
+                    for (int i = 0; i < 16; i++) {
+                        g.subgroup_visible[i] = true;
+                    }
+                    g.cld_must_update = true;
+                }
+            } else {
+                if (ImGui::Button("None")) {
+                    for (int i = 0; i < 16; i++) {
+                        g.subgroup_visible[i] = false;
+                    }
+                    g.cld_must_update = true;
+                }
+            }
+        }
+    }
+    if (g.show_edit_widget) {
+        defer {
+            ImGui::End();
+        };
+        if (ImGui::Begin("Edit Widget", &g.show_edit_widget, ImGuiWindowFlags_NoCollapse)) {
+            PH2CLD_Face *face = nullptr;
+            bool is_quad = false;
+            if (g.select_cld_group >= 0 && g.select_cld_face >= 0) {
+                PH2CLD_Face *faces = g.cld.group_0_faces;
+                size_t num_faces = g.cld.group_0_faces_count;
+                if (g.select_cld_group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
+                if (g.select_cld_group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
+                if (g.select_cld_group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
 
-                bool duplicate = false;
-                if (ImGui::Button("Delete")) {
+                face = &faces[g.select_cld_face];
+                is_quad = face->quad;
+            }
+            {
+                if (!face) {
+                    ImGui::BeginDisabled();
+                }
+                defer {
+                    if (!face) {
+                        ImGui::EndDisabled();
+                    }
+                };
+                ImGui::Text("CLD Face");
+                if (ImGui::Checkbox("Quad", &is_quad)) {
+                    face->quad = is_quad;
+                    if (face->quad) {
+                        // Build a parallelogram out of vertices v0, v1, and v2. v3 = v2 + (v0 - v1)
+                        face->vertices[3][0] = face->vertices[2][0] + face->vertices[0][0] - face->vertices[1][0];
+                        face->vertices[3][1] = face->vertices[2][1] + face->vertices[0][1] - face->vertices[1][1];
+                        face->vertices[3][2] = face->vertices[2][2] + face->vertices[0][2] - face->vertices[1][2];
+                    } else {
+                        face->vertices[3][0] = 0;
+                        face->vertices[3][1] = 0;
+                        face->vertices[3][2] = 0;
+                    }
+                    g.cld_must_update = true;
+                }
+            }
+            ImGui::Separator();
+            int num_map_bufs_selected = 0;
+            for (auto &buf : g.map_buffers) {
+                if (buf.selected) {
+                    num_map_bufs_selected++;
+                }
+            }
+            for (auto &buf : g.decal_buffers) {
+                if (buf.selected) {
+                    num_map_bufs_selected++;
+                }
+            }
+            if (!num_map_bufs_selected) {
+                ImGui::BeginDisabled();
+            }
+            defer {
+                if (!num_map_bufs_selected) {
+                    ImGui::EndDisabled();
+                }
+            };
+            ImGui::Text("MAP Mesh Part Group");
+            ImGui::Text("%d selected", num_map_bufs_selected);
+
+            bool del = ImGui::Button("Delete");
+            ImGui::SameLine();
+            bool duplicate = ImGui::Button("Duplicate");
+            bool move = false;
+            static hmm_vec3 displacement = {};
+            ImGui::NewLine();
+            ImGui::Text("Move:");
+            ImGui::SameLine(); if (ImGui::Button("+X")) { move = true; displacement = { +1, 0, 0 }; }
+            ImGui::SameLine(); if (ImGui::Button("-X")) { move = true; displacement = { -1, 0, 0 }; }
+            ImGui::SameLine(); if (ImGui::Button("+Y")) { move = true; displacement = { 0, +1, 0 }; }
+            ImGui::SameLine(); if (ImGui::Button("-Y")) { move = true; displacement = { 0, -1, 0 }; }
+            ImGui::SameLine(); if (ImGui::Button("+Z")) { move = true; displacement = { 0, 0, +1 }; }
+            ImGui::SameLine(); if (ImGui::Button("-Z")) { move = true; displacement = { 0, 0, -1 }; }
+            bool scale = false;
+            static hmm_vec3 scaling_factor = {1, 1, 1};
+            ImGui::Text("By:");
+            ImGui::SameLine(); ImGui::InputFloat3("###Displacement", &displacement.X);
+            ImGui::SameLine(); if (ImGui::Button("Apply###Displacement")) { move = true; }
+            ImGui::NewLine();
+            ImGui::Text("Scale:");
+            /*              */ if (ImGui::Button("X * -1")) { scale = true; scaling_factor = { -1, 1, 1 }; }
+            ImGui::SameLine(); if (ImGui::Button("X * 2")) { scale = true; scaling_factor = { 2, 1, 1 }; }
+            /*              */ if (ImGui::Button("Y * -1")) { scale = true; scaling_factor = { 1, -1, 1 }; }
+            ImGui::SameLine(); if (ImGui::Button("Y * 2")) { scale = true; scaling_factor = { 1, 2, 1 }; }
+            /*              */ if (ImGui::Button("Z * -1")) { scale = true; scaling_factor = { 1, 1, -1 }; }
+            ImGui::SameLine(); if (ImGui::Button("Z * 2")) { scale = true; scaling_factor = { 1, 1, 2 }; }
+            ImGui::Text("By:");
+            ImGui::SameLine(); ImGui::InputFloat3("###Scaling", &scaling_factor.X);
+            ImGui::SameLine(); if (ImGui::Button("Apply###Scaling")) { scale = true; }
+            ImGui::NewLine();
+            
+            bool go_to = ImGui::Button("Go To Center");
+
+            hmm_vec3 overall_center = {}; // @Lazy
+            int overall_center_sum = 0;
+
+            auto process_mesh = [&] (MAP_Geometry_Buffer &buf, bool move, bool scale, bool go_to, bool get_center) {
+                Array<MAP_Mesh> *meshes = nullptr;
+                switch (buf.source) {
+                    using namespace MAP_Geometry_Buffer_Source_;
+                    case Opaque: {
+                        meshes = &g.opaque_meshes;
+                    } break;
+                    case Transparent: {
+                        meshes = &g.transparent_meshes;
+                    } break;
+                    case Decal: {
+                        meshes = &g.decal_meshes;
+                    } break;
+                    default: {
+                        assert(false);
+                    } break;
+                }
+                if (del) {
                     int mpg_index = buf.mesh_part_group_index;
                     auto &mesh = (*meshes)[buf.global_mesh_index];
                     auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
@@ -3508,37 +3683,7 @@ static void frame(void *userdata) {
                         } break;
                     }
                 }
-                ImGui::SameLine(); duplicate = ImGui::Button("Duplicate");
-                bool move = false;
-                static hmm_vec3 displacement = {};
-                ImGui::Text("Move:");
-                ImGui::SameLine(); if (ImGui::Button("+X")) { move = true; displacement = { +1, 0, 0 }; }
-                ImGui::SameLine(); if (ImGui::Button("-X")) { move = true; displacement = { -1, 0, 0 }; }
-                ImGui::SameLine(); if (ImGui::Button("+Y")) { move = true; displacement = { 0, +1, 0 }; }
-                ImGui::SameLine(); if (ImGui::Button("-Y")) { move = true; displacement = { 0, -1, 0 }; }
-                ImGui::SameLine(); if (ImGui::Button("+Z")) { move = true; displacement = { 0, 0, +1 }; }
-                ImGui::SameLine(); if (ImGui::Button("-Z")) { move = true; displacement = { 0, 0, -1 }; }
-                bool scale = false;
-                static hmm_vec3 scaling_factor = {1, 1, 1};
-                ImGui::Text("By:");
-                ImGui::SameLine(); ImGui::InputFloat3("###Displacement", &displacement.X);
-                ImGui::SameLine(); if (ImGui::Button("Apply###Displacement")) { move = true; }
-                ImGui::Text("Scale:");
-                ImGui::SameLine(); if (ImGui::Button("X * -1")) { scale = true; scaling_factor = { -1, 1, 1 }; }
-                ImGui::SameLine(); if (ImGui::Button("X * 2")) { scale = true; scaling_factor = { 2, 1, 1 }; }
-                ImGui::SameLine(); if (ImGui::Button("Y * -1")) { scale = true; scaling_factor = { 1, -1, 1 }; }
-                ImGui::SameLine(); if (ImGui::Button("Y * 2")) { scale = true; scaling_factor = { 1, 2, 1 }; }
-                ImGui::SameLine(); if (ImGui::Button("Z * -1")) { scale = true; scaling_factor = { 1, 1, -1 }; }
-                ImGui::SameLine(); if (ImGui::Button("Z * 2")) { scale = true; scaling_factor = { 1, 1, 2 }; }
-                ImGui::Text("By:");
-                ImGui::SameLine(); ImGui::InputFloat3("###Scaling", &scaling_factor.X);
-                ImGui::SameLine(); if (ImGui::Button("Apply###Scaling")) { scale = true; }
-                bool go_to = false;
-                if (ImGui::Button("Go To")) {
-                    go_to = true;
-                }
-
-                if (move || scale || go_to) {
+                if (move || scale || go_to || get_center) {
                     int mpg_index = buf.mesh_part_group_index;
                     auto &mesh = g.opaque_meshes[buf.global_mesh_index];
                     mesh.bbox_override = false;
@@ -3558,22 +3703,16 @@ static void frame(void *userdata) {
                     }
                     // Log("We're going to process %d indices...", indices_to_process);
                     assert(indices_index + indices_to_process <= mesh.indices.count);
-                    Array<int> unique_indices = {};
-                    defer {
-                        unique_indices.release();
-                    };
+                    int unique_indices_count = 0;
+                    static bool vert_referenced[65536];
+                    memset(vert_referenced, 0, sizeof(vert_referenced));
                     Log("Scaling by %f, %f, %f", scaling_factor.X, scaling_factor.Y, scaling_factor.Z);
                     hmm_vec3 center = {};
                     for (int i = 0; i < indices_to_process; i++) {
-                        int index = mesh.indices[indices_index + i];
-                        bool found = false;
-                        for (auto &idx : unique_indices) {
-                            if (idx == index) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) {
+                        int index = mesh.indices.data[indices_index + i];
+                        if (!vert_referenced[index]) {
+                            vert_referenced[index] = true;
+                            unique_indices_count++;
                             float (*position)[3] = (float(*)[3])(buf.data + buf.bytes_per_vertex * index);
                             center.X += (*position)[0];
                             center.Y += (*position)[1];
@@ -3583,40 +3722,28 @@ static void frame(void *userdata) {
                                 (*position)[1] += displacement.Y;
                                 (*position)[2] += displacement.Z;
                             } else if (scale) {
+                                (*position)[0] -= overall_center.X;
+                                (*position)[1] -= overall_center.Y;
+                                (*position)[2] -= overall_center.Z;
+                                (*position)[0] *= scaling_factor.X;
+                                (*position)[1] *= scaling_factor.Y;
+                                (*position)[2] *= scaling_factor.Z;
+                                (*position)[0] += overall_center.X;
+                                (*position)[1] += overall_center.Y;
+                                (*position)[2] += overall_center.Z;
                             } else if (go_to) {
+                            } else if (get_center) {
                             } else {
                                 assert(false);
                             }
-                            unique_indices.push(index);
                         }
                     }
-                    center /= (float)unique_indices.count + !unique_indices.count;
-                    if (scale) {
-                        for (auto &idx : unique_indices) {
-                            float (*position)[3] = (float(*)[3])(buf.data + buf.bytes_per_vertex * idx);
-                            (*position)[0] -= center.X;
-                            (*position)[1] -= center.Y;
-                            (*position)[2] -= center.Z;
-                            (*position)[0] *= scaling_factor.X;
-                            (*position)[1] *= scaling_factor.Y;
-                            (*position)[2] *= scaling_factor.Z;
-                            (*position)[0] += center.X;
-                            (*position)[1] += center.Y;
-                            (*position)[2] += center.Z;
-                        }
-                    }
+                    center /= (float)unique_indices_count + !unique_indices_count;
                     g.map_must_update = true;
                     // Log("Moved/Scaled!");
-                    if (move) {
-                        // displacement = {};
-                    } else if (scale) {
-                        // scaling_factor = { 1, 1, 1 };
-                    }
-                    if (move || go_to) {
-                        g.cam_pos = center;
-                        g.cam_pos.X *= 1 * SCALE;
-                        g.cam_pos.Y *= -1 * SCALE;
-                        g.cam_pos.Z *= -1 * SCALE;
+                    if (go_to || get_center) {
+                        overall_center += center;
+                        overall_center_sum += 1;
                     }
                 }
                 if (duplicate) {
@@ -3696,125 +3823,34 @@ static void frame(void *userdata) {
                     // Log("Duped!");
                 }
             };
-            for (int i = 0; i < g.map_buffers_count; i++) {
-                ImGui::PushID("MAP Opaque Mesh Visibility Buttons");
-                ImGui::PushID(i);
-                defer {
-                    ImGui::PopID();
-                    ImGui::PopID();
-                };
-                auto &buf = g.map_buffers[i];
-                map_buffer_ui(buf);
-            }
-            for (int i = 0; i < g.decal_buffers_count; i++) {
-                ImGui::PushID("MAP Transparent/Decal Mesh Visibility Buttons");
-                ImGui::PushID(i);
-                defer {
-                    ImGui::PopID();
-                    ImGui::PopID();
-                };
-                auto &buf = g.decal_buffers[i];
-                map_buffer_ui(buf);
-            }
-        }
-        ImGui::Text("CLD Subgroups:");
-        {
-            ImGui::PushID("CLD Subgroup Visibility Buttons");
-            defer {
-                ImGui::PopID();
-            };
-            bool all_subgroups_on = true;
-            for (int i = 0; i < 16; i++) {
-                ImGui::SameLine();
-                ImGui::PushID(i);
-                if (ImGui::Checkbox("###CLD Subgroup Visible", &g.subgroup_visible[i])) {
-                    g.cld_must_update = true;
-                }
-                if (!g.subgroup_visible[i]) {
-                    all_subgroups_on = false;
-                }
-                ImGui::PopID();
-            }
-            ImGui::SameLine();
-            if (!all_subgroups_on) {
-                if (ImGui::Button("All")) {
-                    for (int i = 0; i < 16; i++) {
-                        g.subgroup_visible[i] = true;
-                    }
-                    g.cld_must_update = true;
-                }
-            } else {
-                if (ImGui::Button("None")) {
-                    for (int i = 0; i < 16; i++) {
-                        g.subgroup_visible[i] = false;
-                    }
-                    g.cld_must_update = true;
+            for (auto &buf : g.map_buffers) {
+                if (buf.selected) {
+                    process_mesh(buf, false, false, false, scale || go_to);
                 }
             }
-        }
-    }
-    if (g.show_edit_widget) {
-        defer {
-            ImGui::End();
-        };
-        if (ImGui::Begin("Edit Widget", &g.show_edit_widget, ImGuiWindowFlags_NoCollapse)) {
-            PH2CLD_Face *face = nullptr;
-            bool is_quad = false;
-            if (g.select_cld_group >= 0 && g.select_cld_face >= 0) {
-                PH2CLD_Face *faces = g.cld.group_0_faces;
-                size_t num_faces = g.cld.group_0_faces_count;
-                if (g.select_cld_group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
-                if (g.select_cld_group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
-                if (g.select_cld_group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
-
-                face = &faces[g.select_cld_face];
-                is_quad = face->quad;
+            for (auto &buf : g.decal_buffers) {
+                if (buf.selected) {
+                    process_mesh(buf, false, false, false, scale || go_to);
+                }
             }
-            if (!face) {
-                ImGui::BeginDisabled();
+            if (overall_center_sum) {
+                overall_center /= (float)overall_center_sum;
             }
-            defer {
-                if (!face) {
-                    ImGui::EndDisabled();
+            for (auto &buf : g.map_buffers) {
+                if (buf.selected) {
+                    process_mesh(buf, move, scale, go_to, false);
                 }
-            };
-            ImGui::Text("CLD Face");
-            if (ImGui::Checkbox("Quad", &is_quad)) {
-                face->quad = is_quad;
-                if (face->quad) {
-                    // Build a parallelogram out of vertices v0, v1, and v2. v3 = v2 + (v0 - v1)
-                    face->vertices[3][0] = face->vertices[2][0] + face->vertices[0][0] - face->vertices[1][0];
-                    face->vertices[3][1] = face->vertices[2][1] + face->vertices[0][1] - face->vertices[1][1];
-                    face->vertices[3][2] = face->vertices[2][2] + face->vertices[0][2] - face->vertices[1][2];
-                } else {
-                    face->vertices[3][0] = 0;
-                    face->vertices[3][1] = 0;
-                    face->vertices[3][2] = 0;
-                }
-                g.cld_must_update = true;
             }
-            ImGui::Separator();
-            {
-                int num_map_bufs_selected = 0;
-                for (auto &buf : g.map_buffers) {
-                    if (buf.selected) {
-                        num_map_bufs_selected++;
-                    }
+            for (auto &buf : g.decal_buffers) {
+                if (buf.selected) {
+                    process_mesh(buf, move, scale, go_to, false);
                 }
-                for (auto &buf : g.decal_buffers) {
-                    if (buf.selected) {
-                        num_map_bufs_selected++;
-                    }
-                }
-                if (!num_map_bufs_selected) {
-                    ImGui::BeginDisabled();
-                }
-                defer {
-                    if (!num_map_bufs_selected) {
-                        ImGui::EndDisabled();
-                    }
-                };
-                ImGui::Text("MAP Mesh Part Group");
+            }
+            if (go_to) {
+                g.cam_pos = overall_center;
+                g.cam_pos.X *= 1 * SCALE;
+                g.cam_pos.Y *= -1 * SCALE;
+                g.cam_pos.Z *= -1 * SCALE;
             }
         }
     }
