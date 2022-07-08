@@ -320,6 +320,7 @@ struct G {
     bool show_textures = true;
     bool show_materials = true;
     bool show_console = true;
+    bool show_edit_widget = true;
 
     float view_x = 0; // in PIXELS!
     float view_y = 0;
@@ -1907,9 +1908,11 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
 
     for (auto &buf : g.map_buffers) {
         buf.shown = true;
+        buf.selected = false;
     }
     for (auto &buf : g.decal_buffers) {
         buf.shown = true;
+        buf.selected = false;
     }
 }
 static void map_upload(G &g) {
@@ -3749,7 +3752,12 @@ static void frame(void *userdata) {
                 }
             }
         }
-        {
+    }
+    if (g.show_edit_widget) {
+        defer {
+            ImGui::End();
+        };
+        if (ImGui::Begin("Edit Widget", &g.show_edit_widget, ImGuiWindowFlags_NoCollapse)) {
             PH2CLD_Face *face = nullptr;
             bool is_quad = false;
             if (g.select_cld_group >= 0 && g.select_cld_face >= 0) {
@@ -3770,6 +3778,7 @@ static void frame(void *userdata) {
                     ImGui::EndDisabled();
                 }
             };
+            ImGui::Text("CLD Face");
             if (ImGui::Checkbox("Quad", &is_quad)) {
                 face->quad = is_quad;
                 if (face->quad) {
@@ -3784,8 +3793,33 @@ static void frame(void *userdata) {
                 }
                 g.cld_must_update = true;
             }
+            ImGui::Separator();
+            {
+                int num_map_bufs_selected = 0;
+                for (auto &buf : g.map_buffers) {
+                    if (buf.selected) {
+                        num_map_bufs_selected++;
+                    }
+                }
+                for (auto &buf : g.decal_buffers) {
+                    if (buf.selected) {
+                        num_map_bufs_selected++;
+                    }
+                }
+                if (!num_map_bufs_selected) {
+                    ImGui::BeginDisabled();
+                }
+                defer {
+                    if (!num_map_bufs_selected) {
+                        ImGui::EndDisabled();
+                    }
+                };
+                ImGui::Text("MAP Mesh Part Group");
+            }
         }
+    }
 
+    {
         if (requested_save_filename) {
             Array<uint8_t> filedata = {};
             defer {
