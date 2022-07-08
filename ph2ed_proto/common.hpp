@@ -201,11 +201,13 @@ template <class T> struct Array {
         data[index] = data[count - 1];
         count -= 1;
     }
-    void remove_ordered(int64_t index) {
+    void remove_ordered(int64_t index, int64_t how_many = 1) {
         invariants();
         assert(index < count);
-        memmove(&data[index], &data[index + 1], (count - index - 1) * sizeof(T));
-        count -= 1;
+        assert(how_many >= 0);
+        assert(index + how_many <= count);
+        memmove(&data[index], &data[index + how_many], (count - index - how_many) * sizeof(T));
+        count -= how_many;
     }
     T *begin() {
         invariants();

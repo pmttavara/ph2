@@ -9,11 +9,13 @@
 int num_array_resizes = 0;
 
 // Path to MVP:
-// - Multimesh movement
 // - Better move UX
 // - OBJ export
 // - Undo/redo
 // - MAP mesh vertex snapping
+
+// FINISHED on Path to MVP:
+// - Multimesh movement/deleting/editing
 
 
 // With editor widgets, you should probably be able to:
@@ -2291,7 +2293,8 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
         fontCfg.OversampleH = 4;
         fontCfg.OversampleV = 4;
         fontCfg.RasterizerMultiply = 1.5f;
-        io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/consola.ttf", 14, &fontCfg);
+        // io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/consola.ttf", 14, &fontCfg);
+        io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/arial.ttf", 14, &fontCfg);
         
         // create font texture for the custom font
         unsigned char* font_pixels;
@@ -3077,6 +3080,14 @@ static void frame(void *userdata) {
     // if (g.control_state != ControlState::Normal) {
     //     ImGui::GetStyle().Alpha = 0.333f;
     // }
+    auto get_meshes = [&] (MAP_Geometry_Buffer &buf) -> Array<MAP_Mesh> & {
+        switch (buf.source) {
+            default: assert(false);
+            case MAP_Geometry_Buffer_Source::Opaque: return g.opaque_meshes;
+            case MAP_Geometry_Buffer_Source::Transparent: return g.transparent_meshes;
+            case MAP_Geometry_Buffer_Source::Decal: return g.decal_meshes;
+        }
+    };
     if (g.show_editor) {
         ImGui::Begin("Editor", &g.show_editor, ImGuiWindowFlags_NoCollapse);
         defer {
@@ -3298,7 +3309,11 @@ static void frame(void *userdata) {
                 if (num_untouched == 0) {
                     return;
                 }
-                ImGui::Text("!!! %s #%d has %d unreferenced vertices", str, i, num_untouched);
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Text, 0xe00d3bff);
+                    ImGui::Text("%s #%d has %d unreferenced vertices", str, i, num_untouched);
+                    ImGui::PopStyleColor();
+                }
                 ImGui::SameLine();
                 if (!ImGui::Button("Prune (Delete)")) {
                     return;
@@ -3399,25 +3414,13 @@ static void frame(void *userdata) {
                 }
             }
             auto map_buffer_ui = [&] (MAP_Geometry_Buffer &buf) {
+                auto &meshes = get_meshes(buf);
                 const char *source = "I made it up";
-                Array<MAP_Mesh> *meshes = nullptr;
                 switch (buf.source) {
-                    using namespace MAP_Geometry_Buffer_Source_;
-                    case Opaque: {
-                        source = "Opaque";
-                        meshes = &g.opaque_meshes;
-                    } break;
-                    case Transparent: {
-                        source = "Transparent";
-                        meshes = &g.transparent_meshes;
-                    } break;
-                    case Decal: {
-                        source = "Decal";
-                        meshes = &g.decal_meshes;
-                    } break;
-                    default: {
-                        assert(false);
-                    } break;
+                    case MAP_Geometry_Buffer_Source::Opaque: { source = "Opaque"; } break;
+                    case MAP_Geometry_Buffer_Source::Transparent: { source = "Transparent"; } break;
+                    case MAP_Geometry_Buffer_Source::Decal: { source = "Decal"; } break;
+                    default: { assert(false); } break;
                 }
 
                 char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d), %s Mesh #%d, group #%d", buf.global_geometry_index, buf.id, source, buf.global_mesh_index, buf.mesh_part_group_index);
@@ -3428,7 +3431,17 @@ static void frame(void *userdata) {
                 ImGui::Checkbox("", &buf.shown);
                 ImGui::SameLine(); bool ret = ImGui::TreeNodeEx(b, flags);
                 if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-                    buf.selected = !buf.selected;
+                    if (ImGui::GetIO().KeyShift) {
+                        buf.selected = !buf.selected;
+                    } else {
+                        for (auto &buf2 : g.map_buffers) {
+                            buf2.selected = false;
+                        }
+                        for (auto &buf2 : g.decal_buffers) {
+                            buf2.selected = false;
+                        }
+                        buf.selected = true;
+                    }
                 }
                 if (!ret) {
                     return;
@@ -3444,7 +3457,7 @@ static void frame(void *userdata) {
                 };
 
                 if (!g.map_must_update) { // @HACK !!!!!!!!!!!!!!!! @@@@@@ !!!!!!!!
-                    auto &mesh = (*meshes)[buf.global_mesh_index];
+                    auto &mesh = meshes[buf.global_mesh_index];
                     auto &mesh_part_group = mesh.mesh_part_groups[buf.mesh_part_group_index];
                     int mat_index = mesh_part_group.material_index;
                     if (ImGui::InputInt("Material Index", &mat_index)) {
@@ -3588,12 +3601,12 @@ static void frame(void *userdata) {
             static hmm_vec3 displacement = {};
             ImGui::NewLine();
             ImGui::Text("Move:");
-            ImGui::SameLine(); if (ImGui::Button("+X")) { move = true; displacement = { +1, 0, 0 }; }
-            ImGui::SameLine(); if (ImGui::Button("-X")) { move = true; displacement = { -1, 0, 0 }; }
-            ImGui::SameLine(); if (ImGui::Button("+Y")) { move = true; displacement = { 0, +1, 0 }; }
-            ImGui::SameLine(); if (ImGui::Button("-Y")) { move = true; displacement = { 0, -1, 0 }; }
-            ImGui::SameLine(); if (ImGui::Button("+Z")) { move = true; displacement = { 0, 0, +1 }; }
-            ImGui::SameLine(); if (ImGui::Button("-Z")) { move = true; displacement = { 0, 0, -1 }; }
+            ImGui::SameLine(); if (ImGui::Button("+X")) { displacement = { +100, 0, 0 }; }
+            ImGui::SameLine(); if (ImGui::Button("-X")) { displacement = { -100, 0, 0 }; }
+            ImGui::SameLine(); if (ImGui::Button("+Y")) { displacement = { 0, +100, 0 }; }
+            ImGui::SameLine(); if (ImGui::Button("-Y")) { displacement = { 0, -100, 0 }; }
+            ImGui::SameLine(); if (ImGui::Button("+Z")) { displacement = { 0, 0, +100 }; }
+            ImGui::SameLine(); if (ImGui::Button("-Z")) { displacement = { 0, 0, -100 }; }
             bool scale = false;
             static hmm_vec3 scaling_factor = {1, 1, 1};
             ImGui::Text("By:");
@@ -3601,81 +3614,24 @@ static void frame(void *userdata) {
             ImGui::SameLine(); if (ImGui::Button("Apply###Displacement")) { move = true; }
             ImGui::NewLine();
             ImGui::Text("Scale:");
-            /*              */ if (ImGui::Button("X * -1")) { scale = true; scaling_factor = { -1, 1, 1 }; }
-            ImGui::SameLine(); if (ImGui::Button("X * 2")) { scale = true; scaling_factor = { 2, 1, 1 }; }
-            /*              */ if (ImGui::Button("Y * -1")) { scale = true; scaling_factor = { 1, -1, 1 }; }
-            ImGui::SameLine(); if (ImGui::Button("Y * 2")) { scale = true; scaling_factor = { 1, 2, 1 }; }
-            /*              */ if (ImGui::Button("Z * -1")) { scale = true; scaling_factor = { 1, 1, -1 }; }
-            ImGui::SameLine(); if (ImGui::Button("Z * 2")) { scale = true; scaling_factor = { 1, 1, 2 }; }
+            ImGui::SameLine(); if (ImGui::Button("- X")) { scaling_factor = { - 1, + 1, + 1 }; }
+            ImGui::SameLine(); if (ImGui::Button("X*2")) { scaling_factor = { + 2, + 1, + 1 }; }
+            ImGui::SameLine(); if (ImGui::Button("- Y")) { scaling_factor = { + 1, - 1, + 1 }; }
+            ImGui::SameLine(); if (ImGui::Button("Y*2")) { scaling_factor = { + 1, + 2, + 1 }; }
+            ImGui::SameLine(); if (ImGui::Button("- Z")) { scaling_factor = { + 1, + 1, - 1 }; }
+            ImGui::SameLine(); if (ImGui::Button("Z*2")) { scaling_factor = { + 1, + 1, + 2 }; }
             ImGui::Text("By:");
             ImGui::SameLine(); ImGui::InputFloat3("###Scaling", &scaling_factor.X);
             ImGui::SameLine(); if (ImGui::Button("Apply###Scaling")) { scale = true; }
             ImGui::NewLine();
-            
+
             bool go_to = ImGui::Button("Go To Center");
 
             hmm_vec3 overall_center = {}; // @Lazy
             int overall_center_sum = 0;
 
-            auto process_mesh = [&] (MAP_Geometry_Buffer &buf, bool move, bool scale, bool go_to, bool get_center) {
-                Array<MAP_Mesh> *meshes = nullptr;
-                switch (buf.source) {
-                    using namespace MAP_Geometry_Buffer_Source_;
-                    case Opaque: {
-                        meshes = &g.opaque_meshes;
-                    } break;
-                    case Transparent: {
-                        meshes = &g.transparent_meshes;
-                    } break;
-                    case Decal: {
-                        meshes = &g.decal_meshes;
-                    } break;
-                    default: {
-                        assert(false);
-                    } break;
-                }
-                if (del) {
-                    int mpg_index = buf.mesh_part_group_index;
-                    auto &mesh = (*meshes)[buf.global_mesh_index];
-                    auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
-                    auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
-                    int indices_index = 0;
-                    for (int i = 0; i < mpg_index; i++) {
-                        for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
-                            indices_index += part.strip_length * part.strip_count;
-                        }
-                    }
-                    // Log("Starting at index %d...", indices_index);
-                    assert(indices_index < mesh.indices.count);
-                    int indices_to_process = 0;
-                    for (auto &part : mesh_part_group.mesh_parts) {
-                        indices_to_process += part.strip_length * part.strip_count;
-                    }
-                    // Log("We're going to process %d indices...", indices_to_process);
-                    assert(indices_index + indices_to_process <= mesh.indices.count);
-                    for (int i = 0; i < indices_to_process; i++) {
-                        mesh.indices.remove_ordered(indices_index);
-                    }
-                    mesh_part_group.mesh_parts.release();
-                    mesh.mesh_part_groups.remove_ordered(mpg_index);
-                    g.map_must_update = true;
-                    // Log("Deleted!");
-                }
-                if ((*meshes)[buf.global_mesh_index].mesh_part_groups.count <= 0) {
-                    meshes->remove_ordered(buf.global_mesh_index);
-                    switch (buf.source) {
-                        using namespace MAP_Geometry_Buffer_Source_;
-                        case Opaque: {
-                            g.geometries[buf.global_geometry_index].opaque_mesh_count--;
-                        } break;
-                        case Transparent: {
-                            g.geometries[buf.global_geometry_index].transparent_mesh_count--;
-                        } break;
-                        case Decal: {
-                            g.geometries[buf.global_geometry_index].decal_count--;
-                        } break;
-                    }
-                }
+            auto process_mesh = [&] (MAP_Geometry_Buffer &buf, bool duplicate, bool move, bool scale, bool go_to, bool get_center) {
+                auto &meshes = get_meshes(buf);
                 if (move || scale || go_to || get_center) {
                     int mpg_index = buf.mesh_part_group_index;
                     auto &mesh = g.opaque_meshes[buf.global_mesh_index];
@@ -3741,7 +3697,7 @@ static void frame(void *userdata) {
                 }
                 if (duplicate) {
                     int mpg_index = buf.mesh_part_group_index;
-                    auto &mesh = (*meshes)[buf.global_mesh_index];
+                    auto &mesh = meshes[buf.global_mesh_index];
                     auto &buf = mesh.vertex_buffers[mesh.mesh_part_groups[mpg_index].section_index];
                     int indices_index = 0;
                     for (int i = 0; i < mpg_index; i++) {
@@ -3806,7 +3762,7 @@ static void frame(void *userdata) {
                     for (auto &part : mesh.mesh_part_groups[mpg_index].mesh_parts) {
                         new_group.mesh_parts.push(part);
                     }
-                    meshes->push(new_mesh);
+                    meshes.push(new_mesh);
                     g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
                     g.map_must_update = true;
                     // Log("Duped!");
@@ -3814,12 +3770,12 @@ static void frame(void *userdata) {
             };
             for (auto &buf : g.map_buffers) {
                 if (buf.selected) {
-                    process_mesh(buf, false, false, false, scale || go_to);
+                    process_mesh(buf, false, false, false, false, scale || go_to);
                 }
             }
             for (auto &buf : g.decal_buffers) {
                 if (buf.selected) {
-                    process_mesh(buf, false, false, false, scale || go_to);
+                    process_mesh(buf, false, false, false, false, scale || go_to);
                 }
             }
             if (overall_center_sum) {
@@ -3827,12 +3783,12 @@ static void frame(void *userdata) {
             }
             for (auto &buf : g.map_buffers) {
                 if (buf.selected) {
-                    process_mesh(buf, move, scale, go_to, false);
+                    process_mesh(buf, duplicate, move, scale, go_to, false);
                 }
             }
             for (auto &buf : g.decal_buffers) {
                 if (buf.selected) {
-                    process_mesh(buf, move, scale, go_to, false);
+                    process_mesh(buf, duplicate, move, scale, go_to, false);
                 }
             }
             if (go_to) {
@@ -3841,6 +3797,98 @@ static void frame(void *userdata) {
                 g.cam_pos.Y *= -1 * SCALE;
                 g.cam_pos.Z *= -1 * SCALE;
             }
+
+            auto clear_out_mesh_part_group_for_deletion = [&] (MAP_Geometry_Buffer &buf) {
+                auto &meshes = get_meshes(buf);
+                int mpg_index = buf.mesh_part_group_index;
+                MAP_Mesh &mesh = meshes[buf.global_mesh_index];
+                MAP_Mesh_Part_Group &mesh_part_group = mesh.mesh_part_groups[mpg_index];
+                int indices_index = 0;
+                for (int i = 0; i < mpg_index; i++) {
+                    for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
+                        indices_index += part.strip_length * part.strip_count;
+                    }
+                }
+                // Log("Starting at index %d...", indices_index);
+                assert(indices_index < mesh.indices.count);
+                int indices_to_process = 0;
+                for (auto &part : mesh_part_group.mesh_parts) {
+                    indices_to_process += part.strip_length * part.strip_count;
+                }
+                // Log("We're going to process %d indices...", indices_to_process);
+                assert(indices_index + indices_to_process <= mesh.indices.count);
+                mesh.indices.remove_ordered(indices_index, indices_to_process);
+                mesh_part_group.mesh_parts.release();
+                mesh_part_group = {};
+            };
+            if (del) {
+                for (auto &buf : g.map_buffers) {
+                    if (buf.selected) {
+                        clear_out_mesh_part_group_for_deletion(buf);
+                        buf.selected = false;
+                    }
+                }
+                for (auto &buf : g.decal_buffers) {
+                    if (buf.selected) {
+                        clear_out_mesh_part_group_for_deletion(buf);
+                        buf.selected = false;
+                    }
+                }
+                g.map_must_update = true;
+            }
+            auto prune_empty_mesh_part_groups = [&] (MAP_Mesh &mesh) {
+                for (int64_t mesh_part_group_index = 0; mesh_part_group_index < mesh.mesh_part_groups.count;) {
+                    if (mesh.mesh_part_groups[mesh_part_group_index].mesh_parts.count <= 0) {
+                        mesh.mesh_part_groups.remove_ordered(mesh_part_group_index);
+                    } else {
+                        ++mesh_part_group_index;
+                    }
+                }
+            };
+            for (auto &mesh : g.opaque_meshes) {
+                prune_empty_mesh_part_groups(mesh);
+            }
+            for (auto &mesh : g.transparent_meshes) {
+                prune_empty_mesh_part_groups(mesh);
+            }
+            for (auto &mesh : g.decal_meshes) {
+                prune_empty_mesh_part_groups(mesh);
+            }
+            auto prune_empty_meshes = [&] (Array<MAP_Mesh> &meshes, MAP_Geometry_Buffer_Source source) {
+                // @Note: BRO this SUUUUCKS!!!!!!!!! please let there eventually be a way that this isn't bogged
+                int64_t rolling_geo_index = 0;
+                int64_t rolling_geo_start = 0;
+                for (int64_t mesh_index = 0; mesh_index < meshes.count;) {
+                    MAP_Mesh &mesh = meshes[mesh_index];
+                    assert(rolling_geo_index < g.geometries.count);
+                    uint32_t *count = nullptr;
+                    do {
+                        auto &geo = g.geometries[rolling_geo_index];
+                        if (source == MAP_Geometry_Buffer_Source::Opaque) {
+                            count = &geo.opaque_mesh_count;
+                        } else if (source == MAP_Geometry_Buffer_Source::Transparent) {
+                            count = &geo.transparent_mesh_count;
+                        } else if (source == MAP_Geometry_Buffer_Source::Decal) {
+                            count = &geo.decal_count;
+                        }
+                        if (mesh_index >= rolling_geo_start + *count) {
+                            rolling_geo_start += *count;
+                            rolling_geo_index++;
+                            assert(rolling_geo_index < g.geometries.count);
+                        }
+                    } while (mesh_index >= rolling_geo_start + *count);
+                    auto &geo = g.geometries[rolling_geo_index];
+                    if (mesh.mesh_part_groups.count <= 0) {
+                        meshes.remove_ordered(mesh_index);
+                        --*count;
+                    } else {
+                        ++mesh_index;
+                    }
+                }
+            };
+            prune_empty_meshes(g.opaque_meshes, MAP_Geometry_Buffer_Source::Opaque);
+            prune_empty_meshes(g.transparent_meshes, MAP_Geometry_Buffer_Source::Transparent);
+            prune_empty_meshes(g.decal_meshes, MAP_Geometry_Buffer_Source::Decal);
         }
     }
 
