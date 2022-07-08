@@ -49,6 +49,9 @@ uniform map_vs_params {
     mat4 V;
     mat4 P;
     vec3 cam_pos;
+    vec3 displacement;
+    vec3 scaling_factor;
+    vec3 overall_center;
 };
 in vec4 in_position;
 in vec3 in_normal;
@@ -61,9 +64,15 @@ out vec4 color;
 out vec2 uv;
 
 void main() {
-    worldpos = (M * in_position).xyz;
-    cam_relative_pos = (M * in_position).xyz - cam_pos;
-    gl_Position = P * V * M * in_position;
+    vec4 edited_world_pos = in_position;
+    edited_world_pos.xyz -= overall_center;
+    edited_world_pos.xyz *= scaling_factor;
+    edited_world_pos.xyz += overall_center;
+    edited_world_pos.xyz += displacement;
+    edited_world_pos = M * edited_world_pos;
+    worldpos = edited_world_pos.xyz;
+    cam_relative_pos = edited_world_pos.xyz - cam_pos;
+    gl_Position = P * V * edited_world_pos;
     normal = in_normal;
     color = in_color.bgra;
     uv = in_uv;
@@ -75,6 +84,7 @@ uniform map_fs_params {
     float textured;
     float lit;
     float do_a2c_sharpening;
+    float highlight_amount;
 };
 in vec3 worldpos;
 in vec3 cam_relative_pos;
@@ -117,6 +127,7 @@ void main() {
 
     // frag_color *= vec4(fract(worldpos), 1);
     //frag_color = vec4(0.5, 1, 0.5, 0.1);
+    frag_color.rgb = mix(frag_color.rgb, vec3(0.97, 0.76, 0.30), highlight_amount * 0.5);
     frag_color = clamp(frag_color, 0, 1);
 }
 @end
