@@ -3082,13 +3082,6 @@ static void frame(void *userdata) {
         defer {
             ImGui::End();
         };
-        ImGui::SliderAngle("Camera FOV", &g.fov, FOV_MIN * (360 / TAU32), FOV_MAX * (360 / TAU32));
-        ImGui::Text("At (%f, %f, %f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
-        ImGui::SameLine(); if (ImGui::Button("Reset Camera")) {
-            g.cam_pos = {};
-            g.pitch = 0;
-            g.yaw = 0;
-        }
         if (obj_file_buf) {
             FILE *f = PH2CLD__fopen(obj_file_buf, "r");
             if (f) {
@@ -3703,10 +3696,10 @@ static void frame(void *userdata) {
                     }
                     // Log("We're going to process %d indices...", indices_to_process);
                     assert(indices_index + indices_to_process <= mesh.indices.count);
-                    int unique_indices_count = 0;
-                    static bool vert_referenced[65536];
-                    memset(vert_referenced, 0, sizeof(vert_referenced));
                     Log("Scaling by %f, %f, %f", scaling_factor.X, scaling_factor.Y, scaling_factor.Z);
+                    static bool vert_referenced[65536];
+                    int unique_indices_count = 0;
+                    memset(vert_referenced, 0, sizeof(vert_referenced));
                     hmm_vec3 center = {};
                     for (int i = 0; i < indices_to_process; i++) {
                         int index = mesh.indices.data[indices_index + i];
@@ -3748,7 +3741,7 @@ static void frame(void *userdata) {
                 }
                 if (duplicate) {
                     int mpg_index = buf.mesh_part_group_index;
-                    auto &mesh = g.opaque_meshes[buf.global_mesh_index];
+                    auto &mesh = (*meshes)[buf.global_mesh_index];
                     auto &buf = mesh.vertex_buffers[mesh.mesh_part_groups[mpg_index].section_index];
                     int indices_index = 0;
                     for (int i = 0; i < mpg_index; i++) {
@@ -3765,60 +3758,56 @@ static void frame(void *userdata) {
                     // Log("We're going to process %d indices...", indices_to_process);
                     assert(indices_index + indices_to_process <= mesh.indices.count);
 
+                    hmm_vec3 center = {};
+
                     // @Note: I think this is a GGGAAAARRRRRBBBBBAAAGGGEE way to dupe a mesh.
                     //        Yikes! It would be nice to have a better way to do so later.
-                    Array<int> unique_indices = {};
-                    defer {
-                        unique_indices.release();
-                    };
-                    for (int i = 0; i < indices_to_process; i++) {
-                        int index = mesh.indices[indices_index + i];
-                        bool found = false;
-                        for (auto &idx : unique_indices) {
-                            if (idx == index) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        unique_indices.push(index);
-                    }
-                    // int min_vertex = 0;
-                    // int max_vertex = 65535;
-                    buf.data = (char *)realloc(buf.data, (buf.num_vertices + indices_to_process) * buf.bytes_per_vertex);
-                    assert(buf.data);
+                    MAP_Mesh new_mesh = {};
+                    new_mesh.indices.reserve(indices_to_process);
+                    auto &new_vertex_buffer = *new_mesh.vertex_buffers.push();
+                    new_vertex_buffer.bytes_per_vertex = buf.bytes_per_vertex;
+                    new_vertex_buffer.data = (char *)malloc(indices_to_process * buf.bytes_per_vertex);
+                    assert(new_vertex_buffer.data);
+
                     for (int i = 0; i < indices_to_process; i++) {
                         int vert_index = mesh.indices[indices_index + i];
                         switch (buf.bytes_per_vertex) {
                             case 0x14: {
-                                auto verts = (PH2MAP__Vertex14 *)buf.data;
-                                verts[buf.num_vertices + i] = verts[vert_index];
-                                verts[buf.num_vertices + i].position[0] += 1000;
+                                auto verts_in = (PH2MAP__Vertex14 *)buf.data;
+                                auto verts_out = (PH2MAP__Vertex14 *)new_vertex_buffer.data;
+                                verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
+                                verts_out[new_vertex_buffer.num_vertices].position[0] += 1000;
                             } break;
                             case 0x18: {
-                                auto verts = (PH2MAP__Vertex18 *)buf.data;
-                                verts[buf.num_vertices + i] = verts[vert_index];
-                                verts[buf.num_vertices + i].position[0] += 1000;
+                                auto verts_in = (PH2MAP__Vertex18 *)buf.data;
+                                auto verts_out = (PH2MAP__Vertex18 *)new_vertex_buffer.data;
+                                verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
+                                verts_out[new_vertex_buffer.num_vertices].position[0] += 1000;
                             } break;
                             case 0x20: {
-                                auto verts = (PH2MAP__Vertex20 *)buf.data;
-                                verts[buf.num_vertices + i] = verts[vert_index];
-                                verts[buf.num_vertices + i].position[0] += 1000;
+                                auto verts_in = (PH2MAP__Vertex20 *)buf.data;
+                                auto verts_out = (PH2MAP__Vertex20 *)new_vertex_buffer.data;
+                                verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
+                                verts_out[new_vertex_buffer.num_vertices].position[0] += 1000;
                             } break;
                             case 0x24: {
-                                auto verts = (PH2MAP__Vertex24 *)buf.data;
-                                verts[buf.num_vertices + i] = verts[vert_index];
-                                verts[buf.num_vertices + i].position[0] += 1000;
+                                auto verts_in = (PH2MAP__Vertex24 *)buf.data;
+                                auto verts_out = (PH2MAP__Vertex24 *)new_vertex_buffer.data;
+                                verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
+                                verts_out[new_vertex_buffer.num_vertices].position[0] += 1000;
                             } break;
                         }
-                        mesh.indices.push((uint16_t)(buf.num_vertices + i));
+                        new_mesh.indices.push((uint16_t)(new_vertex_buffer.num_vertices));
+                        new_vertex_buffer.num_vertices++;
                     }
-                    buf.num_vertices += indices_to_process;
-                    auto &new_group = *mesh.mesh_part_groups.push();
-                    new_group = mesh.mesh_part_groups[mpg_index];
-                    new_group.mesh_parts = {};
+                    assert(new_vertex_buffer.num_vertices == indices_to_process);
+                    auto &new_group = *new_mesh.mesh_part_groups.push();
+                    new_group.material_index = mesh.mesh_part_groups[mpg_index].material_index;
                     for (auto &part : mesh.mesh_part_groups[mpg_index].mesh_parts) {
                         new_group.mesh_parts.push(part);
                     }
+                    meshes->push(new_mesh);
+                    g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
                     g.map_must_update = true;
                     // Log("Duped!");
                 }
@@ -4169,8 +4158,21 @@ static void frame(void *userdata) {
             ImGui::PopStyleColor();
         };
         if (ImGui::Begin("Viewport", &g.show_viewport, ImGuiWindowFlags_NoCollapse)) {
-            ImDrawList *dl = ImGui::GetWindowDrawList();
-            dl->AddCallback(viewport_callback, &g);
+            ImGui::Columns(2);
+            ImGui::SliderAngle("Camera FOV", &g.fov, FOV_MIN * (360 / TAU32), FOV_MAX * (360 / TAU32));
+            ImGui::NextColumn();
+            if (ImGui::Button("Reset Camera")) {
+                g.cam_pos = {};
+                g.pitch = 0;
+                g.yaw = 0;
+            }
+            ImGui::SameLine(); ImGui::Text("(%.0f, %.0f, %.0f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
+            ImGui::Columns(1);
+            if (ImGui::BeginChild("###Viewport Rendering Region")) {
+                ImDrawList *dl = ImGui::GetWindowDrawList();
+                dl->AddCallback(viewport_callback, &g);
+            }
+            ImGui::EndChild();
         }
         ImGui::End();
     }
