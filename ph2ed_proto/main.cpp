@@ -197,6 +197,7 @@ struct MAP_Geometry_Buffer {
     int global_mesh_index = 0; // @Todo: index within geometry
     int mesh_part_group_index = 0;
     bool shown = true;
+    bool selected = false; // Used by Imgui
     uint16_t material_index = 0;
     void release() {
         sg_destroy_buffer(buf);
@@ -313,6 +314,12 @@ struct G {
 
     ControlState control_state = {};
     float fov = FOV_DEFAULT;
+
+    bool show_editor = true;
+    bool show_viewport = true;
+    bool show_textures = true;
+    bool show_materials = true;
+    bool show_console = true;
 
     float view_x = 0; // in PIXELS!
     float view_y = 0;
@@ -2062,9 +2069,12 @@ static void test_all_maps(G &g) {
 }
 
 static void imgui_do_console(G &g) {
+    if (!g.show_console) {
+        return;
+    }
     ImGui::SetNextWindowPos(ImVec2 { sapp_width() * 0.66f, sapp_height() * 0.66f }, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2 { sapp_width() * 0.32f, sapp_height() * 0.32f }, ImGuiCond_FirstUseEver);
-    ImGui::Begin("Console");
+    ImGui::Begin("Console", &g.show_console, ImGuiWindowFlags_NoCollapse);
     defer {
         ImGui::End();
     };
@@ -2200,6 +2210,7 @@ static void init(void *userdata) {
 #ifndef NDEBUG
     MoveWindow(GetConsoleWindow(), -1925, 0, 1500, 800, true);
     MoveWindow((HWND)sapp_win32_get_hwnd(), -1870, 50, 1500, 800, true);
+    ShowWindow((HWND)sapp_win32_get_hwnd(), SW_MAXIMIZE);
 #endif
     G &g = *(G *)userdata;
     new (userdata) G{};
@@ -2228,45 +2239,42 @@ Size=400,400
 Collapsed=0
 
 [Window][Console]
-Pos=1080,553
-Size=456,256
+Pos=953,633
+Size=452,229
 Collapsed=0
-DockId=0x0000000A,0
 
 [Window][Editor]
 Pos=0,20
-Size=432,531
+Size=392,427
 Collapsed=0
-DockId=0x00000003,0
+DockId=0x00000001,0
 
 [Window][Textures]
-Pos=0,553
-Size=470,256
+Pos=0,449
+Size=392,360
 Collapsed=0
-DockId=0x00000007,0
+DockId=0x00000005,0
 
 [Window][Materials]
-Pos=472,553
-Size=606,256
+Pos=394,449
+Size=1142,360
 Collapsed=0
-DockId=0x00000009,0
+DockId=0x00000006,0
 
-[Window][View]
-Pos=434,20
-Size=1102,531
+[Window][Viewport]
+Pos=394,20
+Size=1142,427
 Collapsed=0
-DockId=0x00000004,0
+DockId=0x00000002,0
 
 [Docking][Data]
-DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y
-  DockNode      ID=0x00000005 Parent=0x8B93E3BD SizeRef=1484,483 Split=X
-    DockNode    ID=0x00000003 Parent=0x00000005 SizeRef=432,741 Selected=0x9F27EDF6
-    DockNode    ID=0x00000004 Parent=0x00000005 SizeRef=1050,741 CentralNode=1 Selected=0x530C566C
-  DockNode      ID=0x00000006 Parent=0x8B93E3BD SizeRef=1484,256 Split=X Selected=0xFC744897
-    DockNode    ID=0x00000007 Parent=0x00000006 SizeRef=454,256 Selected=0xFC744897
-    DockNode    ID=0x00000008 Parent=0x00000006 SizeRef=1028,256 Split=X Selected=0x6AE1E39D
-      DockNode  ID=0x00000009 Parent=0x00000008 SizeRef=585,256 Selected=0x6AE1E39D
-      DockNode  ID=0x0000000A Parent=0x00000008 SizeRef=441,256 Selected=0x49278EEE
+DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Selected=0x13926F0B
+  DockNode    ID=0x00000003 Parent=0x8B93E3BD SizeRef=1536,427 Split=X
+    DockNode  ID=0x00000001 Parent=0x00000003 SizeRef=392,789 Selected=0x9F27EDF6
+    DockNode  ID=0x00000002 Parent=0x00000003 SizeRef=1142,789 CentralNode=1 Selected=0x13926F0B
+  DockNode    ID=0x00000004 Parent=0x8B93E3BD SizeRef=1536,360 Split=X Selected=0xFC744897
+    DockNode  ID=0x00000005 Parent=0x00000004 SizeRef=392,256 Selected=0xFC744897
+    DockNode  ID=0x00000006 Parent=0x00000004 SizeRef=1142,256 Selected=0x6AE1E39D
 )");
     }
     {
@@ -2971,6 +2979,14 @@ static void frame(void *userdata) {
                 sapp_request_quit();
             }
         }
+        if (ImGui::BeginMenu("View")) {
+            defer { ImGui::EndMenu(); };
+            ImGui::MenuItem("Editor", nullptr, &g.show_editor);
+            ImGui::MenuItem("Viewport", nullptr, &g.show_viewport);
+            ImGui::MenuItem("Textures", nullptr, &g.show_textures);
+            ImGui::MenuItem("Textures", nullptr, &g.show_materials);
+            ImGui::MenuItem("Console", nullptr, &g.show_console);
+        }
         if (ImGui::BeginMenu("About")) {
             defer { ImGui::EndMenu(); };
             ImGui::MenuItem("Psilent pHill 2 Editor v0.001", nullptr, false, false);
@@ -3058,8 +3074,8 @@ static void frame(void *userdata) {
     // if (g.control_state != ControlState::Normal) {
     //     ImGui::GetStyle().Alpha = 0.333f;
     // }
-    {
-        ImGui::Begin("Editor");
+    if (g.show_editor) {
+        ImGui::Begin("Editor", &g.show_editor, ImGuiWindowFlags_NoCollapse);
         defer {
             ImGui::End();
         };
@@ -3408,17 +3424,22 @@ static void frame(void *userdata) {
                     } break;
                 }
                 char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d), %s Mesh #%d, group #%d", buf.global_geometry_index, buf.id, source, buf.global_mesh_index, buf.mesh_part_group_index);
-                if (ImGui::Checkbox("", &buf.shown)) {
-                    for (int i = g.map_buffers_count; i < g.map_buffers_max; i++) {
-                        g.map_buffers[i].shown = true;
-                    }
-                    for (int i = g.decal_buffers_count; i < g.decal_buffers_max; i++) {
-                        g.decal_buffers[i].shown = true;
-                    }
+                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_OpenOnArrow;
+                if (buf.selected) {
+                    flags |= ImGuiTreeNodeFlags_Selected;
                 }
-                ImGui::SameLine(); if (!ImGui::CollapsingHeader(b)) {
+                ImGui::Checkbox("", &buf.shown);
+                ImGui::SameLine(); bool ret = ImGui::TreeNodeEx(b, flags);
+                if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+                    buf.selected = !buf.selected;
+                }
+                if (!ret) {
                     return;
                 }
+                defer {
+                    ImGui::TreePop();
+                };
+                
                 ImGui::Indent();
                 defer {
                     ImGui::Unindent();
@@ -3849,10 +3870,10 @@ static void frame(void *userdata) {
     if (g.map_must_update) {
         g.texture_ui_selected = -1;
     }
-    {
+    if (g.show_textures) {
         ImGui::SetNextWindowPos(ImVec2 { 60, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(256, 256), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Textures");
+        ImGui::Begin("Textures", &g.show_textures, ImGuiWindowFlags_NoCollapse);
         defer {
             ImGui::End();
         };
@@ -3997,10 +4018,10 @@ static void frame(void *userdata) {
             }
         }
     }
-    {
+    if (g.show_materials) {
         ImGui::SetNextWindowPos(ImVec2 { 60 + 256 + 20, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(512, 256), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Materials");
+        ImGui::Begin("Materials", &g.show_materials, ImGuiWindowFlags_NoCollapse);
         defer {
             ImGui::End();
         };
@@ -4067,7 +4088,7 @@ static void frame(void *userdata) {
             g.materials.push(mat);
         }
     }
-    {
+    if (g.show_viewport) {
         ImGui::SetNextWindowPos(ImVec2 { sapp_width() * 0.5f, 20 }, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(sapp_width() * 0.5f, sapp_height() * 0.5f - 20), ImGuiCond_FirstUseEver);
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 1);
@@ -4077,13 +4098,11 @@ static void frame(void *userdata) {
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor();
         };
-        if (ImGui::Begin("View")) {
-            defer {
-                ImGui::End();
-            };
+        if (ImGui::Begin("Viewport", &g.show_viewport, ImGuiWindowFlags_NoCollapse)) {
             ImDrawList *dl = ImGui::GetWindowDrawList();
             dl->AddCallback(viewport_callback, &g);
         }
+        ImGui::End();
     }
     if (g.cld_must_update) {
         bool can_update = true;
