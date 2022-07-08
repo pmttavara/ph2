@@ -2965,6 +2965,10 @@ static void frame(void *userdata) {
     defer {
         free(requested_save_filename);
     };
+    char *obj_export_name = nullptr;
+    defer {
+        free(obj_export_name);
+    };
     if (ImGui::BeginMainMenuBar()) {
         defer { ImGui::EndMainMenuBar(); };
         if (ImGui::BeginMenu("File")) {
@@ -2979,6 +2983,7 @@ static void frame(void *userdata) {
                 g.control_s = false;
                 g.control_shift_s = false;
             }
+            ImGui::Separator();
             if (ImGui::MenuItem("Import OBJ Model...")) {
                 obj_file_buf = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                             "All Files\0" "*.*\0",
@@ -2989,6 +2994,15 @@ static void frame(void *userdata) {
                                                             "All Files\0" "*.*\0",
                                                            L"Open DDS", true);
             }
+            bool any_selected = false;
+            for (auto &buf : g.map_buffers) if (buf.selected) any_selected = true;
+            for (auto &buf : g.decal_buffers) if (buf.selected) any_selected = true;
+            if (ImGui::MenuItem("Export Selected as OBJ...", nullptr, nullptr, any_selected)) {
+                obj_export_name = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
+                                                               "All Files\0" "*.*\0",
+                                                              L"Save OBJ", false);
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
                 sapp_request_quit();
             }
@@ -3104,11 +3118,6 @@ static void frame(void *userdata) {
             case MAP_Geometry_Buffer_Source::Decal: return g.decal_meshes;
         }
     };
-    if (g.show_editor) {
-        ImGui::Begin("Editor", &g.show_editor, ImGuiWindowFlags_NoCollapse);
-        defer {
-            ImGui::End();
-        };
         if (obj_file_buf) {
             FILE *f = PH2CLD__fopen(obj_file_buf, "r");
             if (f) {
@@ -3122,7 +3131,7 @@ static void frame(void *userdata) {
                 // Array<uint32_t> colours = {}; defer { colours.release(); };
                 Array<PH2MAP__Vertex20> verts = {}; defer { verts.release(); }; // @Errdefer
 
-                Array<uint16_t> unstripped_indices = {}; defer { unstripped_indices.release(); };
+                Array<int> unstripped_indices = {}; defer { unstripped_indices.release(); };
 
                 char b[1024];
                 hmm_vec3 center = {};
@@ -3202,13 +3211,42 @@ static void frame(void *userdata) {
                             verts.push(vert);
                             indices_to_push[i] = (int)verts.count - 1;
                         }
-                        unstripped_indices.push((uint16_t)indices_to_push[0]);
-                        unstripped_indices.push((uint16_t)indices_to_push[1]);
-                        unstripped_indices.push((uint16_t)indices_to_push[2]);
+                        auto push_wound = [&] (int a, int b, int c) {
+                            int idx_a = indices_to_push[a];
+                            int idx_b = indices_to_push[b];
+                            int idx_c = indices_to_push[c];
+                            PH2MAP__Vertex20 vert_a = verts[idx_a];
+                            PH2MAP__Vertex20 vert_b = verts[idx_b];
+                            PH2MAP__Vertex20 vert_c = verts[idx_c];
+                            // Infer face winding by comparing cross product to normal
+                            hmm_vec3 v0 = { vert_a.position[0], vert_a.position[1], vert_a.position[2] };
+                            hmm_vec3 v1 = { vert_b.position[0], vert_b.position[1], vert_b.position[2] };
+                            hmm_vec3 v2 = { vert_c.position[0], vert_c.position[1], vert_c.position[2] };
+
+                            hmm_vec3 n0 = { vert_a.normal[0], vert_a.normal[1], vert_a.normal[2] };
+                            hmm_vec3 n1 = { vert_b.normal[0], vert_b.normal[1], vert_b.normal[2] };
+                            hmm_vec3 n2 = { vert_c.normal[0], vert_c.normal[1], vert_c.normal[2] };
+
+                            hmm_vec3 wound_normal = HMM_Cross((v1 - v0), (v2 - v0));
+                            hmm_vec3 given_normal = HMM_Normalize(n0 + n1 + n2);
+
+                            float dot = HMM_Dot(wound_normal, given_normal);
+
+                            bool is_wound_right = (dot >= 0);
+
+                            if (is_wound_right) {
+                                unstripped_indices.push(idx_b);
+                                unstripped_indices.push(idx_a);
+                                unstripped_indices.push(idx_c);
+                            } else {
+                                unstripped_indices.push(idx_a);
+                                unstripped_indices.push(idx_b);
+                                unstripped_indices.push(idx_c);
+                            }
+                        };
+                        push_wound(0, 1, 2);
                         if (matches == 5) { // Quad - upload another triangle
-                            unstripped_indices.push((uint16_t)indices_to_push[0]);
-                            unstripped_indices.push((uint16_t)indices_to_push[2]);
-                            unstripped_indices.push((uint16_t)indices_to_push[3]);
+                            push_wound(0, 2, 3);
                         }
                     }
                     memset(b, 0, sizeof b);
@@ -3244,25 +3282,34 @@ static void frame(void *userdata) {
                     mesh_verts_count = 0;
                 };
 
-                int64_t rolling_indices_index = 0;
-                for (int64_t i = 0; i < unstripped_indices.count; i += 3) {
-                    mesh_verts[mesh_verts_count++] = verts[unstripped_indices[i + 0]];
-                    mesh_verts[mesh_verts_count++] = verts[unstripped_indices[i + 1]];
-                    mesh_verts[mesh_verts_count++] = verts[unstripped_indices[i + 2]];
-                    assert(i + 0 - rolling_indices_index >= 0);
-                    assert(i + 2 - rolling_indices_index < 65536);
-                    mesh.indices.push((int16_t)(i + 0 - rolling_indices_index));
-                    mesh.indices.push((int16_t)(i + 0 - rolling_indices_index));
-                    mesh.indices.push((int16_t)(i + 1 - rolling_indices_index));
-                    mesh.indices.push((int16_t)(i + 2 - rolling_indices_index));
-                    mesh.indices.push((int16_t)(i + 2 - rolling_indices_index));
-                    if (mesh_verts_count >= 65535 - 3 ||
-                        mesh.indices.count >= 65535 - 3) {
-                        rolling_indices_index += mesh_verts_count;
+                for (int i = 0; i < unstripped_indices.count; i += 3) {
+                    assert(unstripped_indices[i] >= i);
+                    assert(unstripped_indices[i] <= i + 3);
+                    mesh_verts[mesh_verts_count + 0] = verts[unstripped_indices[i + 0]];
+                    mesh_verts[mesh_verts_count + 1] = verts[unstripped_indices[i + 1]];
+                    mesh_verts[mesh_verts_count + 2] = verts[unstripped_indices[i + 2]];
+                    assert(mesh_verts_count + 0 >= 0);
+                    assert(mesh_verts_count + 2 <= 65535);
+                    mesh.indices.push((uint16_t)(mesh_verts_count + 0));
+                    mesh.indices.push((uint16_t)(mesh_verts_count + 0));
+                    mesh.indices.push((uint16_t)(mesh_verts_count + 1));
+                    mesh.indices.push((uint16_t)(mesh_verts_count + 2));
+                    mesh.indices.push((uint16_t)(mesh_verts_count + 2));
+                    mesh.indices.push((uint16_t)(mesh_verts_count + 2));
+                    mesh_verts_count += 3;
+                    if (mesh_verts_count >= 65536 - 2 ||
+                        mesh.indices.count >= 65536 - 5) {
                         flush_mesh();
+                        assert(mesh_verts_count == 0);
+                        assert(mesh.indices.count == 0);
                     }
                 }
-                flush_mesh();
+                if (mesh_verts_count > 0) {
+                    assert(mesh.indices.count > 0);
+                    flush_mesh();
+                }
+                assert(mesh_verts_count == 0);
+                assert(mesh.indices.count == 0);
 
                 g.map_must_update = true;
 
@@ -3289,6 +3336,100 @@ static void frame(void *userdata) {
                 g.map_must_update = true;
             }
         }
+    auto export_to_obj = [&] {
+        char *mtl_export_name = strdup(obj_export_name);
+        if (!mtl_export_name) {
+            MsgErr("OBJ Export Error", "Couldn't build MTL filename for \"%s\".", obj_export_name);
+            return;
+        }
+        {
+            size_t n = strlen(mtl_export_name);
+            char *slash = max(strrchr(mtl_export_name, '/'), strrchr(mtl_export_name, '\\'));
+            char *dot = strrchr(mtl_export_name, '.');
+            if (dot <= slash || strcmp(dot, ".obj") != 0) {
+                // File doesn't end with ".obj" extension -- just append .mtl instead.
+                mtl_export_name = (char *)realloc(mtl_export_name, n + 4);
+                if (!mtl_export_name) {
+                    MsgErr("OBJ Export Error", "Couldn't build MTL filename for \"%s\".", obj_export_name);
+                    return;
+                }
+                dot = mtl_export_name + n;
+            }
+            dot[0] = '.';
+            dot[1] = 'm';
+            dot[2] = 't';
+            dot[3] = 'l';
+        }
+        FILE *obj = PH2CLD__fopen(obj_export_name, "w");
+        if (!obj) {
+            MsgErr("OBJ Export Error", "Couldn't open file \"%s\"!!", obj_export_name);
+            return;
+        }
+        defer {
+            fclose(obj);
+        };
+        Array<hmm_vec3> vertices = {};
+        defer {
+            vertices.release();
+        };
+        Array<hmm_vec2> uvs = {};
+        defer {
+            uvs.release();
+        };
+        Array<hmm_vec3> normals = {};
+        defer {
+            normals.release();
+        };
+        for (auto &buf : g.map_buffers) {
+            if (buf.selected) {
+                for (auto &vert : buf.vertices) {
+                    vertices.push( { vert.position[0], vert.position[1], vert.position[2] });
+                    uvs.push( { vert.uv[0], vert.uv[1] });
+                    normals.push( { vert.normal[0], vert.normal[1] });
+                }
+            }
+        }
+        for (auto &buf : g.decal_buffers) {
+            if (buf.selected) {
+                for (auto &vert : buf.vertices) {
+                    vertices.push( { vert.position[0], vert.position[1], vert.position[2] });
+                    uvs.push( { vert.uv[0], vert.uv[1] });
+                    normals.push( { vert.normal[0], vert.normal[1] });
+                }
+            }
+        }
+        assert(vertices.count % 3 == 0);
+        fprintf(obj, "# .MAP mesh export from Psilent pHill 2 Editor (" URL ")\n");
+        fprintf(obj, "\n");
+        fprintf(obj, "usemtl %s\n", mtl_export_name);
+        fprintf(obj, "\n");
+        for (auto &v : vertices) {
+            fprintf(obj, "v %f %f %f\n", v.X, v.Y, v.Z);
+        }
+        fprintf(obj, "\n");
+        for (auto &vt : uvs) {
+            fprintf(obj, "vt %f %f\n", vt.X, vt.Y);
+        }
+        fprintf(obj, "\n");
+        for (auto &vn : normals) {
+            fprintf(obj, "vn %f %f %f\n", vn.X, vn.Y, vn.Z);
+        }
+        fprintf(obj, "\n");
+        fprintf(obj, "o hello_object\n");
+        fprintf(obj, "g hello_group\n");
+        fprintf(obj, "\n");
+        for (int64_t i = 0; i < vertices.count; i += 3) {
+            fprintf(obj, "f %lld/%lld/%lld %lld/%lld/%lld %lld/%lld/%lld\n", i + 1, i + 1, i + 1, i + 2, i + 2, i + 2, i + 3, i + 3, i + 3);
+        }
+    };
+    if (obj_export_name) {
+        export_to_obj();
+    }
+    if (g.show_editor) {
+        ImGui::Begin("Editor", &g.show_editor, ImGuiWindowFlags_NoCollapse);
+        defer {
+            ImGui::End();
+        };
         {
             static bool (vertices_touched[4])[UINT16_MAX] = {};
             static int (vertex_remap[4])[UINT16_MAX] = {};
@@ -3435,36 +3576,63 @@ static void frame(void *userdata) {
         ImGui::Separator();
         ImGui::Checkbox("MAP Textured", &g.textured); ImGui::SameLine(); ImGui::Checkbox("MAP Lit", &g.lit);
         if (ImGui::CollapsingHeader("MAP Geometries", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (g.map_buffers_count + g.decal_buffers_count <= 0) {
+                ImGui::BeginDisabled();
+            }
             ImGui::Indent();
             defer {
+                if (g.map_buffers_count + g.decal_buffers_count <= 0) {
+                    ImGui::EndDisabled();
+                }
                 ImGui::Unindent();
             };
-            bool all_buffers_visible = true;
+            bool all_buffers_shown = g.map_buffers_count + g.decal_buffers_count > 0;
+            bool all_buffers_selected = g.map_buffers_count + g.decal_buffers_count > 0;
             for (int i = 0; i < g.map_buffers_count; i++) {
                 if (!g.map_buffers[i].shown) {
-                    all_buffers_visible = false;
-                    break;
+                    all_buffers_shown = false;
+                }
+                if (!g.map_buffers[i].selected) {
+                    all_buffers_selected = false;
                 }
             }
             for (int i = 0; i < g.decal_buffers_count; i++) {
                 if (!g.decal_buffers[i].shown) {
-                    all_buffers_visible = false;
-                    break;
+                    all_buffers_shown = false;
+                }
+                if (!g.decal_buffers[i].selected) {
+                    all_buffers_selected = false;
                 }
             }
-            if (all_buffers_visible ? ImGui::Button("Hide All") : ImGui::Button("Show All")) {
+            if (all_buffers_shown ? ImGui::Button("Hide All") : ImGui::Button("Show All")) {
                 for (int i = 0; i < g.map_buffers_count; i++) {
-                    g.map_buffers[i].shown = !all_buffers_visible;
+                    g.map_buffers[i].shown = !all_buffers_shown;
                 }
                 for (int i = g.map_buffers_count; i < g.map_buffers_max; i++) {
                     g.map_buffers[i].shown = true;
                 }
                 for (int i = 0; i < g.decal_buffers_count; i++) {
-                    g.decal_buffers[i].shown = !all_buffers_visible;
+                    g.decal_buffers[i].shown = !all_buffers_shown;
                 }
                 for (int i = g.decal_buffers_count; i < g.decal_buffers_max; i++) {
                     g.decal_buffers[i].shown = true;
                 }
+            }
+            ImGui::SameLine(); if (all_buffers_selected ? ImGui::Button("Select None") : ImGui::Button("Select All")) {
+                for (int i = 0; i < g.map_buffers_count; i++) {
+                    g.map_buffers[i].selected = !all_buffers_selected;
+                }
+                for (int i = g.map_buffers_count; i < g.map_buffers_max; i++) {
+                    g.map_buffers[i].selected = false;
+                }
+                for (int i = 0; i < g.decal_buffers_count; i++) {
+                    g.decal_buffers[i].selected = !all_buffers_selected;
+                }
+                for (int i = g.decal_buffers_count; i < g.decal_buffers_max; i++) {
+                    g.decal_buffers[i].selected = false;
+                }
+                // @Note: Bleh!!!
+                g.overall_center_needs_recalc = true;
             }
             MAP_Geometry_Buffer_Source prev_source = MAP_Geometry_Buffer_Source::Opaque;
             auto map_buffer_ui = [&] (MAP_Geometry_Buffer &buf) {
@@ -3489,6 +3657,7 @@ static void frame(void *userdata) {
                 ImGui::Checkbox("", &buf.shown);
                 ImGui::SameLine(); bool ret = ImGui::TreeNodeEx(b, flags);
                 if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+                    bool orig = buf.selected;
                     if (!ImGui::GetIO().KeyShift) {
                         for (auto &buf2 : g.map_buffers) {
                             buf2.selected = false;
@@ -3497,7 +3666,7 @@ static void frame(void *userdata) {
                             buf2.selected = false;
                         }
                     }
-                    buf.selected = !buf.selected;
+                    buf.selected = !orig;
                     // @Note: Bleh.
                     g.overall_center_needs_recalc = true;
                 }
