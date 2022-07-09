@@ -17,6 +17,9 @@ int num_array_resizes = 0;
 // - Multimesh movement/deleting/editing
 // - Better move UX
 
+// PUNTED to post-MVP:
+// - If I save and reload a map with a custom texture, it's moshed - OMG!!!
+//    -> Specific to when I edited and re-saved the DDS from Paint.NET. Punt!
 
 // With editor widgets, you should probably be able to:
 //  - Box-select a group of vertices or edges
@@ -44,6 +47,8 @@ int num_array_resizes = 0;
 #include "sokol_app.h"
 #include "sokol_gfx.h"
 #include "sokol_imgui.h"
+
+#include "zip.h"
 
 #include <stdarg.h>
 #include <time.h>
@@ -3012,7 +3017,7 @@ static void frame(void *userdata) {
             ImGui::MenuItem("Editor", nullptr, &g.show_editor);
             ImGui::MenuItem("Viewport", nullptr, &g.show_viewport);
             ImGui::MenuItem("Textures", nullptr, &g.show_textures);
-            ImGui::MenuItem("Textures", nullptr, &g.show_materials);
+            ImGui::MenuItem("Materials", nullptr, &g.show_materials);
             ImGui::MenuItem("Console", nullptr, &g.show_console);
         }
         if (ImGui::BeginMenu("About")) {
@@ -3239,8 +3244,8 @@ static void frame(void *userdata) {
                                 unstripped_indices.push(idx_a);
                                 unstripped_indices.push(idx_c);
                             } else {
-                                unstripped_indices.push(idx_a);
                                 unstripped_indices.push(idx_b);
+                                unstripped_indices.push(idx_a);
                                 unstripped_indices.push(idx_c);
                             }
                         };
@@ -3283,8 +3288,6 @@ static void frame(void *userdata) {
                 };
 
                 for (int i = 0; i < unstripped_indices.count; i += 3) {
-                    assert(unstripped_indices[i] >= i);
-                    assert(unstripped_indices[i] <= i + 3);
                     mesh_verts[mesh_verts_count + 0] = verts[unstripped_indices[i + 0]];
                     mesh_verts[mesh_verts_count + 1] = verts[unstripped_indices[i + 1]];
                     mesh_verts[mesh_verts_count + 2] = verts[unstripped_indices[i + 2]];
@@ -3786,9 +3789,10 @@ static void frame(void *userdata) {
             ImGui::Text("MAP Mesh Part Group");
             ImGui::Text("%d selected", num_map_bufs_selected);
 
-            bool del = ImGui::Button("Delete");
-            ImGui::SameLine();
-            bool duplicate = ImGui::Button("Duplicate");
+            bool go_to = ImGui::Button("Go To Center");
+            ImGui::NewLine();
+            bool del = ImGui::Button(num_map_bufs_selected > 1 ? "Delete All###Delete Mesh Part Groups" : "Delete###Delete Mesh Part Groups");
+            bool duplicate = ImGui::Button(num_map_bufs_selected > 1 ? "Duplicate All###Duplicate Mesh Part Groups" : "Duplicate###Duplicate Mesh Part Groups");
             bool move = false;
             ImGui::NewLine();
             ImGui::Text("Move:");
@@ -3801,6 +3805,9 @@ static void frame(void *userdata) {
             bool scale = false;
             ImGui::Text("By:");
             ImGui::SameLine(); ImGui::DragFloat3("###Displacement", &g.displacement.X, 10);
+            ImGui::SameLine(); if (ImGui::Button("Cancel###Displacement")) {
+                g.displacement = {};
+            }
             ImGui::NewLine();
             ImGui::Text("Scale:");
             ImGui::SameLine(); if (ImGui::Button("- X")) { g.scaling_factor = { - 1, + 1, + 1 }; }
@@ -3811,13 +3818,14 @@ static void frame(void *userdata) {
             ImGui::SameLine(); if (ImGui::Button("Z*2")) { g.scaling_factor = { + 1, + 1, + 2 }; }
             ImGui::Text("By:");
             ImGui::SameLine(); ImGui::DragFloat3("###Scaling", &g.scaling_factor.X, 0.01f);
+            ImGui::SameLine(); if (ImGui::Button("Cancel###Scaling")) {
+                g.scaling_factor = { 1, 1, 1 };
+            }
             if (ImGui::Button("Apply###Displacement and Scaling")) {
                 move = true;
                 scale = true;
             }
             ImGui::NewLine();
-
-            bool go_to = ImGui::Button("Go To Center");
 
             if (g.overall_center_needs_recalc) {
                 g.overall_center = {}; // @Lazy
@@ -3923,25 +3931,21 @@ static void frame(void *userdata) {
                                 auto verts_in = (PH2MAP__Vertex14 *)buf.data;
                                 auto verts_out = (PH2MAP__Vertex14 *)new_vertex_buffer.data;
                                 verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
-                                verts_out[new_vertex_buffer.num_vertices].position[0] += 1000;
                             } break;
                             case 0x18: {
                                 auto verts_in = (PH2MAP__Vertex18 *)buf.data;
                                 auto verts_out = (PH2MAP__Vertex18 *)new_vertex_buffer.data;
                                 verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
-                                verts_out[new_vertex_buffer.num_vertices].position[0] += 1000;
                             } break;
                             case 0x20: {
                                 auto verts_in = (PH2MAP__Vertex20 *)buf.data;
                                 auto verts_out = (PH2MAP__Vertex20 *)new_vertex_buffer.data;
                                 verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
-                                verts_out[new_vertex_buffer.num_vertices].position[0] += 1000;
                             } break;
                             case 0x24: {
                                 auto verts_in = (PH2MAP__Vertex24 *)buf.data;
                                 auto verts_out = (PH2MAP__Vertex24 *)new_vertex_buffer.data;
                                 verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
-                                verts_out[new_vertex_buffer.num_vertices].position[0] += 1000;
                             } break;
                         }
                         new_mesh.indices.push((uint16_t)(new_vertex_buffer.num_vertices));
@@ -4103,18 +4107,132 @@ static void frame(void *userdata) {
             map_write_to_memory(g, &filedata);
             bool success = false;
             if (requested_save_filename) {
-                char *bak_filename = mprintf("%s.%d.map.bak", requested_save_filename, (int)time(nullptr));
+                time_t now = time(nullptr);
+                char buf[sizeof("YYYY-MM-DD_HH-MM-SS")];
+                char *bak_filename = nullptr;
+                // @Hack ughhhhhh @@@ @@@ @@@ I just don't want to add a new scope here (IMO these should be returns from a func, not nested ifs)
+                if (strftime(buf, sizeof(buf), "%Y-%m-%d_%H-%M-%S", localtime(&now))) {
+                    bak_filename = mprintf("%s.%s.map.bak", requested_save_filename, buf);
+                }
                 if (bak_filename) {
                     uint16_t *filename16 = utf8_to_utf16(requested_save_filename);
                     if (filename16) {
-                        // If the file exists, we need to back it up.
+                        // If the file exists, we start with the presumption that we need to back it up.
                         bool backup = file_exists(filename16);
+                        // However, if there are already backups, and the most recent one is identical to the original file, we don't need to back it up.
+                        auto is_last_backup_identical = [&] {
+                            HANDLE orig_win = CreateFileW((LPWSTR)filename16, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                            if (orig_win == INVALID_HANDLE_VALUE) return false;
+                            defer { CloseHandle(orig_win); };
+                            LARGE_INTEGER orig_len = {};
+                            if (!GetFileSizeEx(orig_win, &orig_len)) return false;
+                            uint64_t n = (uint64_t)orig_len.QuadPart;
+                            char *glob = mprintf("%s.*.map.bak", requested_save_filename);
+                            if (!glob) return false;
+                            defer { free(glob); };
+                            uint16_t *glob16 = utf8_to_utf16(glob);
+                            if (!glob16) return false;
+                            defer { free(glob16); };
+                            struct _wfinddata64_t newest_valid_backup = {};
+                            {
+                                struct _wfinddata64_t filedata = {};
+                                intptr_t directory = _wfindfirst64((wchar_t *)glob16, &filedata);
+                                if (directory < 0) return false;
+                                defer { _findclose(directory); };
+                                uint64_t newest_date = 0;
+                                while (_wfindnext64(directory, &filedata) >= 0) {
+                                    int periods_found = 0;
+                                    auto dot = wcslen(filedata.name) + 1;
+                                    while (periods_found < 3 && dot-- > 0) {
+                                        if (filedata.name[dot] == '/' || filedata.name[dot] == '\\') {
+                                            break; // directory found before all the dots.
+                                        } else if (filedata.name[dot] == '.') {
+                                            ++periods_found;
+                                        }
+                                    }
+                                    if (periods_found == 3) {
+                                        uint64_t y = 0, m = 1, d = 1, h = 1, min = 1, s = 1;
+                                        int matches = swscanf((wchar_t *)(filedata.name + dot), L".%llu-%llu-%llu_%llu-%llu-%llu.map.bak",
+                                            &y, &m, &d, &h, &min, &s);
+                                        if (matches == 6) {
+                                            if (y < (1ull << (63 - 40)) && m <= 12 && d <= 31 && h <= 23 && min <= 59 && s <= 60) {
+                                                uint64_t lexicographic = (y << 40) | (m << 32) | (d << 24) | (h << 16) | (min << 8) | s;
+                                                if (newest_date <= lexicographic) {
+                                                    newest_date = lexicographic;
+                                                    newest_valid_backup = filedata;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (errno != ENOENT) return false;
+                            Log("File \"%ls\" has length %llu", newest_valid_backup.name, (uint64_t)newest_valid_backup.size);
+                            if (n != (uint64_t)newest_valid_backup.size) return false;
+                            FILE *a = PH2CLD__fopen(requested_save_filename, "rb");
+                            if (!a) return false;
+                            defer { fclose(a); };
+                            auto slash = (uint16_t *)max(wcsrchr((wchar_t *)filename16, '/'), wcsrchr((wchar_t *)filename16, '\\'));
+                            uint16_t *b_filepath = utf8_to_utf16(mprintf("%.*ls%ls", slash ? (int)(slash - filename16 + 1) : 0, filename16, newest_valid_backup.name));
+                            defer { free(b_filepath); };
+                            FILE *b = _wfopen((wchar_t *)b_filepath, L"rb");
+                            if (!b) return false;
+                            defer { fclose(b); };
+                            enum { N = 1024 * 1024 };
+                            static char bufa[N];
+                            static char bufb[N];
+                            while (true) {
+                                size_t na = fread(bufa, 1, N, a);
+                                size_t nb = fread(bufb, 1, N, b);
+                                if (na != nb) {
+                                    assert(ferror(a) || ferror(b));
+                                    return false;
+                                } else {
+                                    if (ferror(a) || ferror(b)) return false;
+                                    if (memcmp(bufa, bufb, na) != 0) {
+                                        return false;
+                                    }
+                                    assert(feof(a) == feof(b));
+                                    if (feof(a)) return true;
+                                }
+                            }
+                        };
+                        if (is_last_backup_identical()) {
+                            backup = false;
+                        }
                         uint16_t *bak_filename16 = utf8_to_utf16(bak_filename);
                         if (bak_filename16) {
+                            bool backup_succeeded = true;
+                            auto try_backup = [&] {
+                                Log("Attempting backup to \"%s\"...", bak_filename);
+                                // FILE *src = _wfopen((wchar_t *)filename16);
+                                // if (!src) return false;
+                                // defer { fclose(src); };
+                                // struct zip_t *zip = zip_open(bak_filename, 9, 'w');
+                                // if (!zip) return false;
+                                // defer {
+                                //     zip_close(zip);
+                                // };
+                                // 
+                                // return true;
+                                // return false;
+                                return (bool)CopyFileW((LPCWSTR)filename16, (LPCWSTR)bak_filename16, TRUE);
+                            };
                             if (backup) {
-                                Log("Backing up to \"%s\"...", bak_filename);
+                                backup_succeeded = try_backup();
                             }
-                            if (!backup || CopyFileW((LPCWSTR)filename16, (LPCWSTR)bak_filename16, TRUE)) {
+                            bool should_save = false;
+                            if (backup_succeeded) {
+                                should_save = true;
+                            } else {
+                                if (MessageBoxA((HWND)sapp_win32_get_hwnd(),
+                                    "A backup of this file couldn't be written to disk.\n\nDo you want to save, and overwrite the file, without any backup?",
+                                    "Save Backup Failed",
+                                    MB_YESNO | MB_ICONWARNING | MB_SYSTEMMODAL) == IDYES) {
+                                    should_save = true;
+                                }
+                            }
+                            if (should_save) {
                                 FILE *f = PH2CLD__fopen(requested_save_filename, "wb");
                                 if (f) {
                                     if (fwrite(filedata.data, 1, filedata.count, f) == (int)filedata.count) {
@@ -4131,7 +4249,7 @@ static void frame(void *userdata) {
                                 } else {
                                     Log("Couldn't open %s for writing", requested_save_filename);
                                 }
-                                if (!success && backup) {
+                                if (!success && backup_succeeded) {
                                     // Attempt to recover file contents by overwriting with the backup.
                                     if (CopyFileW((LPCWSTR)bak_filename16, (LPCWSTR)filename16, FALSE)) {
                                         Log("Restored file from backup.");
@@ -4146,9 +4264,7 @@ static void frame(void *userdata) {
                                     }
                                 }
                             } else {
-                                if (backup) {
-                                    Log("Couldn't create backup file!!!");
-                                }
+                                Log("Couldn't create backup and user declined to overwrite.");
                             }
                             free(bak_filename16);
                         } else {
@@ -4425,6 +4541,11 @@ static void frame(void *userdata) {
             ImGui::EndChild();
         }
         ImGui::End();
+    } else {
+        g.view_x = -1;
+        g.view_y = -1;
+        g.view_w = -1;
+        g.view_h = -1;
     }
     if (g.cld_must_update) {
         bool can_update = true;
@@ -4586,7 +4707,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 {
                     fs_params.highlight_amount = 0;
                     if (buf.selected) {
-                        fs_params.highlight_amount = (float)sin(g.t * TAU * 2) * 0.5f + 0.5f;
+                        fs_params.highlight_amount = (float)sin(g.t * TAU * 1.5f) * 0.5f + 0.5f;
                     }
                 }
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));

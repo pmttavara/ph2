@@ -38,3 +38,5 @@ SOKOL_API_IMPL sg_context_desc sapp_sgcontext(void) {
     desc.wgpu.depth_stencil_view_cb = sapp_wgpu_get_depth_stencil_view;
     return desc;
 }
+
+#include "zip.c"

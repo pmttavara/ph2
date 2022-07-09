@@ -4,10 +4,10 @@ sokol-shdc -i shaders.glsl -o shaders.glsl.h --slang hlsl5 --bytecode || exit /b
 
 :: Debug modes:
 
-cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -EHa- main.cpp -c -Fomain.obj || exit /b 1
-cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -EHa- libs.cpp -c -Folibs.obj || exit /b 1
-:: clang-cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4800 -Wno-missing-braces -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sign-compare -Wno-tautological-constant-out-of-range-compare -EHa- -fsanitize=address -fsanitize=undefined main.cpp -c -Fomain.obj || exit /b 1
-:: clang-cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4800 -Wno-missing-braces -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sign-compare -Wno-tautological-constant-out-of-range-compare -EHa- -fsanitize=address -fsanitize=undefined libs.cpp -c -Folibs.obj || exit /b 1
+cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800                                 -EHa- main.cpp -c -Fomain.obj || exit /b 1
+cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4334 -wd4244 -wd4267 -wd4706 -EHa- libs.cpp -c -Folibs.obj || exit /b 1
+:: clang-cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4800                                 -Wno-missing-braces -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sign-compare -Wno-tautological-constant-out-of-range-compare -EHa- -fsanitize=address -fsanitize=undefined main.cpp -c -Fomain.obj || exit /b 1
+:: clang-cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4800 -wd4334 -wd4244 -wd4267 -wd4706 -Wno-missing-braces -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sign-compare -Wno-tautological-constant-out-of-range-compare -EHa- -fsanitize=address -fsanitize=undefined libs.cpp -c -Folibs.obj || exit /b 1
 
 :: link -debug -incremental:no -nologo main.obj libs.obj /out:ph2ed_proto.exe legacy_stdio_definitions.lib comdlg32.lib || exit /b 1
 lld-link -debug -incremental:no -nologo main.obj libs.obj /out:ph2ed_proto.exe legacy_stdio_definitions.lib comdlg32.lib || exit /b 1
