@@ -2,6 +2,7 @@
 *.cld
 *.map
 *.map.bak
+*.map.bak.zip
 *.ilk
 ph2ed_proto/libs.obj
 ph2ed_proto/main.obj
