@@ -4440,8 +4440,6 @@ static void frame(void *userdata) {
                     if (import_success) {
                         new_tex.id = tex.id;
                         new_tex.material = tex.material;
-                        new_tex.sprite_count = tex.sprite_count;
-                        memcpy(new_tex.sprite_metadata, tex.sprite_metadata, sizeof(tex.sprite_metadata));
                         tex.release();
                         tex = new_tex;
                         g.map_must_update = true;
