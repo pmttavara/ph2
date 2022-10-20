@@ -110,7 +110,7 @@ struct Mallocator {
         return realloc(p, size);
     }
     static void (free)(void *p) {
-        return free(p);
+        return ::free(p);
     }
 };
 
@@ -189,10 +189,11 @@ template <class T, class Allocator = Mallocator> struct Array {
         data[count - 1] = value;
         return &data[count - 1];
     }
-    void pop() {
+    T pop() {
         invariants();
         assert(count > 0);
         count -= 1;
+        return data[count];
     }
     T *insert(int64_t index, T value = {}) {
         invariants();

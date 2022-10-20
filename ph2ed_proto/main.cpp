@@ -423,7 +423,21 @@ enum struct ControlState {
     Orbiting,
     Dragging,
 };
+
+struct Map_History_Entry {
+    uint64_t hash = 0;
+    char *data = nullptr;
+    size_t count = 0;
+    void release() {
+        free(data);
+        *this = {};
+    }
+};
+
 struct G : Map {
+    Array<Map_History_Entry> undo_stack = {};
+    Array<Map_History_Entry> redo_stack = {};
+
     double last_time = 0;
     double t = 0;
     float dt_history[1024] = {};
@@ -454,6 +468,9 @@ struct G : Map {
     bool control_shift_s = false;
 
     bool control_o = false;
+
+    bool control_z = false;
+    bool control_y = false;
 
     hmm_vec3 cam_pos = {0, 0, 0};
     float yaw = 0;
@@ -507,6 +524,8 @@ struct G : Map {
     char *opened_map_filename = nullptr;
 
     void release() {
+        undo_stack.release();
+        redo_stack.release();
         PH2CLD_free_collision_data(cld);
         sg_destroy_pipeline(cld_pipeline);
         for (auto &buf : cld_face_buffers) {
@@ -836,6 +855,7 @@ struct Mesh_Group_Load_Result {
     int total_bytes;
 };
 static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh, The_Arena_Allocator> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
+    (void)end;
     const char *ptr3 = group_header;
     uint32_t count = 0;
     Read(ptr3, count);
@@ -1677,6 +1697,14 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         g.texture_subfiles.release();
         g.textures.release();
         The_Arena_Allocator::free_all();
+        for (auto &entry : g.redo_stack) {
+            entry.release();
+        }
+        g.redo_stack.clear();
+        for (auto &entry : g.undo_stack) {
+            entry.release();
+        }
+        g.undo_stack.clear();
         g.texture_ui_selected = -1;
     }
     { // Semi-garbage code.
@@ -2574,8 +2602,8 @@ static void event(const sapp_event *e_, void *userdata) {
     }
     if (e.type == SAPP_EVENTTYPE_KEY_DOWN) {
         if (!e.key_repeat &&
-            (e.key_code == SAPP_KEYCODE_F11) ||
-            (e.key_code == SAPP_KEYCODE_ENTER && (e.modifiers & SAPP_MODIFIER_ALT))) {
+            ((e.key_code == SAPP_KEYCODE_F11) ||
+             (e.key_code == SAPP_KEYCODE_ENTER && (e.modifiers & SAPP_MODIFIER_ALT)))) {
             sapp_toggle_fullscreen();
         }
         if (!e.key_repeat && e.key_code == SAPP_KEYCODE_S && (e.modifiers & SAPP_MODIFIER_CTRL)) {
@@ -2586,6 +2614,12 @@ static void event(const sapp_event *e_, void *userdata) {
         }
         if (!e.key_repeat && e.key_code == SAPP_KEYCODE_O && (e.modifiers & SAPP_MODIFIER_CTRL)) {
             g.control_o = true;
+        }
+        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_Z && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+            g.control_z = true;
+        }
+        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_Y && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+            g.control_y = true;
         }
     }
     simgui_handle_event(&e);
@@ -3070,6 +3104,7 @@ static void frame(void *userdata) {
     defer {
         free(obj_export_name);
     };
+
     if (ImGui::BeginMainMenuBar()) {
         defer { ImGui::EndMainMenuBar(); };
         if (ImGui::BeginMenu("File")) {
@@ -3106,6 +3141,15 @@ static void frame(void *userdata) {
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
                 sapp_request_quit();
+            }
+        }
+        if (ImGui::BeginMenu("Edit")) {
+            defer { ImGui::EndMenu(); };
+            if (ImGui::MenuItem("Undo", "Ctrl-Z")) {
+                g.control_z = true;
+            }
+            if (ImGui::MenuItem("Redo", "Ctrl-Y")) {
+                g.control_y = true;
             }
         }
         if (ImGui::BeginMenu("View")) {
@@ -3484,7 +3528,7 @@ static void frame(void *userdata) {
                 for (auto &vert : buf.vertices) {
                     vertices.push( { vert.position[0], vert.position[1], vert.position[2] });
                     uvs.push( { vert.uv[0], vert.uv[1] });
-                    normals.push( { vert.normal[0], vert.normal[1] });
+                    normals.push( { vert.normal[0], vert.normal[1], vert.normal[2] });
                 }
             }
         }
@@ -3493,7 +3537,7 @@ static void frame(void *userdata) {
                 for (auto &vert : buf.vertices) {
                     vertices.push( { vert.position[0], vert.position[1], vert.position[2] });
                     uvs.push( { vert.uv[0], vert.uv[1] });
-                    normals.push( { vert.normal[0], vert.normal[1] });
+                    normals.push( { vert.normal[0], vert.normal[1], vert.normal[2] });
                 }
             }
         }
@@ -3672,6 +3716,9 @@ static void frame(void *userdata) {
                 }
             }
         }
+        ImGui::Separator();
+        ImGui::Text("%lld undo frames", g.undo_stack.count);
+        ImGui::Text("%lld redo frames", g.redo_stack.count);
         ImGui::Separator();
         if (ImGui::CollapsingHeader("MAP Geometries", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (g.map_buffers_count + g.decal_buffers_count <= 0) {
@@ -4697,16 +4744,58 @@ static void frame(void *userdata) {
         g.view_h = -1;
     }
 
-    static uint64_t prev_hash = 0;
-    uint64_t new_hash = mur3_32(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head, 0);
-    if (new_hash != prev_hash) {
-        Log("Undo/redo frame! Hash: %llu", new_hash);
-        prev_hash = new_hash;
+    auto make_history_entry = [&] (uint64_t map_hash) -> Map_History_Entry {
+        Map_History_Entry entry = {};
+
+        entry.hash = map_hash;
+
+        entry.count = The_Arena_Allocator::arena_head;
+
+        entry.data = (char *)malloc(entry.count);
+        assert(entry.data);
+
+        memcpy(entry.data, The_Arena_Allocator::arena_data, entry.count);
+
+        return entry;
+    };
+
+    auto apply_history_entry = [&] (Map_History_Entry entry) {
+        assert(entry.count <= The_Arena_Allocator::ARENA_SIZE);
+        The_Arena_Allocator::arena_head = entry.count;
+        memcpy(The_Arena_Allocator::arena_data, entry.data, The_Arena_Allocator::arena_head);
+    };
+
+    uint64_t map_hash = mur3_32(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head, 0);
+    if (g.undo_stack.count < 1 || map_hash != g.undo_stack[g.undo_stack.count - 1].hash) {
+        Log("Undo/redo frame! Hash: %llu", map_hash);
+        
+        g.undo_stack.push(make_history_entry(map_hash));
+
+        for (auto &entry : g.redo_stack) {
+            entry.release();
+        }
+        g.redo_stack.clear();
+
+        g.map_must_update = true;
     }
-    // if (g.map_must_update) {
-    //     uint64_t new_hash = mur3_32(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head, 0);
-    //     Log("Undo/redo frame! Hash: %llu", new_hash);
-    // }
+
+    if (g.control_z) {
+        g.control_z = false;
+        if (g.undo_stack.count > 1) {
+            g.redo_stack.push(g.undo_stack.pop());
+            apply_history_entry(g.undo_stack[g.undo_stack.count - 1]);
+            g.map_must_update = true;
+        }
+    }
+    if (g.control_y) {
+        g.control_y = false;
+        if (g.redo_stack.count > 0) {
+            g.undo_stack.push(g.redo_stack.pop());
+            apply_history_entry(g.undo_stack[g.undo_stack.count - 1]);
+            g.map_must_update = true;
+        }
+    }
+
     if (The_Arena_Allocator::allocations_this_frame != 0) {
         Log("%d allocations this frame", The_Arena_Allocator::allocations_this_frame);
         Log("The_Arena_Allocator::arena_head is %llu", The_Arena_Allocator::arena_head);
