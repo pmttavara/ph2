@@ -142,6 +142,91 @@ static inline double get_time(void) {
 // How's this done for Linux/etc?
 #define KEY(vk) ((unsigned short)GetAsyncKeyState(vk) >= 0x8000)
 
+// @Attribution: https://github.com/demetri/scribbles/blob/c475464756c104c91bab83ed4e14badefef12ab5/hashing/hash_functions.c
+uint32_t mur3_32 (const void *key, int len, uint32_t h) {
+    // main body, work on 32-bit blocks at a time
+    for (int i=0;i<len/4;i++) {
+        uint32_t k = ((uint32_t*) key)[i]*0xcc9e2d51;
+        k = ((k << 15) | (k >> 17))*0x1b873593;
+        h = (((h^k) << 13) | ((h^k) >> 19))*5 + 0xe6546b64;
+    }
+
+    // load/mix up to 3 remaining tail bytes into a tail block
+    uint32_t t = 0;
+    uint8_t *tail = ((uint8_t*) key) + 4*(len/4); 
+    switch(len & 3) {
+        case 3: t ^= tail[2] << 16;
+        case 2: t ^= tail[1] <<  8;
+        case 1: { 
+            t ^= tail[0] <<  0;
+            h ^= ((0xcc9e2d51*t << 15) | (0xcc9e2d51*t >> 17))*0x1b873593;
+        }
+    }
+
+    // finalization mix, including key length
+    h = ((h^len) ^ ((h^len) >> 16))*0x85ebca6b;
+    h = (h ^ (h >> 13))*0xc2b2ae35;
+    return h ^ (h >> 16); 
+}
+
+struct The_Arena_Allocator {
+    static char *arena_data;
+    static uint64_t arena_head;
+    static int allocations_this_frame;
+    enum { ARENA_SIZE = 512 * 1024 * 1024 };
+    static bool contains(void *p) {
+        return (char *)p >= arena_data && (char *)p < arena_data + arena_head;
+    }
+    static void init() {
+        arena_data = (char *)VirtualAlloc(nullptr, ARENA_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        arena_head = 0;
+    }
+    static void quit() {
+        VirtualFree(arena_data, 0, MEM_RELEASE);
+        arena_data = nullptr;
+        arena_head = 0;
+    }
+    static void free_all() {
+        memset(arena_data, 0, arena_head);
+        arena_head = 0;
+    }
+    static void (free)(void *) {}
+    static void *allocate(size_t size) {
+        if (arena_head + size > ARENA_SIZE) return nullptr;
+
+        void *result = arena_data + arena_head;
+        arena_head += size;
+        ++allocations_this_frame;
+        return result;
+    }
+    static void *reallocate(void *p, size_t size, size_t old_size) {
+        // No old data - allocate new block
+        if (p == NULL || old_size == 0) {
+            return allocate(size);
+        }
+
+        // Free data
+        if (size == 0) {
+            return NULL;
+        }
+
+        // New allocation is smaller
+        if (size <= old_size) {
+            return p;
+        }
+
+        // Allocate new block and copy data
+        void *q = allocate(size);
+        if (q) {
+            memcpy(q, p, old_size);
+        }
+        return q;
+    }
+};
+char *The_Arena_Allocator::arena_data;
+uint64_t The_Arena_Allocator::arena_head;
+int The_Arena_Allocator::allocations_this_frame;
+
 struct Ray {
     Ray() = default;
     Ray(hmm_vec3 pos, hmm_vec3 dir) : pos{pos}, dir{dir} {}
@@ -215,7 +300,7 @@ struct MAP_Geometry_Buffer {
 };
 struct MAP_Mesh_Vertex_Buffer {
     int bytes_per_vertex;
-    char *data;
+    Array<char, The_Arena_Allocator> data;
     int num_vertices;
 };
 struct MAP_Mesh_Part {
@@ -227,7 +312,7 @@ struct MAP_Mesh_Part {
 struct MAP_Mesh_Part_Group {
     uint32_t material_index;
     uint32_t section_index;
-    Array<MAP_Mesh_Part> mesh_parts = {};
+    Array<MAP_Mesh_Part, The_Arena_Allocator> mesh_parts = {};
 };
 // @Note: Geometries can be empty -- contain 0 mesh groups (no opaque, no transparent, no decal).
 //        This means you can't just store tree nesting structure implicitly on the map meshes, you need
@@ -237,18 +322,16 @@ struct MAP_Mesh {
     bool bbox_override = false;
     float bounding_box_a[3] = {};
     float bounding_box_b[3] = {};
-    Array<MAP_Mesh_Part_Group> mesh_part_groups = {};
-    Array<MAP_Mesh_Vertex_Buffer> vertex_buffers = {};
-    Array<uint16_t> indices = {};
+    Array<MAP_Mesh_Part_Group, The_Arena_Allocator> mesh_part_groups = {};
+    Array<MAP_Mesh_Vertex_Buffer, The_Arena_Allocator> vertex_buffers = {};
+    Array<uint16_t, The_Arena_Allocator> indices = {};
     void release() {
         for (MAP_Mesh_Part_Group &mesh_part_group : mesh_part_groups) {
             mesh_part_group.mesh_parts.release();
         }
         mesh_part_groups.release();
         for (MAP_Mesh_Vertex_Buffer & vertex_buffer : vertex_buffers) {
-            if (vertex_buffer.data) {
-                free(vertex_buffer.data);
-            }
+            vertex_buffer.data.release();
         }
         vertex_buffers.release();
         indices.release();
@@ -297,7 +380,7 @@ struct MAP_Texture {
     uint8_t sprite_count = 0;
     MAP_Sprite_Metadata sprite_metadata[64] = {};
     uint8_t format = MAP_Texture_Format_BC1;
-    Array<uint8_t> blob = {};
+    Array<uint8_t, The_Arena_Allocator> blob = {};
     void release() {
         if (image.id) {
             sg_destroy_image(image);
@@ -308,16 +391,16 @@ struct MAP_Texture {
 };
 
 struct Map {
-    Array<MAP_Texture_Subfile> texture_subfiles = {};
-    Array<MAP_Geometry> geometries = {};
+    Array<MAP_Texture_Subfile, The_Arena_Allocator> texture_subfiles = {};
+    Array<MAP_Geometry, The_Arena_Allocator> geometries = {};
 
-    Array<MAP_Mesh> opaque_meshes = {};
-    Array<MAP_Mesh> transparent_meshes = {};
-    Array<MAP_Mesh> decal_meshes = {};
+    Array<MAP_Mesh, The_Arena_Allocator> opaque_meshes = {};
+    Array<MAP_Mesh, The_Arena_Allocator> transparent_meshes = {};
+    Array<MAP_Mesh, The_Arena_Allocator> decal_meshes = {};
 
-    Array<MAP_Texture> textures = {};
+    Array<MAP_Texture, The_Arena_Allocator> textures = {};
 
-    Array<MAP_Material> materials = {};
+    Array<MAP_Material, The_Arena_Allocator> materials = {};
 
     void release() {
         for (auto &mesh : opaque_meshes) {
@@ -662,9 +745,9 @@ void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indi
     vertices.reserve(vertices_reserve);
     for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
         int vertex_size = mesh.vertex_buffers[mesh_part_group.section_index].bytes_per_vertex;
-        char *vertex_buffer = mesh.vertex_buffers[mesh_part_group.section_index].data;
+        char *vertex_buffer = mesh.vertex_buffers[mesh_part_group.section_index].data.data;
         int vertex_buffer_count = mesh.vertex_buffers[mesh_part_group.section_index].num_vertices;
-        char *end = mesh.vertex_buffers[mesh_part_group.section_index].data + vertex_buffer_count * vertex_size;
+        char *end = mesh.vertex_buffers[mesh_part_group.section_index].data.data + vertex_buffer_count * vertex_size;
         // @Note: these assertions are probably not sanity checks, but rather real
         //        logical assert()s, because my code is broken if these are zero.
         assert(vertex_size);
@@ -750,7 +833,7 @@ struct Mesh_Group_Load_Result {
     int num_added;
     int total_bytes;
 };
-static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
+static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh, The_Arena_Allocator> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
     const char *ptr3 = group_header;
     uint32_t count = 0;
     Read(ptr3, count);
@@ -889,8 +972,8 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh>
             assert(ptr5 == end_of_previous_section);
             assert(ptr5 == vertex_section_offset_base + vertex_section_header.section_starts);
             const char *end_of_this_section = ptr5 + vertex_section_header.section_length;
-            vertex_buffer.data = (char *)malloc(vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
-            memcpy(vertex_buffer.data, ptr5, vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
+            vertex_buffer.data.resize(vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
+            memcpy(vertex_buffer.data.data, ptr5, vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex);
             for (int i = 0; i < vertex_buffer.num_vertices; i++) {
                 float pos[3] = {};
                 switch (vertex_section_header.bytes_per_vertex) {
@@ -1040,6 +1123,7 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh>
                 mesh_part_group.section_index = mesh_part_group_header.section_index;
 
                 mesh_part_group.mesh_parts.reserve(mesh_part_group_header.mesh_part_count);
+                assert(mesh_part_group_header.mesh_part_count >= 1);
                 for (uint32_t mesh_part_index = 0; mesh_part_index < mesh_part_group_header.mesh_part_count; mesh_part_index++) {
                     PH2MAP__Mesh_Part mesh_part = {};
                     Read(ptr4, mesh_part);
@@ -1094,7 +1178,7 @@ static void map_write_struct(Array<uint8_t> *result, const void *px, size_t size
 #define CreateBackpatch(T) (int64_t)(result->resize(result->count + sizeof(T)), (result->count - sizeof(T)))
 #define WriteBackpatch(T, backpatch_idx, value) do { *(T *)(&(*result)[(backpatch_idx)]) = (T)(value); } while (0)
 
-static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool decals, Array<MAP_Mesh> group, int start, int count, int misalignment) {
+static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool decals, Array<MAP_Mesh, The_Arena_Allocator> group, int start, int count, int misalignment) {
     int64_t aligner = result->count;
     WriteLit(uint32_t, count);
     int64_t offsets_start = result->count;
@@ -1121,19 +1205,19 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
                     float pos[3] = {};
                     switch (vertex_buffer.bytes_per_vertex) {
                         case 0x14: {
-                            auto verts = (PH2MAP__Vertex14 *)vertex_buffer.data;
+                            auto verts = (PH2MAP__Vertex14 *)vertex_buffer.data.data;
                             memcpy(pos, verts[i].position, 3 * sizeof(float));
                         } break;
                         case 0x18: {
-                            auto verts = (PH2MAP__Vertex18 *)vertex_buffer.data;
+                            auto verts = (PH2MAP__Vertex18 *)vertex_buffer.data.data;
                             memcpy(pos, verts[i].position, 3 * sizeof(float));
                         } break;
                         case 0x20: {
-                            auto verts = (PH2MAP__Vertex20 *)vertex_buffer.data;
+                            auto verts = (PH2MAP__Vertex20 *)vertex_buffer.data.data;
                             memcpy(pos, verts[i].position, 3 * sizeof(float));
                         } break;
                         case 0x24: {
-                            auto verts = (PH2MAP__Vertex24 *)vertex_buffer.data;
+                            auto verts = (PH2MAP__Vertex24 *)vertex_buffer.data.data;
                             memcpy(pos, verts[i].position, 3 * sizeof(float));
                         } break;
                     }
@@ -1229,7 +1313,7 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
         // n groups of n vertices
         int64_t vertices_start = result->count;
         for (auto &section : mesh.vertex_buffers) {
-            map_write_struct(result, section.data, section.num_vertices * section.bytes_per_vertex);
+            map_write_struct(result, section.data.data, section.num_vertices * section.bytes_per_vertex);
         }
         if (!mesh.vertices_length_override) {
             WriteBackpatch(uint32_t, backpatch_vertices_length, result->count - vertices_start);
@@ -1563,7 +1647,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
     WriteBackpatch(uint32_t, backpatch_subfile_count, subfile_count);
     assert(file_length == result->count);
 }
-static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture> textures, uint32_t id) {
+static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture, The_Arena_Allocator> textures, uint32_t id) {
     for (auto &tex : textures) {
         if (tex.id == id) {
             return &tex;
@@ -1572,20 +1656,21 @@ static MAP_Texture *map_get_texture_by_id(Array<MAP_Texture> textures, uint32_t 
     return nullptr;
 }
 static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false) {
-    g.geometries.clear();
+    g.geometries.release();
     for (MAP_Mesh &mesh : g.opaque_meshes) mesh.release();
     for (MAP_Mesh &mesh : g.transparent_meshes) mesh.release();
     for (MAP_Mesh &mesh : g.decal_meshes) mesh.release();
-    g.opaque_meshes.clear();
-    g.transparent_meshes.clear();
-    g.decal_meshes.clear();
+    g.opaque_meshes.release();
+    g.transparent_meshes.release();
+    g.decal_meshes.release();
     if (!is_non_numbered_dependency) {
-        g.materials.clear();
+        g.materials.release();
         for (auto &tex : g.textures) {
             tex.release();
         }
-        g.texture_subfiles.clear();
-        g.textures.clear();
+        g.texture_subfiles.release();
+        g.textures.release();
+        The_Arena_Allocator::free_all();
         g.texture_ui_selected = -1;
     }
     { // Semi-garbage code.
@@ -2228,9 +2313,10 @@ static void init(void *userdata) {
         init_time += get_time();
         // Log("Init() took %f seconds.", init_time);
     };
+    The_Arena_Allocator::init();
 #ifndef NDEBUG
-    MoveWindow(GetConsoleWindow(), -1925, 0, 1500, 800, true);
-    MoveWindow((HWND)sapp_win32_get_hwnd(), -1870, 50, 1500, 800, true);
+    MoveWindow(GetConsoleWindow(), +1925, 0, 1500, 800, true);
+    MoveWindow((HWND)sapp_win32_get_hwnd(), +1990, 50, 1500, 800, true);
     ShowWindow((HWND)sapp_win32_get_hwnd(), SW_MAXIMIZE);
 #endif
     G &g = *(G *)userdata;
@@ -2377,9 +2463,10 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
             buffer.buf = sg_make_buffer(d);
         }
     }
-    if (0) {
-        test_all_maps(g);
-        sapp_request_quit();
+    if (1) {
+        map_load(g, "map/ob01 (2).map");
+        // test_all_maps(g);
+        // sapp_request_quit();
     }
 
     {
@@ -3118,7 +3205,7 @@ static void frame(void *userdata) {
     // if (g.control_state != ControlState::Normal) {
     //     ImGui::GetStyle().Alpha = 0.333f;
     // }
-    auto get_meshes = [&] (MAP_Geometry_Buffer &buf) -> Array<MAP_Mesh> & {
+    auto get_meshes = [&] (MAP_Geometry_Buffer &buf) -> Array<MAP_Mesh, The_Arena_Allocator> & {
         switch (buf.source) {
             default: assert(false);
             case MAP_Geometry_Buffer_Source::Opaque: return g.opaque_meshes;
@@ -3269,11 +3356,11 @@ static void frame(void *userdata) {
 
                 auto flush_mesh = [&] { // @Todo: return bool
                     MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
-                    buf.data = (char *)malloc(mesh_verts_count * sizeof(mesh_verts[0]));
-                    assert(buf.data);
+                    buf.data.resize(mesh_verts_count * sizeof(mesh_verts[0]));
+                    assert(buf.data.data);
                     buf.num_vertices = mesh_verts_count;
                     buf.bytes_per_vertex = sizeof(mesh_verts[0]);
-                    memcpy(buf.data, mesh_verts, mesh_verts_count * sizeof(mesh_verts[0]));
+                    memcpy(buf.data.data, mesh_verts, mesh_verts_count * sizeof(mesh_verts[0]));
 
                     MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
                     group.material_index = 0; // @Todo
@@ -3517,11 +3604,11 @@ static void frame(void *userdata) {
                     for (int vert_index_to_remove = 0; vert_index_to_remove < buf.num_vertices;) {
                         if (!vertices_touched[buf_index][vert_index_to_remove]) {
                             // Ordered removal from the vertex buffer
-                            memmove(buf.data +  vert_index_to_remove      * buf.bytes_per_vertex,
-                                    buf.data + (vert_index_to_remove + 1) * buf.bytes_per_vertex,
+                            memmove(buf.data.data +  vert_index_to_remove      * buf.bytes_per_vertex,
+                                    buf.data.data + (vert_index_to_remove + 1) * buf.bytes_per_vertex,
                                     (buf.num_vertices - vert_index_to_remove - 1) * buf.bytes_per_vertex);
-                            buf.data = (char *)realloc(buf.data, buf.num_vertices * buf.bytes_per_vertex);
-                            assert(buf.data);
+                            buf.data.resize(buf.num_vertices * buf.bytes_per_vertex);
+                            assert(buf.data.data);
                             // Ordered removal from the vertices_touched array
                             memmove(&vertices_touched[buf_index][vert_index_to_remove],
                                     &vertices_touched[buf_index][vert_index_to_remove + 1],
@@ -3842,6 +3929,12 @@ static void frame(void *userdata) {
                     mesh.bbox_override = false;
                     auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
                     auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
+
+                    assert(The_Arena_Allocator::contains(&mesh));
+                    assert(The_Arena_Allocator::contains(&mesh_part_group));
+                    assert(The_Arena_Allocator::contains(&buf));
+                    assert(The_Arena_Allocator::contains(buf.data.data));
+
                     int indices_index = 0;
                     for (int i = 0; i < mpg_index; i++) {
                         for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
@@ -3866,7 +3959,7 @@ static void frame(void *userdata) {
                         if (!vert_referenced[index]) {
                             vert_referenced[index] = true;
                             unique_indices_count++;
-                            float (*position)[3] = (float(*)[3])(buf.data + buf.bytes_per_vertex * index);
+                            float (*position)[3] = (float(*)[3])(buf.data.data + buf.bytes_per_vertex * index);
                             center.X += (*position)[0];
                             center.Y += (*position)[1];
                             center.Z += (*position)[2];
@@ -3888,12 +3981,13 @@ static void frame(void *userdata) {
                             }
                         }
                     }
-                    g.map_must_update = true;
                     // Log("Moved/Scaled!");
                     if (get_center) {
                         center /= (float)unique_indices_count + !unique_indices_count;
                         g.overall_center += center;
                         overall_center_sum += 1;
+                    } else {
+                        g.map_must_update = true;
                     }
                 }
                 if (duplicate) {
@@ -3923,30 +4017,30 @@ static void frame(void *userdata) {
                     new_mesh.indices.reserve(indices_to_process);
                     auto &new_vertex_buffer = *new_mesh.vertex_buffers.push();
                     new_vertex_buffer.bytes_per_vertex = buf.bytes_per_vertex;
-                    new_vertex_buffer.data = (char *)malloc(indices_to_process * buf.bytes_per_vertex);
-                    assert(new_vertex_buffer.data);
+                    new_vertex_buffer.data.resize(indices_to_process * buf.bytes_per_vertex);
+                    assert(new_vertex_buffer.data.data);
 
                     for (int i = 0; i < indices_to_process; i++) {
                         int vert_index = mesh.indices[indices_index + i];
                         switch (buf.bytes_per_vertex) {
                             case 0x14: {
-                                auto verts_in = (PH2MAP__Vertex14 *)buf.data;
-                                auto verts_out = (PH2MAP__Vertex14 *)new_vertex_buffer.data;
+                                auto verts_in = (PH2MAP__Vertex14 *)buf.data.data;
+                                auto verts_out = (PH2MAP__Vertex14 *)new_vertex_buffer.data.data;
                                 verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
                             } break;
                             case 0x18: {
-                                auto verts_in = (PH2MAP__Vertex18 *)buf.data;
-                                auto verts_out = (PH2MAP__Vertex18 *)new_vertex_buffer.data;
+                                auto verts_in = (PH2MAP__Vertex18 *)buf.data.data;
+                                auto verts_out = (PH2MAP__Vertex18 *)new_vertex_buffer.data.data;
                                 verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
                             } break;
                             case 0x20: {
-                                auto verts_in = (PH2MAP__Vertex20 *)buf.data;
-                                auto verts_out = (PH2MAP__Vertex20 *)new_vertex_buffer.data;
+                                auto verts_in = (PH2MAP__Vertex20 *)buf.data.data;
+                                auto verts_out = (PH2MAP__Vertex20 *)new_vertex_buffer.data.data;
                                 verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
                             } break;
                             case 0x24: {
-                                auto verts_in = (PH2MAP__Vertex24 *)buf.data;
-                                auto verts_out = (PH2MAP__Vertex24 *)new_vertex_buffer.data;
+                                auto verts_in = (PH2MAP__Vertex24 *)buf.data.data;
+                                auto verts_out = (PH2MAP__Vertex24 *)new_vertex_buffer.data.data;
                                 verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
                             } break;
                         }
@@ -3959,7 +4053,14 @@ static void frame(void *userdata) {
                     for (auto &part : mesh.mesh_part_groups[mpg_index].mesh_parts) {
                         new_group.mesh_parts.push(part);
                     }
-                    meshes.push(new_mesh);
+                    auto new_pushed_mesh = meshes.push(new_mesh);
+
+                    assert(The_Arena_Allocator::contains(&new_vertex_buffer));
+                    assert(The_Arena_Allocator::contains(new_vertex_buffer.data.data));
+                    assert(The_Arena_Allocator::contains(new_mesh.indices.data));
+                    assert(The_Arena_Allocator::contains(&new_group));
+                    assert(The_Arena_Allocator::contains(new_pushed_mesh));
+
                     g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
                     g.map_must_update = true;
                     // Log("Duped!");
@@ -4062,7 +4163,7 @@ static void frame(void *userdata) {
             for (auto &mesh : g.decal_meshes) {
                 prune_empty_mesh_part_groups(mesh);
             }
-            auto prune_empty_meshes = [&] (Array<MAP_Mesh> &meshes, MAP_Geometry_Buffer_Source source) {
+            auto prune_empty_meshes = [&] (Array<MAP_Mesh, The_Arena_Allocator> &meshes, MAP_Geometry_Buffer_Source source) {
                 // @Note: BRO this SUUUUCKS!!!!!!!!! please let there eventually be a way that this isn't bogged
                 int64_t rolling_geo_index = 0;
                 int64_t rolling_geo_start = 0;
@@ -4587,6 +4688,23 @@ static void frame(void *userdata) {
         g.view_w = -1;
         g.view_h = -1;
     }
+
+    // static uint64_t prev_hash = 0;
+    // uint64_t new_hash = mur3_32(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head, 0);
+    // if (new_hash != prev_hash) {
+    //     Log("Undo/redo frame! Hash: %llu", new_hash);
+    //     prev_hash = new_hash;
+    // }
+    if (g.map_must_update) {
+        uint64_t new_hash = mur3_32(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head, 0);
+        Log("Undo/redo frame! Hash: %llu", new_hash);
+    }
+    if (The_Arena_Allocator::allocations_this_frame != 0) {
+        Log("%d allocations this frame", The_Arena_Allocator::allocations_this_frame);
+        Log("The_Arena_Allocator::arena_head is %llu", The_Arena_Allocator::arena_head);
+        The_Arena_Allocator::allocations_this_frame = 0;
+    }
+
     if (g.cld_must_update) {
         bool can_update = true;
         for (auto &buf : g.cld_face_buffers) {
@@ -4909,6 +5027,7 @@ static void cleanup(void *userdata) {
 #ifndef NDEBUG
     stb_leakcheck_dumpmem();
 #endif
+    The_Arena_Allocator::quit();
 }
 
 static void fail(const char *str) {

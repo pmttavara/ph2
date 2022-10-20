@@ -103,7 +103,18 @@ static inline int assert_(const char *s) {
 #include <stdint.h>
 
 extern int num_array_resizes;
-template <class T> struct Array {
+
+struct Mallocator {
+    static void *reallocate(void *p, size_t size, size_t old_size) {
+        (void)old_size;
+        return realloc(p, size);
+    }
+    static void (free)(void *p) {
+        return free(p);
+    }
+};
+
+template <class T, class Allocator = Mallocator> struct Array {
     int64_t count = 0;
     int64_t capacity = 0;
     T *data = nullptr;
@@ -133,7 +144,7 @@ template <class T> struct Array {
     void release() {
         invariants();
         if (data) {
-            free(data);
+            (Allocator::free)(data);
         }
         data = nullptr;
         capacity = 0;
@@ -142,9 +153,10 @@ template <class T> struct Array {
     void amortize(int64_t new_count) {
         invariants();
         if (new_count > capacity) {
+            auto old_capacity = capacity;
             if (capacity < 16) capacity = 16;
             while (new_count > capacity) capacity = capacity * 3 / 2;
-            data = (T *)realloc(data, capacity * sizeof(T));
+            data = (T *)Allocator::reallocate(data, capacity * sizeof(T), old_capacity * sizeof(T));
             assert(data); // Yucky!
             ++num_array_resizes;
         }
