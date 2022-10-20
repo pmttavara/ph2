@@ -112,11 +112,7 @@ template <class T> struct Array {
     void invariants() const {
         assert(count >= 0);
         assert(count <= capacity);
-        if (data) {
-            assert(capacity);
-        } else {
-            assert(!capacity);
-        }
+        assert(!data == !capacity);
     }
     T &operator[](int64_t i) {
         invariants();

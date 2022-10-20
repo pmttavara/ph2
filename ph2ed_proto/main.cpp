@@ -297,17 +297,45 @@ struct MAP_Texture {
     uint8_t sprite_count = 0;
     MAP_Sprite_Metadata sprite_metadata[64] = {};
     uint8_t format = MAP_Texture_Format_BC1;
-    void *pixel_data = nullptr;
-    uint32_t pixel_bytes = 0;
+    Array<uint8_t> blob = {};
     void release() {
         if (image.id) {
             sg_destroy_image(image);
         }
-        if (pixel_data) {
-            free(pixel_data);
-            pixel_data = nullptr;
-        }
+        blob.release();
         *this = {};
+    }
+};
+
+struct Map {
+    Array<MAP_Texture_Subfile> texture_subfiles = {};
+    Array<MAP_Geometry> geometries = {};
+
+    Array<MAP_Mesh> opaque_meshes = {};
+    Array<MAP_Mesh> transparent_meshes = {};
+    Array<MAP_Mesh> decal_meshes = {};
+
+    Array<MAP_Texture> textures = {};
+
+    Array<MAP_Material> materials = {};
+
+    void release() {
+        for (auto &mesh : opaque_meshes) {
+            mesh.release();
+        }
+        for (auto &mesh : transparent_meshes) {
+            mesh.release();
+        }
+        for (auto &mesh : decal_meshes) {
+            mesh.release();
+        }
+        geometries.release();
+        texture_subfiles.release();
+        for (auto &tex : textures) {
+            tex.release();
+        }
+        textures.release();
+        materials.release();
     }
 };
 
@@ -316,7 +344,7 @@ enum struct ControlState {
     Orbiting,
     Dragging,
 };
-struct G {
+struct G : Map {
     double last_time = 0;
     double t = 0;
     float dt_history[1024] = {};
@@ -371,13 +399,6 @@ struct G {
     enum { cld_buffers_count = 4 };
     CLD_Face_Buffer cld_face_buffers[cld_buffers_count] = {};
 
-    Array<MAP_Texture_Subfile> texture_subfiles = {};
-    Array<MAP_Geometry> geometries = {};
-
-    Array<MAP_Mesh> opaque_meshes = {};
-    Array<MAP_Mesh> transparent_meshes = {};
-    Array<MAP_Mesh> decal_meshes = {};
-
     sg_pipeline map_pipeline = {};
     enum { map_buffers_max = 64 };
     MAP_Geometry_Buffer map_buffers[map_buffers_max];// = {};
@@ -392,10 +413,8 @@ struct G {
     sg_pipeline highlight_vertex_circle_pipeline = {};
 
     sg_image missing_texture = {};
-    Array<MAP_Texture> textures = {};
-    int texture_ui_selected = -1;
 
-    Array<MAP_Material> materials = {};
+    int texture_ui_selected = -1;
 
     bool cld_must_update = false;
     bool map_must_update = false;
@@ -412,17 +431,6 @@ struct G {
         for (auto &buf : cld_face_buffers) {
             sg_destroy_buffer(buf.buf);
         }
-        for (auto &mesh : opaque_meshes) {
-            mesh.release();
-        }
-        for (auto &mesh : transparent_meshes) {
-            mesh.release();
-        }
-        for (auto &mesh : decal_meshes) {
-            mesh.release();
-        }
-        geometries.release();
-        texture_subfiles.release();
         sg_destroy_pipeline(map_pipeline);
         for (auto &buf : map_buffers) {
             buf.release();
@@ -434,12 +442,8 @@ struct G {
         sg_destroy_buffer(highlight_vertex_circle_buffer);
         sg_destroy_pipeline(highlight_vertex_circle_pipeline);
         sg_destroy_image(missing_texture);
-        for (auto &tex : textures) {
-            tex.release();
-        }
-        textures.release();
-        materials.release();
         free(opened_map_filename); opened_map_filename = nullptr;
+        Map::release();
         *this = {};
     }
 };
@@ -1259,7 +1263,7 @@ static int32_t map_compute_file_length(G &g) {
         file_length += sizeof(PH2MAP__Subfile_Header) + sizeof(PH2MAP__Texture_Subfile_Header);
         for (int texture_index = rolling_texture_index; texture_index < rolling_texture_index + sub.texture_count; texture_index++) {
             auto &tex = g.textures[texture_index];
-            file_length += sizeof(PH2MAP__BC_Texture_Header) + tex.sprite_count * sizeof(PH2MAP__Sprite_Header) + tex.pixel_bytes;
+            file_length += sizeof(PH2MAP__BC_Texture_Header) + tex.sprite_count * sizeof(PH2MAP__Sprite_Header) + (int32_t)tex.blob.count;
         }
         file_length += 16;
         rolling_texture_index += sub.texture_count;
@@ -1424,7 +1428,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
                 sprite_header.height = bc_texture_header.height;
                 sprite_header.format = tex.sprite_metadata[sprite_index].format;
                 if (sprite_index == tex.sprite_count - 1) {
-                    sprite_header.data_length = tex.pixel_bytes;
+                    sprite_header.data_length = (uint32_t)tex.blob.count;
                 } else {
                     sprite_header.data_length = 0;
                 }
@@ -1432,7 +1436,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
                 sprite_header.always0x99000000 = 0x99000000;
                 Write(sprite_header);
             }
-            map_write_struct(result, tex.pixel_data, tex.pixel_bytes);
+            map_write_struct(result, tex.blob.data, tex.blob.count);
         }
         // textures are read until the first int of the line is 0, and then that line is skipped - hence, we add this terminator sentinel line here
         WriteLit(PH2MAP__BC_End_Sentinel, PH2MAP__BC_End_Sentinel{});
@@ -1864,10 +1868,9 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                             if (sprite_index == bc_texture_header.sprite_count - 1) {
                                 assert(pixels_len > 0);
 
-                                tex.pixel_bytes = (uint32_t)pixels_len;
-                                tex.pixel_data = malloc(tex.pixel_bytes);
-                                assert(tex.pixel_data);
-                                memcpy(tex.pixel_data, pixels_data, tex.pixel_bytes);
+                                tex.blob.resize(pixels_len);
+                                assert(tex.blob.data);
+                                memcpy(tex.blob.data, pixels_data, tex.blob.count);
 
                                 assert(tex.image.id == 0);
                                 if (tex.sprite_metadata[sprite_index].format == 0x100) {
@@ -2041,7 +2044,7 @@ static void map_upload(G &g) {
             d.min_filter = SG_FILTER_NEAREST;
             d.mag_filter = SG_FILTER_NEAREST;
             d.max_anisotropy = 16;
-            d.data.subimage[0][0] = { tex.pixel_data, tex.pixel_bytes };
+            d.data.subimage[0][0] = { tex.blob.data, (size_t)tex.blob.count };
             tex.image = sg_make_image(d);
             assert(tex.image.id);
         }
@@ -2932,10 +2935,9 @@ bool dds_import(char *filename, MAP_Texture &result) {
         default: { assert(false); } break;
     }
 
-    tex.pixel_bytes = header.pitch_or_linear_size;
-    tex.pixel_data = malloc(header.pitch_or_linear_size);
-    FailIfFalse(tex.pixel_data, "Texture data couldn't be allocated in memory.");
-    FailIfFalse(fread(tex.pixel_data, tex.pixel_bytes, 1, f) == 1, "File read error reading the texture data. File too small?");
+    tex.blob.resize(header.pitch_or_linear_size);
+    FailIfFalse(tex.blob.data, "Texture data couldn't be allocated in memory.");
+    FailIfFalse(fread(tex.blob.data, tex.blob.count, 1, f) == 1, "File read error reading the texture data. File too small?");
 
     result = tex;
     tex = {};
@@ -4404,7 +4406,7 @@ static void frame(void *userdata) {
                         header.flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_LINEARSIZE;
                         header.height = tex.height;
                         header.width = tex.width;
-                        header.pitch_or_linear_size = tex.pixel_bytes;
+                        header.pitch_or_linear_size = (uint32_t)tex.blob.count;
                         header.pixelformat_size = 32;
                         header.pixelformat_flags = 4;
                         // @Note: *PRETTY* sure this is fine??
@@ -4416,7 +4418,7 @@ static void frame(void *userdata) {
                         }
                         header.caps = DDSCAPS_TEXTURE;
                         assert(fwrite(&header, sizeof(header), 1, f) == 1);
-                        assert(fwrite(tex.pixel_data, tex.pixel_bytes, 1, f) == 1);
+                        assert(fwrite(tex.blob.data, tex.blob.count, 1, f) == 1);
                         MsgInfo("DDS Export", "Exported!");
                     } else {
                         MsgErr("DDS Export Error", "Couldn't open file \"%s\"!!", dds_export_path);
