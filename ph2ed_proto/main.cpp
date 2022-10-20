@@ -362,9 +362,11 @@ struct G {
     int drag_cld_group = -1;
     int drag_cld_face = -1;
     int drag_cld_vertex = -1;
-    
+
     PH2CLD_Collision_Data cld = {};
-    hmm_vec3 cld_origin = {};
+    hmm_vec3 cld_origin() {
+        return {}; // hmm_vec3 { cld.origin[0], 0, cld.origin[1] };
+    }
     sg_pipeline cld_pipeline = {};
     enum { cld_buffers_count = 4 };
     CLD_Face_Buffer cld_face_buffers[cld_buffers_count] = {};
@@ -444,14 +446,12 @@ struct G {
 static void cld_upload(G &g) {
     auto &cld = g.cld;
     if (!cld.valid) {
-        g.cld_origin = {};
         for (auto &buf : g.cld_face_buffers) {
             buf.num_vertices = 0;
         }
         return;
     }
     //Log("CLD origin is (%f, 0, %f)", cld.origin[0], cld.origin[1]);
-    g.cld_origin = hmm_vec3 { cld.origin[0], 0, cld.origin[1] };
     for (int group = 0; group < 4; group++) {
         PH2CLD_Face *faces = cld.group_0_faces;
         size_t num_faces = cld.group_0_faces_count;
@@ -2508,7 +2508,7 @@ static void event(const sapp_event *e_, void *userdata) {
             //Log("Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
 
             if (g.cld.valid) {
-                const hmm_vec3 origin = -g.cld_origin;
+                const hmm_vec3 origin = -g.cld_origin();
                 const hmm_mat4 Tinv = HMM_Translate(-origin);
                 const hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
                 const hmm_mat4 Minv = Tinv * Sinv;
@@ -2549,7 +2549,7 @@ static void event(const sapp_event *e_, void *userdata) {
 
                             //Log("Vertex Pos = %f, %f, %f", vertex.X, vertex.Y, vertex.Z);
 
-                            hmm_vec3 offset = -g.cld_origin + vertex;
+                            hmm_vec3 offset = -g.cld_origin() + vertex;
                             offset.X *= SCALE;
                             offset.Y *= -SCALE;
                             offset.Z *= -SCALE;
@@ -2660,13 +2660,13 @@ static void event(const sapp_event *e_, void *userdata) {
                 // @Temporary: @Deduplicate.
                 float (&vertex_floats)[3] = face->vertices[g.drag_cld_vertex];
                 hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-                hmm_vec3 origin = -g.cld_origin;
+                hmm_vec3 origin = -g.cld_origin();
 
                 hmm_mat4 Tinv = HMM_Translate(-origin);
                 hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
                 hmm_mat4 Minv = Tinv * Sinv;
 
-                hmm_vec3 offset = -g.cld_origin + vertex;
+                hmm_vec3 offset = -g.cld_origin() + vertex;
                 offset.X *= SCALE;
                 offset.Y *= -SCALE;
                 offset.Z *= -SCALE;
@@ -3578,7 +3578,6 @@ static void frame(void *userdata) {
             }
         }
         ImGui::Separator();
-        ImGui::Checkbox("MAP Textured", &g.textured); ImGui::SameLine(); ImGui::Checkbox("MAP Lit", &g.lit);
         if (ImGui::CollapsingHeader("MAP Geometries", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (g.map_buffers_count + g.decal_buffers_count <= 0) {
                 ImGui::BeginDisabled();
@@ -4572,6 +4571,7 @@ static void frame(void *userdata) {
             }
             ImGui::SameLine(); ImGui::Text("(%.0f, %.0f, %.0f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
             ImGui::Columns(1);
+            ImGui::Checkbox("MAP Textured", &g.textured); ImGui::SameLine(); ImGui::Checkbox("MAP Lit", &g.lit);
             if (ImGui::BeginChild("###Viewport Rendering Region")) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
                 dl->AddCallback(viewport_callback, &g);
@@ -4706,7 +4706,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
             for (int i = 0; i < g.cld_buffers_count; i++) {
                 {
                     // I should also ask the community what the coordinate system is :)
-                    params.M = HMM_Scale( { 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate(-g.cld_origin);
+                    params.M = HMM_Scale( { 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate(-g.cld_origin());
                 }
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
                 {
@@ -4861,7 +4861,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
 
                         float (&vertex_floats)[3] = face->vertices[i];
                         hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-                        hmm_vec3 offset = -g.cld_origin + vertex;
+                        hmm_vec3 offset = -g.cld_origin() + vertex;
                         offset.X *= SCALE;
                         offset.Y *= -SCALE;
                         offset.Z *= -SCALE;
