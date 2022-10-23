@@ -5006,7 +5006,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 {
                     fs_params.highlight_amount = 0;
                     if (buf.selected) {
-                        fs_params.highlight_amount = (float)sin(g.t * TAU * 2) * 0.5f + 0.5f;
+                        fs_params.highlight_amount = (float)sin(g.t * TAU * 1.5f) * 0.5f + 0.5f;
                     }
                 }
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
