@@ -52,8 +52,32 @@ int num_array_resizes = 0;
 #define NOMINMAX
 #include <Windows.h>
 
+#include "spall.h"
+
 #pragma comment(lib, "legacy_stdio_definitions")
 #pragma comment(lib, "comdlg32")
+
+SpallProfile spall_ctx = {};
+char spall_buffer_data[1 << 16];
+SpallBuffer spall_buffer = {spall_buffer_data, sizeof(spall_buffer_data)};
+
+extern "C" __declspec(dllimport) unsigned long GetCurrentThreadId(void);
+template <size_t N>
+static SPALL_FORCEINLINE void spall_begin(const char (&name)[N]) { spall_buffer_begin_ex(&spall_ctx, &spall_buffer, name, N - 1, (double)__rdtsc(), GetCurrentThreadId(), 0); }
+static SPALL_FORCEINLINE void spall_end() { spall_buffer_end_ex(&spall_ctx, &spall_buffer, (double)__rdtsc(), GetCurrentThreadId(), 0); }
+
+struct ScopedTraceTimer {
+    SPALL_FORCEINLINE constexpr explicit operator bool() { return false; }
+    template <size_t N> 
+    SPALL_FORCEINLINE ScopedTraceTimer(const char (&name)[N]) { spall_begin(name); }
+    SPALL_FORCEINLINE ~ScopedTraceTimer() { spall_end(); }
+};
+
+#define CAT__(a, b) a ## b
+#define CAT_(a, b) CAT__(a, b)
+#define CAT(a, b) CAT_(a, b)
+
+#define ProfileFunction() ScopedTraceTimer CAT(zz_profile, __COUNTER__) (__FUNCSIG__)
 
 // Dear Imgui
 #ifndef IMGUI_VERSION
@@ -81,6 +105,8 @@ enum { LOG_MAX = 16384 };
 LogMsg log_buf[LOG_MAX];
 int log_buf_index = 0;
 void LogC_(uint32_t c, const char *fmt, ...) {
+    ProfileFunction();
+
     log_buf[log_buf_index % LOG_MAX].colour = c;
     va_list args;
     va_start(args, fmt);
@@ -154,31 +180,14 @@ static inline double get_time(void) {
 // How's this done for Linux/etc?
 #define KEY(vk) ((unsigned short)GetAsyncKeyState(vk) >= 0x8000)
 
-// @Attribution: https://github.com/demetri/scribbles/blob/c475464756c104c91bab83ed4e14badefef12ab5/hashing/hash_functions.c
-uint32_t mur3_32 (const void *key, int len, uint32_t h) {
-    // main body, work on 32-bit blocks at a time
-    for (int i=0;i<len/4;i++) {
-        uint32_t k = ((uint32_t*) key)[i]*0xcc9e2d51;
-        k = ((k << 15) | (k >> 17))*0x1b873593;
-        h = (((h^k) << 13) | ((h^k) >> 19))*5 + 0xe6546b64;
-    }
+#include "meow_hash_x64_aesni.h"
 
-    // load/mix up to 3 remaining tail bytes into a tail block
-    uint32_t t = 0;
-    uint8_t *tail = ((uint8_t*) key) + 4*(len/4); 
-    switch(len & 3) {
-        case 3: t ^= tail[2] << 16;
-        case 2: t ^= tail[1] <<  8;
-        case 1: { 
-            t ^= tail[0] <<  0;
-            h ^= ((0xcc9e2d51*t << 15) | (0xcc9e2d51*t >> 17))*0x1b873593;
-        }
-    }
+uint64_t meow_hash(void *key, int len) {
+    ProfileFunction();
 
-    // finalization mix, including key length
-    h = ((h^len) ^ ((h^len) >> 16))*0x85ebca6b;
-    h = (h ^ (h >> 13))*0xc2b2ae35;
-    return h ^ (h >> 16); 
+    meow_u128 hash = MeowHash(MeowDefaultSeed, len, key);
+    auto hash64 = MeowU64From(hash, 0);
+    return hash64;
 }
 
 struct The_Arena_Allocator {
@@ -187,23 +196,33 @@ struct The_Arena_Allocator {
     static int allocations_this_frame;
     enum { ARENA_SIZE = 512 * 1024 * 1024 };
     static bool contains(void *p) {
+        ProfileFunction();
+
         return (char *)p >= arena_data && (char *)p < arena_data + arena_head;
     }
     static void init() {
+        ProfileFunction();
+
         arena_data = (char *)VirtualAlloc(nullptr, ARENA_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         arena_head = 0;
     }
     static void quit() {
+        ProfileFunction();
+
         VirtualFree(arena_data, 0, MEM_RELEASE);
         arena_data = nullptr;
         arena_head = 0;
     }
     static void free_all() {
+        ProfileFunction();
+
         memset(arena_data, 0, arena_head);
         arena_head = 0;
     }
     static void (free)(void *) {}
     static void *allocate(size_t size) {
+        ProfileFunction();
+
         if (arena_head + size > ARENA_SIZE) return nullptr;
 
         void *result = arena_data + arena_head;
@@ -212,6 +231,8 @@ struct The_Arena_Allocator {
         return result;
     }
     static void *reallocate(void *p, size_t size, size_t old_size) {
+        ProfileFunction();
+
         // No old data - allocate new block
         if (p == NULL || old_size == 0) {
             return allocate(size);
@@ -305,6 +326,8 @@ struct MAP_Geometry_Buffer {
     bool selected = false; // Used by Imgui
     uint16_t material_index = 0;
     void release() {
+        ProfileFunction();
+
         sg_destroy_buffer(buf);
         vertices.release();
         *this = {};
@@ -338,6 +361,8 @@ struct MAP_Mesh {
     Array<MAP_Mesh_Vertex_Buffer, The_Arena_Allocator> vertex_buffers = {};
     Array<uint16_t, The_Arena_Allocator> indices = {};
     void release() {
+        ProfileFunction();
+
         for (MAP_Mesh_Part_Group &mesh_part_group : mesh_part_groups) {
             mesh_part_group.mesh_parts.release();
         }
@@ -393,6 +418,8 @@ struct MAP_Texture {
     uint8_t format = MAP_Texture_Format_BC1;
     Array<uint8_t, The_Arena_Allocator> blob = {};
     void release() {
+        ProfileFunction();
+
         blob.release();
         *this = {};
     }
@@ -411,6 +438,8 @@ struct Map {
     Array<MAP_Material, The_Arena_Allocator> materials = {};
 
     void release() {
+        ProfileFunction();
+
         for (auto &mesh : opaque_meshes) {
             mesh.release();
         }
@@ -441,10 +470,77 @@ struct Map_History_Entry {
     char *data = nullptr;
     size_t count = 0;
     void release() {
+        ProfileFunction();
+
         free(data);
         *this = {};
     }
 };
+
+SPALL_FN double get_rdtsc_multiplier(void) {
+
+    // Cache the answer so that multiple calls never take the slow path more than once
+    static double multiplier = 0;
+    if (multiplier) {
+        return multiplier;
+    }
+
+    uint64_t tsc_freq = 0;
+
+    // Fast path: Load kernel-mapped memory page
+    HMODULE ntdll = LoadLibraryA("ntdll.dll");
+    if (ntdll) {
+
+        int (*NtQuerySystemInformation)(int, void *, unsigned int, unsigned int *) =
+        (int (*)(int, void *, unsigned int, unsigned int *))GetProcAddress(ntdll, "NtQuerySystemInformation");
+        if (NtQuerySystemInformation) {
+
+            volatile uint64_t *hypervisor_shared_page = NULL;
+            unsigned int size = 0;
+
+            // SystemHypervisorSharedPageInformation == 0xc5
+            int result = (NtQuerySystemInformation)(0xc5, (void *)&hypervisor_shared_page, sizeof(hypervisor_shared_page), &size);
+
+            // success
+            if (size == sizeof(hypervisor_shared_page) && result >= 0) {
+                // docs say ReferenceTime = ((VirtualTsc * TscScale) >> 64)
+                //      set ReferenceTime = 10000000 = 1 second @ 10MHz, solve for VirtualTsc
+                //       =>    VirtualTsc = 10000000 / (TscScale >> 64)
+                tsc_freq = (10000000ull << 32) / (hypervisor_shared_page[1] >> 32);
+                // If your build configuration supports 128 bit arithmetic, do this:
+                // tsc_freq = ((unsigned __int128)10000000ull << (unsigned __int128)64ull) / hypervisor_shared_page[1];
+            }
+        }
+        FreeLibrary(ntdll);
+    }
+
+    // Slow path
+    if (!tsc_freq) {
+
+        // Get time before sleep
+        uint64_t qpc_begin = 0; QueryPerformanceCounter((LARGE_INTEGER *)&qpc_begin);
+        uint64_t tsc_begin = __rdtsc();
+
+        Sleep(2);
+
+        // Get time after sleep
+        uint64_t qpc_end = qpc_begin + 1; QueryPerformanceCounter((LARGE_INTEGER *)&qpc_end);
+        uint64_t tsc_end = __rdtsc();
+
+        // Do the math to extrapolate the RDTSC ticks elapsed in 1 second
+        uint64_t qpc_freq = 0; QueryPerformanceFrequency((LARGE_INTEGER *)&qpc_freq);
+        tsc_freq = (tsc_end - tsc_begin) * qpc_freq / (qpc_end - qpc_begin);
+    }
+
+    // Failure case
+    if (!tsc_freq) {
+        tsc_freq = 1000000000;
+    }
+
+    multiplier = 1000000.0 / (double)tsc_freq;
+
+    return multiplier;
+}
 
 struct G : Map {
     Array<Map_History_Entry> undo_stack = {};
@@ -536,6 +632,8 @@ struct G : Map {
     char *opened_map_filename = nullptr;
 
     void release() {
+        ProfileFunction();
+
         undo_stack.release();
         redo_stack.release();
         PH2CLD_free_collision_data(cld);
@@ -564,6 +662,8 @@ struct G : Map {
     }
 };
 static void cld_upload(G &g) {
+    ProfileFunction();
+
     auto &cld = g.cld;
     if (!cld.valid) {
         for (auto &buf : g.cld_face_buffers) {
@@ -769,6 +869,8 @@ struct PH2MAP__Material {
 };
 
 void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indices_index, const MAP_Mesh &mesh, MAP_Mesh_Part_Group mesh_part_group) {
+    ProfileFunction();
+
     assert(mesh_part_group.mesh_parts.count > 0);
     vertices.clear();
     int vertices_reserve = 0;
@@ -867,6 +969,8 @@ struct Mesh_Group_Load_Result {
     int total_bytes;
 };
 static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh, The_Arena_Allocator> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
+    ProfileFunction();
+
     (void)end;
     const char *ptr3 = group_header;
     uint32_t count = 0;
@@ -1200,6 +1304,8 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh,
     return load_result;
 }
 static void map_write_struct(Array<uint8_t> *result, const void *px, size_t sizeof_x) {
+    ProfileFunction();
+
     result->resize(result->count + (int64_t)sizeof_x);
     assert(result->data);
     assert(result->count >= (int64_t)sizeof_x);
@@ -1213,6 +1319,8 @@ static void map_write_struct(Array<uint8_t> *result, const void *px, size_t size
 #define WriteBackpatch(T, backpatch_idx, value) do { *(T *)(&(*result)[(backpatch_idx)]) = (T)(value); } while (0)
 
 static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool decals, Array<MAP_Mesh, The_Arena_Allocator> group, int start, int count, int misalignment) {
+    ProfileFunction();
+
     int64_t aligner = result->count;
     WriteLit(uint32_t, count);
     int64_t offsets_start = result->count;
@@ -1368,6 +1476,8 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
     assert(result->count % 16 == misalignment);
 }
 static int32_t map_compute_file_length(G &g) {
+    ProfileFunction();
+
     int32_t file_length = 0;
     file_length += sizeof(PH2MAP__Header);
     int subfile_count = 0;
@@ -1493,6 +1603,8 @@ static int32_t map_compute_file_length(G &g) {
     return file_length;
 }
 static void map_write_to_memory(G &g, Array<uint8_t> *result) {
+    ProfileFunction();
+
     int32_t file_length = map_compute_file_length(g);
     result->reserve(file_length);
 
@@ -1682,6 +1794,8 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
     assert(file_length == result->count);
 }
 static sg_image *map_get_texture_by_id(Array<MAP_Texture, The_Arena_Allocator> textures, Array<sg_image> map_textures, uint32_t id) {
+    ProfileFunction();
+
     for (int i = 0;; i++) {
         if (i >= textures.count || i >= map_textures.count) {
             break;
@@ -1694,6 +1808,8 @@ static sg_image *map_get_texture_by_id(Array<MAP_Texture, The_Arena_Allocator> t
     return nullptr;
 }
 static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false) {
+    ProfileFunction();
+
     g.geometries.release();
     for (MAP_Mesh &mesh : g.opaque_meshes) mesh.release();
     for (MAP_Mesh &mesh : g.transparent_meshes) mesh.release();
@@ -2064,6 +2180,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     }
 }
 static void map_upload(G &g) {
+    ProfileFunction();
+
     g.map_buffers_count = 0;
     g.decal_buffers_count = 0;
     for (auto &tex : g.map_textures) {
@@ -2199,6 +2317,8 @@ static void map_upload(G &g) {
     }
 }
 static void test_all_maps(G &g) {
+    ProfileFunction();
+
     struct _finddata_t find_data;
     intptr_t directory = _findfirst("map/*.map", &find_data);
     assert(directory >= 0);
@@ -2221,6 +2341,8 @@ static void test_all_maps(G &g) {
 }
 
 static void imgui_do_console(G &g) {
+    ProfileFunction();
+
     if (!g.show_console) {
         return;
     }
@@ -2281,6 +2403,8 @@ struct Ray_Vs_Aligned_Circle_Result {
     float distance_to_closest_point = {};
 };
 Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(hmm_vec3 ro, hmm_vec3 rd, hmm_vec3 so, float r) {
+    ProfileFunction();
+
     Ray_Vs_Aligned_Circle_Result result = {};
     result.t = HMM_Dot(so - ro, rd);
     //Log("Dot %f", result.t);
@@ -2302,6 +2426,8 @@ struct Ray_Vs_Plane_Result {
     hmm_vec3 point = {};
 };
 Ray_Vs_Plane_Result ray_vs_plane(Ray ray, hmm_vec3 plane_point, hmm_vec3 plane_normal) {
+    ProfileFunction();
+
     Ray_Vs_Plane_Result result = {};
 
     assert(HMM_Length(plane_normal) != 0);
@@ -2323,6 +2449,8 @@ Ray_Vs_Plane_Result ray_vs_plane(Ray ray, hmm_vec3 plane_point, hmm_vec3 plane_n
     return result;
 }
 Ray_Vs_Plane_Result ray_vs_triangle(Ray ray, hmm_vec3 a, hmm_vec3 b, hmm_vec3 c) {
+    ProfileFunction();
+
     hmm_vec3 normal = HMM_Normalize(HMM_Cross(b-a, c-a));
     auto raycast = ray_vs_plane(ray, a, normal);
     hmm_vec3 p = raycast.point;
@@ -2347,6 +2475,8 @@ Ray_Vs_Plane_Result ray_vs_triangle(Ray ray, hmm_vec3 a, hmm_vec3 b, hmm_vec3 c)
 }
 
 static bool file_exists(const uint16_t *filename16) {
+    ProfileFunction();
+
     DWORD attr = GetFileAttributesW((LPCWSTR)filename16);
     return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
 }
@@ -2354,6 +2484,13 @@ static bool file_exists(LPCWSTR filename16) { return file_exists((const uint16_t
 
 void *operator new(size_t, void *ptr) { return ptr; }
 static void init(void *userdata) {
+
+    spall_ctx = spall_init_file("trace.spall", get_rdtsc_multiplier());
+    assert(spall_ctx.data);
+    assert(spall_buffer_init(&spall_ctx, &spall_buffer));
+
+    ProfileFunction();
+
     double init_time = -get_time();
     defer {
         init_time += get_time();
@@ -2569,10 +2706,14 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
 const float SCALE = 0.001f;
 const float widget_pixel_radius = 30;
 static float widget_radius(G &g, hmm_vec3 offset) {
+    ProfileFunction();
+
     return HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() * tanf(g.fov / 2);
 }
 
 static hmm_mat4 camera_rot(G &g) {
+    ProfileFunction();
+
     // We pitch the camera by applying a rotation around X,
     // then yaw the camera by applying a rotation around Y.
     auto pitch_matrix = HMM_Rotate(g.pitch * (360 / TAU32), HMM_Vec3(1, 0, 0));
@@ -2580,6 +2721,8 @@ static hmm_mat4 camera_rot(G &g) {
     return yaw_matrix * pitch_matrix;
 }
 static Ray screen_to_ray(G &g, hmm_vec2 mouse_xy) {
+    ProfileFunction();
+
     Ray ray = {};
     ray.pos = { g.cam_pos.X, g.cam_pos.Y, g.cam_pos.Z };
     hmm_vec2 ndc = { mouse_xy.X, mouse_xy.Y };
@@ -2595,6 +2738,8 @@ static Ray screen_to_ray(G &g, hmm_vec2 mouse_xy) {
 }
 
 static void event(const sapp_event *e_, void *userdata) {
+    ProfileFunction();
+
     G &g = *(G *)userdata;
     const sapp_event &e = *e_;
     if (e.type == SAPP_EVENTTYPE_UNFOCUSED) {
@@ -2950,6 +3095,8 @@ struct my_dds_header {
     uint32_t reserved2;
 };
 char *win_import_or_export_dialog(LPCWSTR formats, LPCWSTR title, bool import = true) {
+    ProfileFunction();
+
     char *result = nullptr;
     assert(formats);
     OPENFILENAMEW ofn = {};
@@ -2991,6 +3138,8 @@ char *win_import_or_export_dialog(LPCWSTR formats, LPCWSTR title, bool import = 
     } while (0)
 
 bool dds_import(char *filename, MAP_Texture &result) {
+    ProfileFunction();
+
     FILE *f = PH2CLD__fopen(filename, "rb");
     FailIfFalse(f, "File \"%s\" couldn't be opened.", filename);
     defer {
@@ -3088,6 +3237,8 @@ bool dds_import(char *filename, MAP_Texture &result) {
 
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd);
 static void frame(void *userdata) {
+    ProfileFunction();
+
     G &g = *(G *)userdata;
     float dt = 0;
     defer {
@@ -3598,13 +3749,17 @@ static void frame(void *userdata) {
                     memset(vertices_touched[buf_index], 0, buf.num_vertices);
                     int indices_index = 0;
                     for (auto &group : mesh.mesh_part_groups) {
-                        for (auto &part : group.mesh_parts) {
-                            for (int j = 0; j < part.strip_length * part.strip_count; j++) {
-                                int vert_index = mesh.indices[indices_index];
-                                if ((int)group.section_index == buf_index) {
+                        if ((int)group.section_index == buf_index) {
+                            for (auto &part : group.mesh_parts) {
+                                for (int j = 0; j < part.strip_length * part.strip_count; j++) {
+                                    int vert_index = mesh.indices[indices_index];
                                     vertices_touched[buf_index][vert_index] = true;
+                                    ++indices_index;
                                 }
-                                ++indices_index;
+                            }
+                        } else {
+                            for (auto &part : group.mesh_parts) {
+                                indices_index += part.strip_length * part.strip_count;
                             }
                         }
                     }
@@ -4757,6 +4912,8 @@ static void frame(void *userdata) {
     }
 
     auto make_history_entry = [&] (uint64_t map_hash) -> Map_History_Entry {
+        ProfileFunction();
+
         Map_History_Entry entry = {};
 
         entry.hash = map_hash;
@@ -4777,7 +4934,7 @@ static void frame(void *userdata) {
         memcpy(The_Arena_Allocator::arena_data, entry.data, The_Arena_Allocator::arena_head);
     };
 
-    uint64_t map_hash = mur3_32(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head, 0);
+    uint64_t map_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
     if (g.undo_stack.count < 1 || map_hash != g.undo_stack[g.undo_stack.count - 1].hash) {
         Log("Undo/redo frame! Hash: %llu", map_hash);
         
@@ -4861,6 +5018,8 @@ static void frame(void *userdata) {
     }
 }
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
+    ProfileFunction();
+
     (void)dl;
     G &g = *(G *)cmd->UserCallbackData;
     // first set the viewport rectangle to render in, same as
@@ -5129,14 +5288,21 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
 }
 
 static void cleanup(void *userdata) {
-    G &g = *(G *)userdata;
-    g.release();
-    simgui_shutdown();
-    sg_shutdown();
+    {
+        ProfileFunction();
+
+        G &g = *(G *)userdata;
+        g.release();
+        simgui_shutdown();
+        sg_shutdown();
 #ifndef NDEBUG
-    stb_leakcheck_dumpmem();
+        stb_leakcheck_dumpmem();
 #endif
-    The_Arena_Allocator::quit();
+        The_Arena_Allocator::quit();
+    }
+
+    assert(spall_buffer_quit(&spall_ctx, &spall_buffer));
+    spall_quit(&spall_ctx);
 }
 
 char g_[sizeof(G)];

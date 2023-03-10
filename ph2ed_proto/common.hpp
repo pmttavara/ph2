@@ -119,29 +119,21 @@ template <class T, class Allocator = Mallocator> struct Array {
     T *data = nullptr;
 
     Array(int64_t count = 0, int64_t capacity = 0, T *data = nullptr) : count { count }, capacity { capacity }, data { data } {}
-    void invariants() const {
-        assert(count >= 0);
-        assert(count <= capacity);
-        assert(!data == !capacity);
-    }
+#define array_invariants() (count >= 0 && count <= capacity && !data == !capacity)
     T &operator[](int64_t i) {
-        invariants();
-        assert(i >= 0);
-        assert(i < count);
+        assert(i >= 0 && i < count && count <= capacity && data);
         return data[i];
     }
     const T &operator[](int64_t i) const {
-        invariants();
-        assert(i >= 0);
-        assert(i < count);
+        assert(i >= 0 && i < count && count <= capacity && data);
         return data[i];
     }
     void clear() {
-        invariants();
+        assert(array_invariants());
         count = 0;
     }
     void release() {
-        invariants();
+        assert(array_invariants());
         if (data) {
             (Allocator::free)(data);
         }
@@ -150,7 +142,7 @@ template <class T, class Allocator = Mallocator> struct Array {
         count = 0;
     }
     void amortize(int64_t new_count) {
-        invariants();
+        assert(array_invariants());
         if (new_count > capacity) {
             auto old_capacity = capacity;
             if (capacity < 16) capacity = 16;
@@ -161,18 +153,17 @@ template <class T, class Allocator = Mallocator> struct Array {
         }
     }
     void reserve(int64_t new_capacity) {
-        invariants();
-        assert(new_capacity >= 0);
+        assert(array_invariants() && new_capacity >= 0);
         amortize(new_capacity);
     }
     void resize(int64_t new_count, T value = {}) {
-        invariants();
+        assert(array_invariants());
         amortize(new_count);
         for (int64_t i = count; i < new_count; i += 1) data[i] = value;
         count = new_count;
     }
     Array copy() {
-        invariants();
+        assert(array_invariants());
         Array result = {};
         if (count) {
             result.amortize(count);
@@ -182,21 +173,19 @@ template <class T, class Allocator = Mallocator> struct Array {
         return result;
     }
     T *push(T value = {}) {
-        invariants();
+        assert(array_invariants());
         amortize(count + 1);
         count += 1;
         data[count - 1] = value;
         return &data[count - 1];
     }
     T pop() {
-        invariants();
-        assert(count > 0);
+        assert(array_invariants() && count > 0);
         count -= 1;
         return data[count];
     }
     T *insert(int64_t index, T value = {}) {
-        invariants();
-        assert(index < count);
+        assert(array_invariants() && index < count);
         amortize(count + 1);
         memmove(&data[index + 1], &data[index], (count - index - 1) * sizeof(T));
         count += 1;
@@ -204,25 +193,21 @@ template <class T, class Allocator = Mallocator> struct Array {
         return &data[index];
     }
     void remove(int64_t index) {
-        invariants();
-        assert(index < count);
+        assert(array_invariants() && index < count);
         data[index] = data[count - 1];
         count -= 1;
     }
     void remove_ordered(int64_t index, int64_t how_many = 1) {
-        invariants();
-        assert(index < count);
-        assert(how_many >= 0);
-        assert(index + how_many <= count);
+        assert(array_invariants() && index < count && how_many >= 0 && index + how_many <= count);
         memmove(&data[index], &data[index + how_many], (count - index - how_many) * sizeof(T));
         count -= how_many;
     }
     T *begin() {
-        invariants();
+        assert(array_invariants());
         return data;
     }
     T *end() {
-        invariants();
+        assert(array_invariants());
         return data + count;
     }
 };
