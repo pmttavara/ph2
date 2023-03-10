@@ -4,6 +4,13 @@
 // which are licensed under zlib/libpng license.
 // Dear Imgui is licensed under MIT License. https://github.com/ocornut/imgui/blob/master/LICENSE.txt
 
+#ifdef NDEBUG
+#pragma comment(linker, "/subsystem:windows")
+#include "libs.cpp"
+#else
+#pragma comment(linker, "/subsystem:console")
+#endif
+
 #include "common.hpp"
 
 int num_array_resizes = 0;
@@ -49,12 +56,16 @@ int num_array_resizes = 0;
 #pragma comment(lib, "comdlg32")
 
 // Dear Imgui
+#ifndef IMGUI_VERSION
 #include "imgui.h"
+#endif
 
 // Sokol libraries
+#ifndef SOKOL_APP_IMPL_INCLUDED
 #include "sokol_app.h"
 #include "sokol_gfx.h"
 #include "sokol_imgui.h"
+#endif
 
 #include "zip.h"
 
@@ -138,13 +149,6 @@ static inline double get_time(void) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
 }
-#endif
-
-#ifdef NDEBUG
-#pragma comment(linker, "/subsystem:windows")
-#include "libs.cpp"
-#else
-#pragma comment(linker, "/subsystem:console")
 #endif
 
 // How's this done for Linux/etc?
@@ -5135,10 +5139,6 @@ static void cleanup(void *userdata) {
     The_Arena_Allocator::quit();
 }
 
-static void fail(const char *str) {
-    MsgErr("Fatal Error", "There was an error during startup:\n    \"%s\"", str);
-}
-
 char g_[sizeof(G)];
 sapp_desc sokol_main(int, char **) {
     sapp_desc d = {};
@@ -5147,7 +5147,6 @@ sapp_desc sokol_main(int, char **) {
     d.event_userdata_cb = event;
     d.frame_userdata_cb = frame;
     d.cleanup_userdata_cb = cleanup;
-    d.fail_cb = fail;
     d.sample_count = 4;
     d.swap_interval = 0;
     d.high_dpi = true;
