@@ -45,6 +45,9 @@ int num_array_resizes = 0;
 #define NOMINMAX
 #include <Windows.h>
 
+#pragma comment(lib, "legacy_stdio_definitions")
+#pragma comment(lib, "comdlg32")
+
 // Dear Imgui
 #include "imgui.h"
 
