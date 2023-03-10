@@ -41,11 +41,6 @@ static inline char *stb_leakcheck_strdup(const char *s) {
 #endif
 
 
-#define WIN32_LEAN_AND_MEAN
-#define VC_EXTRALEAN
-#define NOMINMAX
-#include <Windows.h>
-
 #ifndef defer
 struct defer_dummy {};
 template <class F> struct deferrer { F f; ~deferrer() { f(); } };
@@ -77,9 +72,13 @@ template<typename T, size_t N> constexpr size_t countof(T (&)[N]) {
 #ifdef __cplusplus
 extern "C" {
 #endif
+#pragma comment(linker, "/alternatename:__imp_my_MessageBoxA=__imp_MessageBoxA")
+#pragma comment(linker, "/alternatename:__imp_my_ExitProcess=__imp_ExitProcess")
+extern __declspec(dllimport) int __stdcall my_MessageBoxA(void *hWnd, const char *lpText, const char *lpCaption, unsigned int uType);
+extern __declspec(dllimport) void __stdcall my_ExitProcess(unsigned int uExitCode);
 static inline int assert_(const char *s) {
-    int x = MessageBoxA(0, s, "Assertion Failed", MB_ABORTRETRYIGNORE | MB_ICONERROR | MB_SYSTEMMODAL);
-    if (x == 3) ExitProcess(1);
+    int x = my_MessageBoxA(0, s, "Assertion Failed", 0x1012);
+    if (x == 3) my_ExitProcess(1);
     return x == 4;
 }
 #define assert_STR_(LINE) #LINE
@@ -107,7 +106,7 @@ extern int num_array_resizes;
 struct Mallocator {
     static void *reallocate(void *p, size_t size, size_t old_size) {
         (void)old_size;
-        return realloc(p, size);
+        return ::realloc(p, size);
     }
     static void (free)(void *p) {
         return ::free(p);
@@ -228,30 +227,15 @@ template <class T, class Allocator = Mallocator> struct Array {
     }
 };
 
-extern "C" {
-    extern __declspec(dllimport) int __stdcall MultiByteToWideChar(unsigned int CodePage, unsigned long dwFlags, const char * lpMultiByteStr, int cbMultiByte, wchar_t * lpWideCharStr, int cchWideChar);
-    extern __declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned int CodePage, unsigned long dwFlags, const wchar_t * lpWideCharStr, int cchWideChar, char * lpMultiByteStr, int cbMultiByte, const char * lpDefaultChar, int * lpUsedDefaultChar);
-}
-//https://docs.microsoft.com/en-us/windows/win32/intl/code-page-identifiers
-#ifndef CP_UTF8
-#define CP_UTF8 65001
-#endif
-//determined empirically
-#ifndef MB_ERR_INVALID_CHARS
-#define MB_ERR_INVALID_CHARS 8
-#endif
-//determined empirically
-#ifndef WC_ERR_INVALID_CHARS
-#define WC_ERR_INVALID_CHARS 128
-#endif
-
+#include <wchar.h>
 static inline uint16_t *utf8_to_utf16(const char *utf8) {
     uint16_t *utf16 = nullptr;
-    int utf16len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, nullptr, 0);
+    mbstate_t state = {0};
+    size_t utf16len = mbsrtowcs(nullptr, &utf8, 0, &state) + 1;
     if (utf16len) { //may fail if the input string is invalid, so this is a handle-able error
         utf16 = (uint16_t *)malloc(utf16len * sizeof(uint16_t));
         if (utf16) {
-            int charsWritten = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, (LPWSTR)utf16, utf16len);
+            size_t charsWritten = mbsrtowcs((wchar_t *)utf16, &utf8, utf16len, &state);
             if (charsWritten != utf16len || //should always be true
                 utf16[utf16len - 1] != 0) { //should be null terminated
                 free(utf16);
@@ -264,11 +248,12 @@ static inline uint16_t *utf8_to_utf16(const char *utf8) {
 
 static inline char *utf16_to_utf8(const uint16_t *utf16) {
     char *utf8 = nullptr;
-    int utf8len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, (LPCWSTR)utf16, -1, nullptr, 0, nullptr, nullptr);
+    mbstate_t state = {0};
+    size_t utf8len = wcsrtombs(nullptr, (const wchar_t **)utf16, 0, &state) + 1;
     if (utf8len) { //may fail if the input string is invalid, so this is a handle-able error
         utf8 = (char *)malloc(utf8len * sizeof(char));
         if (utf8) {
-            int charsWritten = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, (LPCWSTR)utf16, -1, utf8, utf8len, nullptr, nullptr);
+            size_t charsWritten = wcsrtombs(utf8, (const wchar_t **)utf16, utf8len, &state);
             if (charsWritten != utf8len || //should always be true
                 utf8[utf8len - 1] != 0) { //should be null terminated
                 free(utf8);
@@ -279,6 +264,7 @@ static inline char *utf16_to_utf8(const uint16_t *utf16) {
     return utf8;
 }
 
+#include <stdarg.h>
 static inline char *mprintf(const char *fmt, ...) {
     va_list arg1;
     va_list arg2;

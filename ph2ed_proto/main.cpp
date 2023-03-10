@@ -40,6 +40,11 @@ int num_array_resizes = 0;
 #define TAU 6.283185307179586476925
 #define TAU32 6.283185307179586476925f
 
+#define WIN32_LEAN_AND_MEAN
+#define VC_EXTRALEAN
+#define NOMINMAX
+#include <Windows.h>
+
 // Dear Imgui
 #include "imgui.h"
 
