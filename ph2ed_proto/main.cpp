@@ -216,10 +216,12 @@ struct The_Arena_Allocator {
     static void free_all() {
         ProfileFunction();
 
-        memset(arena_data, 0, arena_head);
+        memset(arena_data, 0xcc, arena_head);
         arena_head = 0;
     }
-    static void (free)(void *) {}
+    static void (free)(void *p, size_t size) {
+        memset(p, 0xcc, size);
+    }
     static void *allocate(size_t size) {
         ProfileFunction();
 
@@ -228,6 +230,7 @@ struct The_Arena_Allocator {
         void *result = arena_data + arena_head;
         arena_head += size;
         ++allocations_this_frame;
+        memset(result, 0xcc, size);
         return result;
     }
     static void *reallocate(void *p, size_t size, size_t old_size) {
@@ -321,7 +324,7 @@ struct MAP_Geometry_Buffer {
     int subfile_index = 0;
     int global_geometry_index = 0; // @Todo: index within subfile
     int global_mesh_index = 0; // @Todo: index within geometry
-    int mesh_part_group_index = 0;
+    struct MAP_Mesh_Part_Group *mesh_part_group_ptr = nullptr;
     bool shown = true;
     bool selected = false; // Used by Imgui
     uint16_t material_index = 0;
@@ -344,7 +347,92 @@ struct MAP_Mesh_Part {
 
     bool was_inverted; // Only for roundtrippability.
 };
-struct MAP_Mesh_Part_Group {
+
+struct Node {
+    Node *next = nullptr;
+    Node *prev = nullptr;
+};
+static void node_insert_after(Node *dest, Node *node) {
+    node->next = dest->next;
+    node->prev = dest;
+    dest->next->prev = node;
+    dest->next = node;
+}
+static void node_insert_before(Node *dest, Node *node) {
+    node->next = dest;
+    node->prev = dest->prev;
+    dest->prev->next = node;
+    dest->prev = node;
+}
+
+template <class T, class Allocator = Mallocator>
+struct LinkedList {
+    Node *sentinel = nullptr;
+    int64_t count = 0;
+    void init() {
+        sentinel = (T *)Allocator::reallocate(nullptr, sizeof(T), 0);
+        sentinel->next = sentinel;
+        sentinel->prev = sentinel;
+        count = 0;
+    }
+    void release() {
+        for (Node *node = sentinel->prev; node != sentinel; node = node->prev) {
+            (Allocator::free)((T *)node, sizeof(T));
+        }
+        (Allocator::free)(sentinel, sizeof(Node));
+    }
+    T *push(T value = {}) {
+        T *node = (T *)Allocator::reallocate(nullptr, sizeof(T), 0);
+        *node = value;
+        node_insert_before(sentinel, node);
+        count += 1;
+        return (T *)node;
+    }
+
+    struct Iterator {
+        Node *node;
+        T &operator*() {
+            return *(T *)node;
+        }
+        T &operator->() {
+            return *(T *)node;
+        }
+        Iterator &operator++() {
+            node = node->next;
+            return *this;
+        }
+        bool operator!=(const Iterator &rhs) {
+            return node != rhs.node;
+        }
+    };
+
+    Iterator begin() {
+        return {sentinel->next};
+    }
+    Iterator end() {
+        return {sentinel};
+    }
+
+
+    bool has_node(Node *node) {
+        for (auto &&it : *this) {
+            if (&it == node) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void remove(Node *node) {
+        assert(count > 0 && has_node(node));
+        node->prev->next = node->next;
+        node->next->prev = node->prev;
+        count -= 1;
+    }
+
+};
+
+struct MAP_Mesh_Part_Group : Node {
     uint32_t material_index;
     uint32_t section_index;
     Array<MAP_Mesh_Part, The_Arena_Allocator> mesh_parts = {};
@@ -357,7 +445,7 @@ struct MAP_Mesh {
     bool bbox_override = false;
     float bounding_box_a[3] = {};
     float bounding_box_b[3] = {};
-    Array<MAP_Mesh_Part_Group, The_Arena_Allocator> mesh_part_groups = {};
+    LinkedList<MAP_Mesh_Part_Group, The_Arena_Allocator> mesh_part_groups = {};
     Array<MAP_Mesh_Vertex_Buffer, The_Arena_Allocator> vertex_buffers = {};
     Array<uint16_t, The_Arena_Allocator> indices = {};
     void release() {
@@ -1223,7 +1311,8 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh,
         //        the rest goes into a single meshpart inside that group. It'd be interesting
         //        to try flattening meshpartgroups completely and encode the tree nesting
         //        implicitly, for better allocations or something, but no biggie.
-        mesh.mesh_part_groups.reserve(header.count);
+        // mesh.mesh_part_groups.reserve(header.count);
+        mesh.mesh_part_groups.init();
         for (uint32_t i = 0; i < header.count; i++) {
             MAP_Mesh_Part_Group mesh_part_group = {};
             const char *mesh_part_group_start = ptr4;
@@ -2218,7 +2307,7 @@ static void map_upload(G &g) {
                 map_buffer.subfile_index = g.geometries[rolling_opaque_geo_index].subfile_index;
                 map_buffer.global_geometry_index = rolling_opaque_geo_index;
                 map_buffer.global_mesh_index = (int)(&mesh - g.opaque_meshes.data); // @Lazy
-                map_buffer.mesh_part_group_index = (int)(&mesh_part_group - mesh.mesh_part_groups.data); // @Lazy
+                map_buffer.mesh_part_group_ptr = &mesh_part_group;
             }
             ++opaque_mesh_index;
         }
@@ -2247,7 +2336,7 @@ static void map_upload(G &g) {
                 decal_buffer.subfile_index = g.geometries[rolling_transparent_geo_index].subfile_index;
                 decal_buffer.global_geometry_index = rolling_transparent_geo_index;
                 decal_buffer.global_mesh_index = (int)(&mesh - g.transparent_meshes.data); // @Lazy
-                decal_buffer.mesh_part_group_index = (int)(&mesh_part_group - mesh.mesh_part_groups.data); // @Lazy
+                decal_buffer.mesh_part_group_ptr = &mesh_part_group;
             }
         }
         int rolling_decal_geo_index = 0;
@@ -2275,7 +2364,8 @@ static void map_upload(G &g) {
                 decal_buffer.subfile_index = g.geometries[rolling_decal_geo_index].subfile_index;
                 decal_buffer.global_geometry_index = rolling_decal_geo_index;
                 decal_buffer.global_mesh_index = (int)(&mesh - g.decal_meshes.data); // @Lazy
-                decal_buffer.mesh_part_group_index = (int)(&mesh_part_group - mesh.mesh_part_groups.data); // @Lazy
+                // decal_buffer.mesh_part_group_index = (int)(&mesh_part_group - mesh.mesh_part_groups.data); // @Lazy
+                decal_buffer.mesh_part_group_ptr = &mesh_part_group; // @Temporary @Todo @@@
             }
         }
         for (auto &tex : g.textures) {
@@ -3581,8 +3671,8 @@ static void frame(void *userdata) {
                     MAP_Mesh_Part &part = *group.mesh_parts.push();
                     part.strip_count = 1;
                     part.strip_length = (uint16_t)mesh.indices.count;
-                    assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_count > 0);
-                    assert(mesh.mesh_part_groups[0].mesh_parts[0].strip_length > 0);
+                    assert((*mesh.mesh_part_groups.begin()).mesh_parts[0].strip_count > 0);
+                    assert((*mesh.mesh_part_groups.begin()).mesh_parts[0].strip_length > 0);
 
                     g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
                     g.opaque_meshes.push(mesh);
@@ -3961,7 +4051,7 @@ static void frame(void *userdata) {
                 }
                 prev_source = buf.source;
 
-                char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d), %s Mesh #%d, group #%d", buf.global_geometry_index, buf.id, source, buf.global_mesh_index, buf.mesh_part_group_index);
+                char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d), %s Mesh #%d, group #%d", buf.global_geometry_index, buf.id, source, buf.global_mesh_index, (int)0 /* buf.mesh_part_group_index */);
                 ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_OpenOnArrow;
                 if (buf.selected) {
                     flags |= ImGuiTreeNodeFlags_Selected;
@@ -3997,7 +4087,7 @@ static void frame(void *userdata) {
 
                 if (!g.map_must_update) { // @HACK !!!!!!!!!!!!!!!! @@@@@@ !!!!!!!!
                     auto &mesh = meshes[buf.global_mesh_index];
-                    auto &mesh_part_group = mesh.mesh_part_groups[buf.mesh_part_group_index];
+                    auto &mesh_part_group = *buf.mesh_part_group_ptr;
                     int mat_index = mesh_part_group.material_index;
                     if (ImGui::InputInt("Material Index", &mat_index)) {
                         while (mat_index < 0) {
@@ -4144,10 +4234,9 @@ static void frame(void *userdata) {
             auto process_mesh = [&] (MAP_Geometry_Buffer &buf, bool duplicate, bool move, bool scale, bool get_center) {
                 auto &meshes = get_meshes(buf);
                 if (move || scale || get_center) {
-                    int mpg_index = buf.mesh_part_group_index;
                     auto &mesh = meshes[buf.global_mesh_index];
                     mesh.bbox_override = false;
-                    auto &mesh_part_group = mesh.mesh_part_groups[mpg_index];
+                    auto &mesh_part_group = *buf.mesh_part_group_ptr;
                     auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
 
                     assert(The_Arena_Allocator::contains(&mesh));
@@ -4156,8 +4245,11 @@ static void frame(void *userdata) {
                     assert(The_Arena_Allocator::contains(buf.data.data));
 
                     int indices_index = 0;
-                    for (int i = 0; i < mpg_index; i++) {
-                        for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
+                    for (auto &&mpg : mesh.mesh_part_groups) {
+                        if (&mpg == &mesh_part_group) {
+                            break;
+                        }
+                        for (auto &part : mpg.mesh_parts) {
                             indices_index += part.strip_length * part.strip_count;
                         }
                     }
@@ -4211,19 +4303,22 @@ static void frame(void *userdata) {
                     }
                 }
                 if (duplicate) {
-                    int mpg_index = buf.mesh_part_group_index;
+                    auto &mesh_part_group = *buf.mesh_part_group_ptr;
                     auto &mesh = meshes[buf.global_mesh_index];
-                    auto &buf = mesh.vertex_buffers[mesh.mesh_part_groups[mpg_index].section_index];
+                    auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
                     int indices_index = 0;
-                    for (int i = 0; i < mpg_index; i++) {
-                        for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
+                    for (auto &&mpg : mesh.mesh_part_groups) {
+                        if (&mpg == &mesh_part_group) {
+                            break;
+                        }
+                        for (auto &part : mpg.mesh_parts) {
                             indices_index += part.strip_length * part.strip_count;
                         }
                     }
                     // Log("Starting at index %d...", indices_index);
                     assert(indices_index < mesh.indices.count);
                     int indices_to_process = 0;
-                    for (auto &part : mesh.mesh_part_groups[mpg_index ].mesh_parts) {
+                    for (auto &part : mesh_part_group.mesh_parts) {
                         indices_to_process += part.strip_length * part.strip_count;
                     }
                     // Log("We're going to process %d indices...", indices_to_process);
@@ -4269,8 +4364,8 @@ static void frame(void *userdata) {
                     }
                     assert(new_vertex_buffer.num_vertices == indices_to_process);
                     auto &new_group = *new_mesh.mesh_part_groups.push();
-                    new_group.material_index = mesh.mesh_part_groups[mpg_index].material_index;
-                    for (auto &part : mesh.mesh_part_groups[mpg_index].mesh_parts) {
+                    new_group.material_index = mesh_part_group.material_index;
+                    for (auto &part : mesh_part_group.mesh_parts) {
                         new_group.mesh_parts.push(part);
                     }
                     auto new_pushed_mesh = meshes.push(new_mesh);
@@ -4328,12 +4423,14 @@ static void frame(void *userdata) {
 
             auto clear_out_mesh_part_group_for_deletion = [&] (MAP_Geometry_Buffer &buf) {
                 auto &meshes = get_meshes(buf);
-                int mpg_index = buf.mesh_part_group_index;
                 MAP_Mesh &mesh = meshes[buf.global_mesh_index];
-                MAP_Mesh_Part_Group &mesh_part_group = mesh.mesh_part_groups[mpg_index];
+                MAP_Mesh_Part_Group &mesh_part_group = *buf.mesh_part_group_ptr;
                 int indices_index = 0;
-                for (int i = 0; i < mpg_index; i++) {
-                    for (auto &part : mesh.mesh_part_groups[i].mesh_parts) {
+                for (auto &&mpg : mesh.mesh_part_groups) {
+                    if (&mpg == &mesh_part_group) {
+                        break;
+                    }
+                    for (auto &part : mpg.mesh_parts) {
                         indices_index += part.strip_length * part.strip_count;
                     }
                 }
@@ -4347,7 +4444,9 @@ static void frame(void *userdata) {
                 assert(indices_index + indices_to_process <= mesh.indices.count);
                 mesh.indices.remove_ordered(indices_index, indices_to_process);
                 mesh_part_group.mesh_parts.release();
+                Node node = (Node)mesh_part_group;
                 mesh_part_group = {};
+                memcpy(&mesh_part_group, &node, sizeof(node));
             };
             if (del) {
                 for (auto &buf : g.map_buffers) {
@@ -4366,12 +4465,12 @@ static void frame(void *userdata) {
                 g.overall_center_needs_recalc = true;
             }
             auto prune_empty_mesh_part_groups = [&] (MAP_Mesh &mesh) {
-                for (int64_t mesh_part_group_index = 0; mesh_part_group_index < mesh.mesh_part_groups.count;) {
-                    if (mesh.mesh_part_groups[mesh_part_group_index].mesh_parts.count <= 0) {
-                        mesh.mesh_part_groups.remove_ordered(mesh_part_group_index);
-                    } else {
-                        ++mesh_part_group_index;
+                for (auto &&mpg = mesh.mesh_part_groups.begin(); mpg != mesh.mesh_part_groups.end();) {
+                    auto &&next = mpg.node->next;
+                    if ((*mpg).mesh_parts.count <= 0) {
+                        mesh.mesh_part_groups.remove(mpg.node);
                     }
+                    mpg.node = next;
                 }
             };
             for (auto &mesh : g.opaque_meshes) {

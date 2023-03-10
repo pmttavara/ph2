@@ -108,7 +108,8 @@ struct Mallocator {
         (void)old_size;
         return ::realloc(p, size);
     }
-    static void (free)(void *p) {
+    static void (free)(void *p, size_t size) {
+        (void)size;
         return ::free(p);
     }
 };
@@ -135,7 +136,7 @@ template <class T, class Allocator = Mallocator> struct Array {
     void release() {
         assert(array_invariants());
         if (data) {
-            (Allocator::free)(data);
+            (Allocator::free)(data, capacity * sizeof(T));
         }
         data = nullptr;
         capacity = 0;
