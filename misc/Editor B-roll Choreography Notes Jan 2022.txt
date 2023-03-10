@@ -1,0 +1,36 @@
+SH2 BROLL
+change to 1080p60
+6000 MBPS
+
+normal OBS
+change back to 720p60
+2500 MBPS
+
+SHOWCASING:
+    map_load map/ob01.map
+    Mouselook
+    WASD + increasing speed
+    scroll in and out
+    Camera FOV
+    Reset Camera
+    MAP Geometries: 513
+    Texture selection
+        Textures resize with window
+    map_load map/ap64.map
+    MAP Geometries: 257
+    map_load map/ap06.map
+    map_load map/hp01.map
+    MAP Geometries: 769
+
+    Restart program
+
+    cld_load ../cld/cld/ob01.cld
+    Zoom in on car
+    Click on rear door
+    Drag top left corner around
+    Hold ALT to snap to the vertex it was already on
+    Drag the floor around and break it apart
+    Quad
+    cld_load ../cld/cld/ap64.cld
+    cld_load ../cld/cld/ap06.cld
+    cld_load ../cld/cld/hp01.cld
