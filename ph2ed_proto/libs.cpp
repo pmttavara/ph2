@@ -5,10 +5,19 @@
 #define HANDMADE_MATH_IMPLEMENTATION
 #include "HandmadeMath.h"
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmisleading-indentation"
+#endif
+
 #include "imgui.cpp"
 #include "imgui_draw.cpp"
 #include "imgui_tables.cpp"
 #include "imgui_widgets.cpp"
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 #define SOKOL_IMPL
 #define SOKOL_D3D11

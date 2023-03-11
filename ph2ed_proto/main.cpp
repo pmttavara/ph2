@@ -583,36 +583,46 @@ struct MAP_Texture {
 };
 
 struct Map {
-    Array<MAP_Texture_Subfile, The_Arena_Allocator> texture_subfiles = {};
     Array<MAP_Geometry, The_Arena_Allocator> geometries = {};
 
     Array<MAP_Mesh, The_Arena_Allocator> opaque_meshes = {};
     Array<MAP_Mesh, The_Arena_Allocator> transparent_meshes = {};
     Array<MAP_Mesh, The_Arena_Allocator> decal_meshes = {};
 
+    Array<MAP_Texture_Subfile, The_Arena_Allocator> texture_subfiles = {};
+
     Array<MAP_Texture, The_Arena_Allocator> textures = {};
 
     Array<MAP_Material, The_Arena_Allocator> materials = {};
 
-    void release() {
+    void release_geometry() {
         ProfileFunction();
 
-        for (auto &mesh : opaque_meshes) {
-            mesh.release();
-        }
-        for (auto &mesh : transparent_meshes) {
-            mesh.release();
-        }
         for (auto &mesh : decal_meshes) {
             mesh.release();
         }
+        decal_meshes.release();
+        for (auto &mesh : transparent_meshes) {
+            mesh.release();
+        }
+        transparent_meshes.release();
+        for (auto &mesh : opaque_meshes) {
+            mesh.release();
+        }
+        opaque_meshes.release();
         geometries.release();
-        texture_subfiles.release();
+    }
+    void release_textures() {
+        ProfileFunction();
+
+        materials.release();
+
         for (auto &tex : textures) {
             tex.release();
         }
         textures.release();
-        materials.release();
+
+        texture_subfiles.release();
     }
 };
 
@@ -814,7 +824,8 @@ struct G : Map {
         }
         map_textures.release();
         free(opened_map_filename); opened_map_filename = nullptr;
-        Map::release();
+        Map::release_geometry();
+        Map::release_textures();
         *this = {};
     }
 };
@@ -1967,20 +1978,12 @@ static sg_image *map_get_texture_by_id(Array<MAP_Texture, The_Arena_Allocator> t
 static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false) {
     ProfileFunction();
 
-    g.geometries.release();
-    for (MAP_Mesh &mesh : g.opaque_meshes) mesh.release();
-    for (MAP_Mesh &mesh : g.transparent_meshes) mesh.release();
-    for (MAP_Mesh &mesh : g.decal_meshes) mesh.release();
-    g.opaque_meshes.release();
-    g.transparent_meshes.release();
-    g.decal_meshes.release();
-    if (!is_non_numbered_dependency) {
-        g.materials.release();
-        for (auto &tex : g.textures) {
-            tex.release();
-        }
-        g.texture_subfiles.release();
-        g.textures.release();
+    if (is_non_numbered_dependency) {
+        g.release_geometry();
+    } else {
+
+        static_cast<Map &>(g) = Map{};
+
         The_Arena_Allocator::free_all();
         for (auto &entry : g.redo_stack) {
             entry.release();

@@ -224,7 +224,7 @@ static inline uint16_t *utf8_to_utf16(const char *utf8) {
     if (utf16len) { //may fail if the input string is invalid, so this is a handle-able error
         utf16 = (uint16_t *)malloc(utf16len * sizeof(uint16_t));
         if (utf16) {
-            size_t charsWritten = mbsrtowcs((wchar_t *)utf16, &utf8, utf16len, &state);
+            size_t charsWritten = mbsrtowcs((wchar_t *)utf16, &utf8, utf16len, &state) + 1;
             if (charsWritten != utf16len || //should always be true
                 utf16[utf16len - 1] != 0) { //should be null terminated
                 free(utf16);
@@ -238,11 +238,11 @@ static inline uint16_t *utf8_to_utf16(const char *utf8) {
 static inline char *utf16_to_utf8(const uint16_t *utf16) {
     char *utf8 = nullptr;
     mbstate_t state = {0};
-    size_t utf8len = wcsrtombs(nullptr, (const wchar_t **)utf16, 0, &state) + 1;
+    size_t utf8len = wcsrtombs(nullptr, (const wchar_t **)&utf16, 0, &state) + 1;
     if (utf8len) { //may fail if the input string is invalid, so this is a handle-able error
         utf8 = (char *)malloc(utf8len * sizeof(char));
         if (utf8) {
-            size_t charsWritten = wcsrtombs(utf8, (const wchar_t **)utf16, utf8len, &state);
+            size_t charsWritten = wcsrtombs(utf8, (const wchar_t **)&utf16, utf8len, &state) + 1;
             if (charsWritten != utf8len || //should always be true
                 utf8[utf8len - 1] != 0) { //should be null terminated
                 free(utf8);

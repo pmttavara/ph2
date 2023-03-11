@@ -7,13 +7,13 @@ if !errorlevel! neq 0 goto end
 REM Debug modes:
 if "%1" neq "release" (
 
-cl       -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505                                 -EHa- main.cpp -c -Fomain.obj /RTCu /fsanitize=address
+cl       -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505                                 -EHa- main.cpp -c -Fomain.obj -RTCu -fsanitize=address
 if !errorlevel! neq 0 goto end
-cl       -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505 -wd4334 -wd4244 -wd4267 -wd4706 -EHa- libs.cpp -c -Folibs.obj /RTCu /fsanitize=address
+cl       -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505 -wd4334 -wd4244 -wd4267 -wd4706 -EHa- libs.cpp -c -Folibs.obj -RTCu -fsanitize=address
 if !errorlevel! neq 0 goto end
-REM clang-cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505                                 -Wno-missing-braces -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sign-compare -Wno-tautological-constant-out-of-range-compare -Wno-missing-field-initializers -EHa- -fsanitize=address -fsanitize=undefined main.cpp -c -Fomain.obj
+REM clang-cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505                                 -Wno-missing-braces -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sign-compare -Wno-tautological-constant-out-of-range-compare -Wno-missing-field-initializers -Wno-unused-function -EHa- -fsanitize=address -fsanitize=undefined main.cpp -c -Fomain.obj -mavx2 -maes
 if !errorlevel! neq 0 goto end
-REM clang-cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505 -wd4334 -wd4244 -wd4267 -wd4706 -Wno-missing-braces -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sign-compare -Wno-tautological-constant-out-of-range-compare -Wno-missing-field-initializers -EHa- -fsanitize=address -fsanitize=undefined libs.cpp -c -Folibs.obj
+REM clang-cl -Od -Z7 -nologo -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505 -wd4334 -wd4244 -wd4267 -wd4706 -Wno-missing-braces -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sign-compare -Wno-tautological-constant-out-of-range-compare -Wno-missing-field-initializers -Wno-unused-function -EHa- -fsanitize=address -fsanitize=undefined libs.cpp -c -Folibs.obj -mavx2 -maes
 if !errorlevel! neq 0 goto end
 
 link     -noimplib -noexp -debug -incremental:no -nologo main.obj libs.obj /out:ph2ed_proto.exe
