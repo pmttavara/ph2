@@ -17,7 +17,7 @@
 		<RunCommand></RunCommand>
 		<DebugCommand>$(WorkspaceDirectory)\remedybg.exe start-debugging</DebugCommand>
 		<ExePathCommand></ExePathCommand>
-		<DebugSln></DebugSln>
+		<DebugSln>$(WorkspaceDirectory)\ph2ed_proto.sln</DebugSln>
 		<UseVisualStudioEnvBat>true</UseVisualStudioEnvBat>
 		<Configurations>
 			<Configuration>Debug</Configuration>

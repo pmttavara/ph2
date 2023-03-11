@@ -52,6 +52,8 @@ int num_array_resizes = 0;
 #define NOMINMAX
 #include <Windows.h>
 
+#define SPALL_BUFFER_PROFILING
+#define SPALL_BUFFER_PROFILING_GET_TIME() ((double)__rdtsc())
 #include "spall.h"
 
 #pragma comment(lib, "legacy_stdio_definitions")
@@ -62,15 +64,16 @@ char spall_buffer_data[1 << 16];
 SpallBuffer spall_buffer = {spall_buffer_data, sizeof(spall_buffer_data)};
 
 extern "C" __declspec(dllimport) unsigned long GetCurrentThreadId(void);
-template <size_t N>
-static SPALL_FORCEINLINE void spall_begin(const char (&name)[N]) { spall_buffer_begin_ex(&spall_ctx, &spall_buffer, name, N - 1, (double)__rdtsc(), GetCurrentThreadId(), 0); }
-static SPALL_FORCEINLINE void spall_end() { spall_buffer_end_ex(&spall_ctx, &spall_buffer, (double)__rdtsc(), GetCurrentThreadId(), 0); }
 
 struct ScopedTraceTimer {
     SPALL_FORCEINLINE constexpr explicit operator bool() { return false; }
     template <size_t N> 
-    SPALL_FORCEINLINE ScopedTraceTimer(const char (&name)[N]) { spall_begin(name); }
-    SPALL_FORCEINLINE ~ScopedTraceTimer() { spall_end(); }
+    SPALL_FORCEINLINE ScopedTraceTimer(const char (&name)[N]) {
+        spall_buffer_begin_ex(&spall_ctx, &spall_buffer, name, N - 1, (double)__rdtsc(), GetCurrentThreadId(), 0);
+    }
+    SPALL_FORCEINLINE ~ScopedTraceTimer() {
+        spall_buffer_end_ex(&spall_ctx, &spall_buffer, (double)__rdtsc(), GetCurrentThreadId(), 0);
+    }
 };
 
 #define CAT__(a, b) a ## b
@@ -190,71 +193,125 @@ uint64_t meow_hash(void *key, int len) {
     return hash64;
 }
 
+extern "C" {
+    void __asan_poison_memory_region(void const volatile *addr, size_t size);
+    void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
+}
+
+
 struct The_Arena_Allocator {
     static char *arena_data;
     static uint64_t arena_head;
     static int allocations_this_frame;
     enum { ARENA_SIZE = 512 * 1024 * 1024 };
-    static bool contains(void *p) {
+    static bool contains(void *p, size_t n) {
         ProfileFunction();
 
-        return (char *)p >= arena_data && (char *)p < arena_data + arena_head;
+        return (char *)p >= arena_data && (char *)p + n <= arena_data + arena_head;
     }
     static void init() {
         ProfileFunction();
 
-        arena_data = (char *)VirtualAlloc(nullptr, ARENA_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        arena_data = (char *)malloc(ARENA_SIZE); // arena_data = (char *)VirtualAlloc(nullptr, ARENA_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         arena_head = 0;
     }
     static void quit() {
         ProfileFunction();
 
-        VirtualFree(arena_data, 0, MEM_RELEASE);
+        free_all();
+        ::free(arena_data); // VirtualFree(arena_data, 0, MEM_RELEASE);
         arena_data = nullptr;
-        arena_head = 0;
     }
     static void free_all() {
         ProfileFunction();
 
-        memset(arena_data, 0xcc, arena_head);
+        (free)(arena_data, arena_head);
         arena_head = 0;
     }
     static void (free)(void *p, size_t size) {
+        ProfileFunction();
+
+        assert((uint64_t)p % 8 == 0);
+
+        size = (size + 7ull) & ~7ull;
+
+        assert(size % 8 == 0);
+
+        assert(contains(p, size));
+
+        // __asan_poison_memory_region(p, size);
+#ifndef NDEBUG
         memset(p, 0xcc, size);
+#endif
     }
     static void *allocate(size_t size) {
         ProfileFunction();
+
+        assert(arena_head % 8 == 0);
+
+        size = (size + 7ull) & ~7ull;
+
+        assert(size % 8 == 0);
 
         if (arena_head + size > ARENA_SIZE) return nullptr;
 
         void *result = arena_data + arena_head;
         arena_head += size;
         ++allocations_this_frame;
+#ifndef NDEBUG
         memset(result, 0xcc, size);
+#endif
+        // __asan_unpoison_memory_region(result, size);
         return result;
     }
     static void *reallocate(void *p, size_t size, size_t old_size) {
         ProfileFunction();
+
+        assert((uint64_t)p % 8 == 0);
+
+        old_size = (old_size + 7ull) & ~7ull;
+
+        assert(old_size % 8 == 0);
+
+        size = (size + 7ull) & ~7ull;
+
+        assert(size % 8 == 0);
 
         // No old data - allocate new block
         if (p == NULL || old_size == 0) {
             return allocate(size);
         }
 
-        // Free data
-        if (size == 0) {
-            return NULL;
-        }
-
-        // New allocation is smaller
+        // New allocation is smaller (or 0) - free the extra space
         if (size <= old_size) {
+            (free)((char *)p + size, old_size - size);
             return p;
         }
+
+        // If this allocation is at the end of the arena, then
+        // grow forward.
+        if ((char *)p + old_size == arena_data + arena_head) {
+            auto more = size - old_size;
+            assert(more % 8 == 0);
+            auto extra = allocate(more);
+            assert(arena_head % 8 == 0);
+            if (extra) {
+                assert((uint64_t)extra % 8 == 0);
+                assert(extra == (char *)p + old_size);
+                return p;
+            }
+            return nullptr;
+        }
+
+        // @Todo: If there is extra space to grow into, then
+        // grow into that instead of allocating a new block.
 
         // Allocate new block and copy data
         void *q = allocate(size);
         if (q) {
             memcpy(q, p, old_size);
+            // Free old allocation
+            (free)(p, old_size);
         }
         return q;
     }
@@ -370,19 +427,29 @@ struct LinkedList {
     Node *sentinel = nullptr;
     int64_t count = 0;
     void init() {
-        sentinel = (T *)Allocator::reallocate(nullptr, sizeof(T), 0);
+        sentinel = (T *)Allocator::allocate(sizeof(T));
+        assert(sentinel);
         sentinel->next = sentinel;
         sentinel->prev = sentinel;
         count = 0;
     }
     void release() {
-        for (Node *node = sentinel->prev; node != sentinel; node = node->prev) {
-            (Allocator::free)((T *)node, sizeof(T));
+        if (sentinel) {
+            for (Node *node = sentinel->prev; node != sentinel;) {
+                Node *prev = node->prev;
+                (Allocator::free)((T *)node, sizeof(T));
+                node = prev;
+            }
+            (Allocator::free)(sentinel, sizeof(Node));
         }
-        (Allocator::free)(sentinel, sizeof(Node));
     }
     T *push(T value = {}) {
-        T *node = (T *)Allocator::reallocate(nullptr, sizeof(T), 0);
+        if (!sentinel) {
+            assert(count == 0);
+            init();
+        }
+        T *node = (T *)Allocator::allocate(sizeof(T));
+        assert(node);
         *node = value;
         node_insert_before(sentinel, node);
         count += 1;
@@ -415,16 +482,18 @@ struct LinkedList {
 
 
     bool has_node(Node *node) {
-        for (auto &&it : *this) {
-            if (&it == node) {
-                return true;
+        if (sentinel) {
+            for (auto &&it : *this) {
+                if (&it == node) {
+                    return true;
+                }
             }
         }
         return false;
     }
 
     void remove(Node *node) {
-        assert(count > 0 && has_node(node));
+        assert(sentinel && count > 0 && has_node(node));
         node->prev->next = node->next;
         node->next->prev = node->prev;
         count -= 1;
@@ -1312,7 +1381,6 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh,
         //        to try flattening meshpartgroups completely and encode the tree nesting
         //        implicitly, for better allocations or something, but no biggie.
         // mesh.mesh_part_groups.reserve(header.count);
-        mesh.mesh_part_groups.init();
         for (uint32_t i = 0; i < header.count; i++) {
             MAP_Mesh_Part_Group mesh_part_group = {};
             const char *mesh_part_group_start = ptr4;
@@ -2577,7 +2645,7 @@ static void init(void *userdata) {
 
     spall_ctx = spall_init_file("trace.spall", get_rdtsc_multiplier());
     assert(spall_ctx.data);
-    assert(spall_buffer_init(&spall_ctx, &spall_buffer));
+    spall_buffer_init(&spall_ctx, &spall_buffer);
 
     ProfileFunction();
 
@@ -3325,6 +3393,18 @@ bool dds_import(char *filename, MAP_Texture &result) {
     return true;
 }
 
+#if _MSC_VER && !defined(__clang__)
+#define NO_SANITIZE __declspec(no_sanitize_address)
+#else
+#define NO_SANITIZE __attribute__((no_sanitize_address))
+#endif
+
+static void NO_SANITIZE no_asan_memcpy(void *destination, void *source, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        ((char *)destination)[i] = ((char *)source)[i];
+    }
+}
+
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd);
 static void frame(void *userdata) {
     ProfileFunction();
@@ -3370,7 +3450,7 @@ static void frame(void *userdata) {
             }
             if (ImGui::MenuItem("Save MAP As...", "Ctrl-Shift-S")) {
                 g.control_s = false;
-                g.control_shift_s = false;
+                g.control_shift_s = true;
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Import OBJ Model...")) {
@@ -4239,10 +4319,10 @@ static void frame(void *userdata) {
                     auto &mesh_part_group = *buf.mesh_part_group_ptr;
                     auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
 
-                    assert(The_Arena_Allocator::contains(&mesh));
-                    assert(The_Arena_Allocator::contains(&mesh_part_group));
-                    assert(The_Arena_Allocator::contains(&buf));
-                    assert(The_Arena_Allocator::contains(buf.data.data));
+                    assert(The_Arena_Allocator::contains(&mesh, sizeof(mesh)));
+                    assert(The_Arena_Allocator::contains(&mesh_part_group, sizeof(mesh_part_group)));
+                    assert(The_Arena_Allocator::contains(&buf, sizeof(buf)));
+                    assert(The_Arena_Allocator::contains(buf.data.data, buf.data.count));
 
                     int indices_index = 0;
                     for (auto &&mpg : mesh.mesh_part_groups) {
@@ -4370,11 +4450,11 @@ static void frame(void *userdata) {
                     }
                     auto new_pushed_mesh = meshes.push(new_mesh);
 
-                    assert(The_Arena_Allocator::contains(&new_vertex_buffer));
-                    assert(The_Arena_Allocator::contains(new_vertex_buffer.data.data));
-                    assert(The_Arena_Allocator::contains(new_mesh.indices.data));
-                    assert(The_Arena_Allocator::contains(&new_group));
-                    assert(The_Arena_Allocator::contains(new_pushed_mesh));
+                    assert(The_Arena_Allocator::contains(&new_vertex_buffer, sizeof(new_vertex_buffer)));
+                    assert(The_Arena_Allocator::contains(new_vertex_buffer.data.data, new_vertex_buffer.data.count));
+                    assert(The_Arena_Allocator::contains(new_mesh.indices.data, new_mesh.indices.count));
+                    assert(The_Arena_Allocator::contains(&new_group, sizeof(new_group)));
+                    assert(The_Arena_Allocator::contains(new_pushed_mesh, sizeof(*new_pushed_mesh)));
 
                     g.geometries[g.geometries.count - 1].opaque_mesh_count += 1;
                     g.map_must_update = true;
@@ -5022,7 +5102,7 @@ static void frame(void *userdata) {
         entry.data = (char *)malloc(entry.count);
         assert(entry.data);
 
-        memcpy(entry.data, The_Arena_Allocator::arena_data, entry.count);
+        no_asan_memcpy(entry.data, The_Arena_Allocator::arena_data, entry.count);
 
         return entry;
     };
@@ -5030,7 +5110,7 @@ static void frame(void *userdata) {
     auto apply_history_entry = [&] (Map_History_Entry entry) {
         assert(entry.count <= The_Arena_Allocator::ARENA_SIZE);
         The_Arena_Allocator::arena_head = entry.count;
-        memcpy(The_Arena_Allocator::arena_data, entry.data, The_Arena_Allocator::arena_head);
+        no_asan_memcpy(The_Arena_Allocator::arena_data, entry.data, The_Arena_Allocator::arena_head);
     };
 
     uint64_t map_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
@@ -5387,6 +5467,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
 }
 
 static void cleanup(void *userdata) {
+#ifndef NDEBUG
     {
         ProfileFunction();
 
@@ -5394,13 +5475,14 @@ static void cleanup(void *userdata) {
         g.release();
         simgui_shutdown();
         sg_shutdown();
-#ifndef NDEBUG
-        stb_leakcheck_dumpmem();
-#endif
         The_Arena_Allocator::quit();
+        stb_leakcheck_dumpmem();
     }
+#endif
 
-    assert(spall_buffer_quit(&spall_ctx, &spall_buffer));
+    spall_buffer_flush(&spall_ctx, &spall_buffer);
+    spall_buffer_quit(&spall_ctx, &spall_buffer);
+    spall_flush(&spall_ctx);
     spall_quit(&spall_ctx);
 }
 

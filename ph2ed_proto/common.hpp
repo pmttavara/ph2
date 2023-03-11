@@ -104,6 +104,9 @@ static inline int assert_(const char *s) {
 extern int num_array_resizes;
 
 struct Mallocator {
+    static void *allocate(size_t size) {
+        return ::malloc(size);
+    }
     static void *reallocate(void *p, size_t size, size_t old_size) {
         (void)old_size;
         return ::realloc(p, size);
