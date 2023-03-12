@@ -361,22 +361,6 @@ struct MAP_Texture_Subfile {
     int texture_count = 0;
 };
 
-// Geometries can be empty, so they can't be implicitly encoded by indices in MAP_Mesh.
-// (MeshGroups can't be empty, so they can. Same with GeometryGroup subfiles, which we store here.)
-// This encoding is preserved to achieve bit-for-bit roundtrippability.
-struct MAP_Geometry : Node {
-    uint32_t id = 0;
-    uint32_t subfile_index = 0;
-    // You'll need to look into the MAP_Mesh arrays to figure out your start+end indices for these geometries.
-    uint32_t opaque_mesh_count = 0; // this one member encodes the entire MeshGroup.
-    uint32_t transparent_mesh_count = 0; // this one member encodes the entire MeshGroup.
-    uint32_t decal_count = 0; // this one member encodes the entire DecalGroup.
-
-    // Only here to preserve bit-for-bit roundtrippability.
-    bool has_weird_2_byte_misalignment_before_transparents = false;
-    bool has_weird_2_byte_misalignment_before_decals = false;
-};
-
 struct MAP_Geometry_Vertex {
     float position[3] = {};
     float normal[3] = {};
@@ -398,7 +382,7 @@ struct MAP_Geometry_Buffer {
     uint32_t id = 0;
     uint32_t subfile_index = 0;
     struct MAP_Geometry *geometry_ptr = 0;
-    int global_mesh_index = 0; // @Todo: index within geometry
+    int geometry_mesh_index = 0; // @Todo: index within geometry
     struct MAP_Mesh_Part_Group *mesh_part_group_ptr = nullptr;
     int mesh_part_group_index = 0;
     bool shown = true;
@@ -474,14 +458,17 @@ struct LinkedList {
         Node *sentinel;
         T *node;
         T &operator*() {
+            assert(node);
             assert(node != sentinel);
             return *node;
         }
         T *operator->() {
+            assert(node);
             assert(node != sentinel);
             return node;
         }
         Iterator &operator++() {
+            assert(node);
             node = (T *)node->next;
             return *this;
         }
@@ -491,12 +478,16 @@ struct LinkedList {
     };
 
     Iterator begin() {
-        assert(sentinel);
-        return {sentinel, (T *)sentinel->next};
+        if (sentinel) {
+            return {sentinel, (T *)sentinel->next};
+        }
+        return {};
     }
     Iterator end() {
-        assert(sentinel);
-        return {sentinel, (T *)sentinel};
+        if (sentinel) {
+            return {sentinel, (T *)sentinel};
+        }
+        return {};
     }
 
 
@@ -559,6 +550,38 @@ struct MAP_Mesh {
     uint32_t vertices_length_override = 0;
 };
 
+// Geometries can be empty, so they can't be implicitly encoded by indices in MAP_Mesh.
+// (MeshGroups can't be empty, so they can. Same with GeometryGroup subfiles, which we store here.)
+// This encoding is preserved to achieve bit-for-bit roundtrippability.
+struct MAP_Geometry : Node {
+    uint32_t id = 0;
+    uint32_t subfile_index = 0;
+    Array<MAP_Mesh, The_Arena_Allocator> opaque_meshes = {};
+    Array<MAP_Mesh, The_Arena_Allocator> transparent_meshes = {};
+    Array<MAP_Mesh, The_Arena_Allocator> decal_meshes = {};
+
+    // Only here to preserve bit-for-bit roundtrippability.
+    bool has_weird_2_byte_misalignment_before_transparents = false;
+    bool has_weird_2_byte_misalignment_before_decals = false;
+
+    void release() {
+        for (auto &mesh : decal_meshes) {
+            mesh.release();
+        }
+        decal_meshes.release();
+        for (auto &mesh : transparent_meshes) {
+            mesh.release();
+        }
+        transparent_meshes.release();
+        for (auto &mesh : opaque_meshes) {
+            mesh.release();
+        }
+        opaque_meshes.release();
+    }
+};
+
+
+
 struct MAP_Material {
     uint32_t subfile_index = 0;
     int16_t mode;
@@ -603,10 +626,6 @@ struct MAP_Texture {
 struct Map {
     LinkedList<MAP_Geometry, The_Arena_Allocator> geometries = {};
 
-    Array<MAP_Mesh, The_Arena_Allocator> opaque_meshes = {};
-    Array<MAP_Mesh, The_Arena_Allocator> transparent_meshes = {};
-    Array<MAP_Mesh, The_Arena_Allocator> decal_meshes = {};
-
     Array<MAP_Texture_Subfile, The_Arena_Allocator> texture_subfiles = {};
 
     Array<MAP_Texture, The_Arena_Allocator> textures = {};
@@ -616,18 +635,9 @@ struct Map {
     void release_geometry() {
         ProfileFunction();
 
-        for (auto &mesh : decal_meshes) {
-            mesh.release();
+        for (auto &geo : geometries) {
+            geo.release();
         }
-        decal_meshes.release();
-        for (auto &mesh : transparent_meshes) {
-            mesh.release();
-        }
-        transparent_meshes.release();
-        for (auto &mesh : opaque_meshes) {
-            mesh.release();
-        }
-        opaque_meshes.release();
         geometries.release();
     }
     void release_textures() {
@@ -809,6 +819,16 @@ struct G : Map {
 
     bool cld_must_update = false;
     bool map_must_update = false;
+
+    void staleify_cld() {
+        cld_must_update = true;
+    }
+    void staleify_map() {
+        map_must_update = true;
+        map_buffers_count = 0;
+        decal_buffers_count = 0;
+    }
+
     bool subgroup_visible[16] = {true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true};
 
     bool textured = true;
@@ -918,7 +938,7 @@ static void cld_load(G &g, const char *filename) {
         LogC(IM_COL32(255, 127, 127, 255), "Failed loading CLD file \"%s\"!", filename);
     }
     cld_upload(g);
-    g.cld_must_update = true;
+    g.staleify_cld();
 }
 #define Read(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(&(x), ptr, sizeof(x)) && (ptr += sizeof(x)))
 struct PH2MAP__Header {
@@ -1150,11 +1170,7 @@ void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indi
     }
 }
 // We need 'misalignment' because some mesh groups are weirdly misaligned, and mesh alignment happens *with respect to that misalignment* (!!!!!!!!!!)
-struct Mesh_Group_Load_Result {
-    int num_added;
-    int total_bytes;
-};
-static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh, The_Arena_Allocator> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
+static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh, The_Arena_Allocator> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
     ProfileFunction();
 
     (void)end;
@@ -1484,10 +1500,7 @@ static Mesh_Group_Load_Result map_load_mesh_group_or_decal_group(Array<MAP_Mesh,
         }
     }
     assert(mesh_end);
-    Mesh_Group_Load_Result load_result = {};
-    load_result.num_added = (int)count;
-    load_result.total_bytes = (int)(mesh_end - group_header);
-    return load_result;
+    return (int)(mesh_end - group_header);
 }
 static void map_write_struct(Array<uint8_t> *result, const void *px, size_t sizeof_x) {
     ProfileFunction();
@@ -1682,9 +1695,6 @@ static int32_t map_compute_file_length(G &g) {
         file_length += 16;
         rolling_texture_index += sub.texture_count;
     }
-    int rolling_opaque_mesh_index = 0;
-    int rolling_transparent_mesh_index = 0;
-    int rolling_decal_index = 0;
     for (;;) {
         int geometry_start = 0;
         int geometry_count = 0;
@@ -1713,11 +1723,11 @@ static int32_t map_compute_file_length(G &g) {
                 break;
             }
             file_length += sizeof(PH2MAP__Geometry_Header);
-            if (geo.opaque_mesh_count > 0) {
-                file_length += (1 + geo.opaque_mesh_count) * sizeof(uint32_t); // count + offsets
-                for (int mesh_index = rolling_opaque_mesh_index; mesh_index < rolling_opaque_mesh_index + (int)geo.opaque_mesh_count; mesh_index++) {
+            if (geo.opaque_meshes.count > 0) {
+                file_length += (1 + (int)geo.opaque_meshes.count) * sizeof(uint32_t); // count + offsets
+                for (int mesh_index = 0; mesh_index < (int)geo.opaque_meshes.count; mesh_index++) {
                     file_length += sizeof(PH2MAP__Mapmesh_Header);
-                    MAP_Mesh &mesh = g.opaque_meshes[mesh_index];
+                    MAP_Mesh &mesh = geo.opaque_meshes[mesh_index];
                     for (auto &mesh_part_group : mesh.mesh_part_groups) {
                         file_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
                         file_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
@@ -1732,14 +1742,14 @@ static int32_t map_compute_file_length(G &g) {
                     file_length &= ~15;
                 }
             }
-            if (geo.transparent_mesh_count > 0) {
+            if (geo.transparent_meshes.count > 0) {
                 if (geo.has_weird_2_byte_misalignment_before_transparents) {
                     file_length += 2;
                 }
-                file_length += (1 + geo.transparent_mesh_count) * sizeof(uint32_t); // count + offsets
-                for (int mesh_index = rolling_transparent_mesh_index; mesh_index < rolling_transparent_mesh_index + (int)geo.transparent_mesh_count; mesh_index++) {
+                file_length += (1 + (int)geo.transparent_meshes.count) * sizeof(uint32_t); // count + offsets
+                for (int mesh_index = 0; mesh_index < (int)geo.transparent_meshes.count; mesh_index++) {
                     file_length += sizeof(PH2MAP__Mapmesh_Header);
-                    MAP_Mesh &mesh = g.transparent_meshes[mesh_index];
+                    MAP_Mesh &mesh = geo.transparent_meshes[mesh_index];
                     for (auto &mesh_part_group : mesh.mesh_part_groups) {
                         file_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
                         file_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
@@ -1758,14 +1768,14 @@ static int32_t map_compute_file_length(G &g) {
                     }
                 }
             }
-            if (geo.decal_count > 0) {
+            if (geo.decal_meshes.count > 0) {
                 if (geo.has_weird_2_byte_misalignment_before_decals) {
                     file_length += 2;
                 }
-                file_length += (1 + geo.decal_count) * sizeof(uint32_t); // count + offsets
-                for (int decal_index = rolling_decal_index; decal_index < rolling_decal_index + (int)geo.decal_count; decal_index++) {
+                file_length += (1 + (int)geo.decal_meshes.count) * sizeof(uint32_t); // count + offsets
+                for (int decal_index = 0; decal_index < (int)geo.decal_meshes.count; decal_index++) {
                     file_length += sizeof(PH2MAP__Decal_Header);
-                    MAP_Mesh &decal = g.decal_meshes[decal_index];
+                    MAP_Mesh &decal = geo.decal_meshes[decal_index];
                     file_length += (int)(decal.mesh_part_groups.count() * sizeof(PH2MAP__Sub_Decal));
                     file_length += sizeof(PH2MAP__Vertex_Sections_Header);
                     file_length += (int)(decal.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
@@ -1781,9 +1791,6 @@ static int32_t map_compute_file_length(G &g) {
                     }
                 }
             }
-            rolling_opaque_mesh_index += (int)geo.opaque_mesh_count;
-            rolling_transparent_mesh_index += (int)geo.transparent_mesh_count;
-            rolling_decal_index += (int)geo.decal_count;
         }
         for (auto &mat : g.materials) {
             if ((int)mat.subfile_index == subfile_count) {
@@ -1872,9 +1879,6 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
 
     // GeometryGroup Subfiles
     assert(subfile_count >= 0);
-    int rolling_opaque_mesh_index = 0;
-    int rolling_transparent_mesh_index = 0;
-    int rolling_decal_index = 0;
     for (;;) { // Write geometry subfiles and geometries
         int geometry_start = 0;
         int geometry_count = 0;
@@ -1924,46 +1928,43 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
             auto backpatch_transparent_group_offset = CreateBackpatch(int32_t);
             auto backpatch_decal_group_offset = CreateBackpatch(int32_t);
 
-            if (geo.opaque_mesh_count) {
+            if (geo.opaque_meshes.count) {
                 assert(result->count % 16 == 4);
                 misalignment = 0;
                 WriteBackpatch(int32_t, backpatch_opaque_group_offset, result->count - geometry_header_start);
-                map_write_mesh_group_or_decal_group(result, false, g.opaque_meshes, rolling_opaque_mesh_index, (int)geo.opaque_mesh_count, misalignment);
+                map_write_mesh_group_or_decal_group(result, false, geo.opaque_meshes, 0, (int)geo.opaque_meshes.count, misalignment);
                 assert(result->count % 16 == misalignment);
             }
-            if (geo.transparent_mesh_count) {
+            if (geo.transparent_meshes.count) {
                 if (geo.has_weird_2_byte_misalignment_before_transparents) {
                     result->push(0);
                     result->push(0);
                     misalignment = 2;
                 }
-                if (!geo.opaque_mesh_count) {
+                if (!geo.opaque_meshes.count) {
                     assert(result->count % 16 == 4);
                 } else {
                     assert(result->count % 16 == misalignment);
                 }
                 WriteBackpatch(int32_t, backpatch_transparent_group_offset, result->count - geometry_header_start);
-                map_write_mesh_group_or_decal_group(result, false, g.transparent_meshes, rolling_transparent_mesh_index, (int)geo.transparent_mesh_count, misalignment);
+                map_write_mesh_group_or_decal_group(result, false, geo.transparent_meshes, 0, (int)geo.transparent_meshes.count, misalignment);
                 assert(result->count % 16 == misalignment);
             }
-            if (geo.decal_count) {
+            if (geo.decal_meshes.count) {
                 if (geo.has_weird_2_byte_misalignment_before_transparents || geo.has_weird_2_byte_misalignment_before_decals) {
                     while (result->count % 16 != 2) result->push(0);
                     misalignment = 2;
                 }
-                if (!geo.opaque_mesh_count && !geo.transparent_mesh_count) {
+                if (!geo.opaque_meshes.count && !geo.transparent_meshes.count) {
                     assert(result->count % 16 == 4);
                 } else {
                     assert(result->count % 16 == misalignment);
                 }
                 WriteBackpatch(int32_t, backpatch_decal_group_offset, result->count - geometry_header_start);
-                map_write_mesh_group_or_decal_group(result, true, g.decal_meshes, rolling_decal_index, (int)geo.decal_count, misalignment);
+                map_write_mesh_group_or_decal_group(result, true, geo.decal_meshes, 0, (int)geo.decal_meshes.count, misalignment);
                 assert(result->count % 16 == misalignment);
             }
             WriteBackpatch(int32_t, backpatch_group_size, result->count - geometry_header_start);
-            rolling_opaque_mesh_index += (int)geo.opaque_mesh_count;
-            rolling_transparent_mesh_index += (int)geo.transparent_mesh_count;
-            rolling_decal_index += (int)geo.decal_count;
         }
 
         WriteBackpatch(uint32_t, backpatch_geometry_size, result->count - subfile_start);
@@ -2161,10 +2162,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                             assert(geometry_header.opaque_group_offset == length_sum);
                             // Log("Opaque!");
                             const char *mesh_group_header = ptr2 + geometry_header.opaque_group_offset;
-                            int mesh_start = (int)g.opaque_meshes.count;
-                            Mesh_Group_Load_Result result = map_load_mesh_group_or_decal_group(&g.opaque_meshes, 0, mesh_group_header, ptr2 + geometry_header.group_size, false);
-                            opaque_group_length += result.total_bytes;
-                            geometry.opaque_mesh_count += result.num_added;
+                            int bytes = map_load_mesh_group_or_decal_group(&geometry.opaque_meshes, 0, mesh_group_header, ptr2 + geometry_header.group_size, false);
+                            opaque_group_length += bytes;
                         }
                         length_sum += opaque_group_length;
                         if (geometry_header.transparent_group_offset) {
@@ -2178,10 +2177,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                             }
                             // Log("Transparent!");
                             const char *mesh_group_header = ptr2 + geometry_header.transparent_group_offset;
-                            int mesh_start = (int)g.transparent_meshes.count;
-                            Mesh_Group_Load_Result result = map_load_mesh_group_or_decal_group(&g.transparent_meshes, geometry.has_weird_2_byte_misalignment_before_transparents ? 2 : 0, mesh_group_header, ptr2 + geometry_header.group_size, false);
-                            transparent_group_length += result.total_bytes;
-                            geometry.transparent_mesh_count += result.num_added;
+                            int bytes = map_load_mesh_group_or_decal_group(&geometry.transparent_meshes, geometry.has_weird_2_byte_misalignment_before_transparents ? 2 : 0, mesh_group_header, ptr2 + geometry_header.group_size, false);
+                            transparent_group_length += bytes;
                         }
                         length_sum += transparent_group_length;
                         if (geometry_header.decal_group_offset) {
@@ -2195,10 +2192,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                             }
                             // Log("Decals!");
                             const char *decal_group_header = ptr2 + geometry_header.decal_group_offset;
-                            int mesh_start = (int)g.decal_meshes.count;
-                            Mesh_Group_Load_Result result = map_load_mesh_group_or_decal_group(&g.decal_meshes, geometry.has_weird_2_byte_misalignment_before_transparents || geometry.has_weird_2_byte_misalignment_before_decals ? 2 : 0, decal_group_header, ptr2 + geometry_header.group_size, true);
-                            decal_group_length += result.total_bytes;
-                            geometry.decal_count += result.num_added;
+                            int bytes = map_load_mesh_group_or_decal_group(&geometry.decal_meshes, geometry.has_weird_2_byte_misalignment_before_transparents || geometry.has_weird_2_byte_misalignment_before_decals ? 2 : 0, decal_group_header, ptr2 + geometry_header.group_size, true);
+                            decal_group_length += bytes;
                         }
                         length_sum += decal_group_length;
                         assert(length_sum == geometry_header.group_size);
@@ -2357,7 +2352,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         }
     }
 
-    g.map_must_update = true;
+    g.staleify_map();
     if (g.opened_map_filename) {
         free(g.opened_map_filename);
         g.opened_map_filename = nullptr;
@@ -2385,19 +2380,10 @@ static void map_upload(G &g) {
         }
     }
     g.map_textures.clear();
-    {
-        // Log("about to upload %d map meshes", (int)g.opaque_meshes.count);
-        auto rolling_opaque_geo = g.geometries.begin();
-        uint32_t rolling_opaque_geo_start = 0;
-        uint32_t opaque_mesh_index = 0;
-        for (MAP_Mesh &mesh : g.opaque_meshes) {
+    for (auto &geo : g.geometries) {
+        // Log("about to upload %d map meshes", (int)geo.opaque_meshes.count);
+        for (MAP_Mesh &mesh : geo.opaque_meshes) {
             int indices_index = 0;
-            assert(rolling_opaque_geo != g.geometries.end());
-            while (opaque_mesh_index >= rolling_opaque_geo_start + rolling_opaque_geo->opaque_mesh_count) {
-                rolling_opaque_geo_start += rolling_opaque_geo->opaque_mesh_count;
-                ++rolling_opaque_geo;
-                assert(rolling_opaque_geo != g.geometries.end());
-            }
             // Log("about to upload %d mesh part groups", (int)mesh.mesh_part_groups.count);
             int mesh_part_group_index = 0; // @Lazy
             for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
@@ -2406,30 +2392,22 @@ static void map_upload(G &g) {
                 map_buffer.source = MAP_Geometry_Buffer_Source::Opaque;
                 map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
                 assert(map_buffer.vertices.count % 3 == 0);
-                map_buffer.id = rolling_opaque_geo->id;
+                map_buffer.id = geo.id;
                 assert(mesh_part_group.material_index >= 0);
                 assert(mesh_part_group.material_index < 65536);
                 map_buffer.material_index = (uint16_t)mesh_part_group.material_index;
 
-                map_buffer.subfile_index = rolling_opaque_geo->subfile_index;
-                map_buffer.geometry_ptr = rolling_opaque_geo.node;
-                map_buffer.global_mesh_index = (int)(&mesh - g.opaque_meshes.data); // @Lazy
+                map_buffer.subfile_index = geo.subfile_index;
+                map_buffer.geometry_ptr = &geo;
+                map_buffer.geometry_mesh_index = (int)(&mesh - geo.opaque_meshes.data); // @Lazy
                 map_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
                 map_buffer.mesh_part_group_ptr = &mesh_part_group;
             }
-            ++opaque_mesh_index;
         }
-        auto rolling_transparent_geo = g.geometries.begin();
-        uint32_t rolling_transparent_geo_start = 0;
-        uint32_t transparent_mesh_index = 0;
-        for (MAP_Mesh &mesh : g.transparent_meshes) {
+    }
+    for (auto &geo : g.geometries) {
+        for (MAP_Mesh &mesh : geo.transparent_meshes) {
             int indices_index = 0;
-            assert(rolling_transparent_geo != g.geometries.end());
-            while (transparent_mesh_index >= rolling_transparent_geo_start + rolling_transparent_geo->transparent_mesh_count) {
-                rolling_transparent_geo_start += rolling_transparent_geo->transparent_mesh_count;
-                ++rolling_transparent_geo;
-                assert(rolling_transparent_geo != g.geometries.end());
-            }
             int mesh_part_group_index = 0; // @Lazy
             for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
                 assert(g.decal_buffers_count < g.decal_buffers_max);
@@ -2437,29 +2415,22 @@ static void map_upload(G &g) {
                 decal_buffer.source = MAP_Geometry_Buffer_Source::Transparent;
                 map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
                 assert(decal_buffer.vertices.count % 3 == 0);
-                decal_buffer.id = rolling_transparent_geo->id;
+                decal_buffer.id = geo.id;
                 assert(mesh_part_group.material_index >= 0);
                 assert(mesh_part_group.material_index < 65536);
                 decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
 
-                decal_buffer.subfile_index = rolling_transparent_geo->subfile_index;
-                decal_buffer.geometry_ptr = rolling_transparent_geo.node;
-                decal_buffer.global_mesh_index = (int)(&mesh - g.transparent_meshes.data); // @Lazy
+                decal_buffer.subfile_index = geo.subfile_index;
+                decal_buffer.geometry_ptr = &geo;
+                decal_buffer.geometry_mesh_index = (int)(&mesh - geo.transparent_meshes.data); // @Lazy
                 decal_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
                 decal_buffer.mesh_part_group_ptr = &mesh_part_group;
             }
         }
-        auto rolling_decal_geo = g.geometries.begin();
-        uint32_t rolling_decal_geo_start = 0;
-        uint32_t decal_mesh_index = 0;
-        for (MAP_Mesh &mesh : g.decal_meshes) {
+    }
+    for (auto &geo : g.geometries) {
+        for (MAP_Mesh &mesh : geo.decal_meshes) {
             int indices_index = 0;
-            assert(rolling_decal_geo != g.geometries.end());
-            while (decal_mesh_index >= rolling_decal_geo_start + rolling_decal_geo->decal_count) {
-                rolling_decal_geo_start += rolling_decal_geo->decal_count;
-                ++rolling_decal_geo;
-                assert(rolling_decal_geo != g.geometries.end());
-            }
             int mesh_part_group_index = 0; // @Lazy
             for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
                 assert(g.decal_buffers_count < g.decal_buffers_max);
@@ -2467,18 +2438,20 @@ static void map_upload(G &g) {
                 decal_buffer.source = MAP_Geometry_Buffer_Source::Decal;
                 map_destrip_mesh_part_group(decal_buffer.vertices, indices_index, mesh, mesh_part_group);
                 assert(decal_buffer.vertices.count % 3 == 0);
-                decal_buffer.id = rolling_decal_geo->id;
+                decal_buffer.id = geo.id;
                 assert(mesh_part_group.material_index >= 0);
                 assert(mesh_part_group.material_index < 65536);
                 decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
 
-                decal_buffer.subfile_index = rolling_decal_geo->subfile_index;
-                decal_buffer.geometry_ptr = rolling_decal_geo.node;
-                decal_buffer.global_mesh_index = (int)(&mesh - g.decal_meshes.data); // @Lazy
+                decal_buffer.subfile_index = geo.subfile_index;
+                decal_buffer.geometry_ptr = &geo;
+                decal_buffer.geometry_mesh_index = (int)(&mesh - geo.decal_meshes.data); // @Lazy
                 decal_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
                 decal_buffer.mesh_part_group_ptr = &mesh_part_group; // @Temporary @Todo @@@
             }
         }
+    }
+    {
         for (auto &tex : g.textures) {
             sg_image_desc d = {};
             d.width = tex.width;
@@ -2501,7 +2474,7 @@ static void map_upload(G &g) {
 
         // Log("%lld geometries", g.geometries.count);
         // for (auto &geo : g.geometries) {
-        //     Log("    %u meshes", geo.opaque_mesh_count + geo.transparent_mesh_count + geo.decal_count);
+        //     Log("    %u meshes", geo.opaque_meshes.count + geo.transparent_meshes.count + geo.decal_count);
         // }
         // Log("%lld texture subfiles", g.texture_subfiles.count);
         // for (auto &sub : g.texture_subfiles) {
@@ -3225,7 +3198,7 @@ static void event(const sapp_event *e_, void *userdata) {
                         vertex_floats[0] = target.X;
                         vertex_floats[1] = target.Y;
                         vertex_floats[2] = target.Z;
-                        g.cld_must_update = true;
+                        g.staleify_cld();
                     } else { // @Temporary: only along XZ plane
                         auto click_raycast = ray_vs_plane(Ray { click_ray_pos.XYZ, click_ray_dir.XYZ }, widget_pos, { 0, 1, 0 });
                         auto raycast = ray_vs_plane(Ray { this_ray_pos.XYZ, this_ray_dir.XYZ }, widget_pos, { 0, 1, 0 });
@@ -3246,7 +3219,7 @@ static void event(const sapp_event *e_, void *userdata) {
                             }
                             vertex_floats[0] = target.X;
                             vertex_floats[2] = target.Z;
-                            g.cld_must_update = true;
+                            g.staleify_cld();
                         }
                     }
                 }
@@ -3507,8 +3480,22 @@ static void frame(void *userdata) {
                                                            L"Open DDS", true);
             }
             bool any_selected = false;
-            for (auto &buf : g.map_buffers) if (buf.selected) any_selected = true;
-            for (auto &buf : g.decal_buffers) if (buf.selected) any_selected = true;
+            for (auto &buf : g.map_buffers) {
+                if (&buf - g.map_buffers >= g.map_buffers_count) {
+                    break;
+                }
+                if (buf.selected) {
+                    any_selected = true;
+                }
+            }
+            for (auto &buf : g.decal_buffers) {
+                if (&buf - g.decal_buffers >= g.decal_buffers_count) {
+                    break;
+                }
+                if (buf.selected) {
+                    any_selected = true;
+                }
+            }
             if (ImGui::MenuItem("Export Selected as OBJ...", nullptr, nullptr, any_selected)) {
                 obj_export_name = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                                "All Files\0" "*.*\0",
@@ -3634,9 +3621,9 @@ static void frame(void *userdata) {
     auto get_meshes = [&] (MAP_Geometry_Buffer &buf) -> Array<MAP_Mesh, The_Arena_Allocator> & {
         switch (buf.source) {
             default: assert(false);
-            case MAP_Geometry_Buffer_Source::Opaque: return g.opaque_meshes;
-            case MAP_Geometry_Buffer_Source::Transparent: return g.transparent_meshes;
-            case MAP_Geometry_Buffer_Source::Decal: return g.decal_meshes;
+            case MAP_Geometry_Buffer_Source::Opaque: return buf.geometry_ptr->opaque_meshes;
+            case MAP_Geometry_Buffer_Source::Transparent: return buf.geometry_ptr->transparent_meshes;
+            case MAP_Geometry_Buffer_Source::Decal: return buf.geometry_ptr->decal_meshes;
         }
     };
         if (obj_file_buf) {
@@ -3798,8 +3785,7 @@ static void frame(void *userdata) {
                     assert((*mesh.mesh_part_groups.begin()).mesh_parts[0].strip_length > 0);
 
                     assert(!g.geometries.empty());
-                    ((MAP_Geometry *)g.geometries.end()->prev)->opaque_mesh_count += 1;
-                    g.opaque_meshes.push(mesh);
+                    ((MAP_Geometry *)g.geometries.end()->prev)->opaque_meshes.push(mesh);
                     mesh = {};
                     mesh_verts_count = 0;
                 };
@@ -3831,7 +3817,7 @@ static void frame(void *userdata) {
                 assert(mesh_verts_count == 0);
                 assert(mesh.indices.count == 0);
 
-                g.map_must_update = true;
+                g.staleify_map();
 
                 assert(positions.count);
                 if (positions.count) {
@@ -3853,7 +3839,7 @@ static void frame(void *userdata) {
             if (success) {
                 g.textures.push(tex);
                 g.texture_subfiles[g.texture_subfiles.count - 1].texture_count++;
-                g.map_must_update = true;
+                g.staleify_map();
             }
         }
     auto export_to_obj = [&] {
@@ -3901,6 +3887,9 @@ static void frame(void *userdata) {
             normals.release();
         };
         for (auto &buf : g.map_buffers) {
+            if (&buf - g.map_buffers >= g.map_buffers_count) {
+                break;
+            }
             if (buf.selected) {
                 for (auto &vert : buf.vertices) {
                     vertices.push( { vert.position[0], vert.position[1], vert.position[2] });
@@ -4051,14 +4040,20 @@ static void frame(void *userdata) {
                     }
                 }
             };
-            for (int i = 0; i < g.opaque_meshes.count; i++) {
-                iterate_mesh("Opaque Mesh", i, g.opaque_meshes[i]);
+            for (auto &geo : g.geometries) {
+                for (int i = 0; i < geo.opaque_meshes.count; i++) {
+                    iterate_mesh("Opaque Mesh", i, geo.opaque_meshes[i]);
+                }
             }
-            for (int i = 0; i < g.transparent_meshes.count; i++) {
-                iterate_mesh("Transparent Mesh", i, g.transparent_meshes[i]);
+            for (auto &geo : g.geometries) {
+                for (int i = 0; i < geo.transparent_meshes.count; i++) {
+                    iterate_mesh("Transparent Mesh", i, geo.transparent_meshes[i]);
+                }
             }
-            for (int i = 0; i < g.decal_meshes.count; i++) {
-                iterate_mesh("Decal Mesh", i, g.decal_meshes[i]);
+            for (auto &geo : g.geometries) {
+                for (int i = 0; i < geo.decal_meshes.count; i++) {
+                    iterate_mesh("Decal Mesh", i, geo.decal_meshes[i]);
+                }
             }
         }
         if (ImGui::CollapsingHeader("CLD Subgroups", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -4073,7 +4068,7 @@ static void frame(void *userdata) {
                 if (i) ImGui::SameLine();
                 ImGui::PushID(i);
                 if (ImGui::Checkbox("###CLD Subgroup Visible", &g.subgroup_visible[i])) {
-                    g.cld_must_update = true;
+                    g.staleify_cld();
                 }
                 if (!g.subgroup_visible[i]) {
                     all_subgroups_on = false;
@@ -4086,14 +4081,14 @@ static void frame(void *userdata) {
                     for (int i = 0; i < 16; i++) {
                         g.subgroup_visible[i] = true;
                     }
-                    g.cld_must_update = true;
+                    g.staleify_cld();
                 }
             } else {
                 if (ImGui::Button("None")) {
                     for (int i = 0; i < 16; i++) {
                         g.subgroup_visible[i] = false;
                     }
-                    g.cld_must_update = true;
+                    g.staleify_cld();
                 }
             }
         }
@@ -4160,7 +4155,6 @@ static void frame(void *userdata) {
                 // @Note: Bleh!!!
                 g.overall_center_needs_recalc = true;
             }
-            MAP_Geometry_Buffer_Source prev_source = MAP_Geometry_Buffer_Source::Opaque;
             auto map_buffer_ui = [&] (MAP_Geometry_Buffer &buf) {
                 auto &meshes = get_meshes(buf);
                 const char *source = "I made it up";
@@ -4170,10 +4164,6 @@ static void frame(void *userdata) {
                     case MAP_Geometry_Buffer_Source::Decal: { source = "Decal"; } break;
                     default: { assert(false); } break;
                 }
-                if (buf.source != prev_source) {
-                    ImGui::Separator();
-                }
-                prev_source = buf.source;
 
                 char b[512]; snprintf(b, sizeof b, "Group #%d", buf.mesh_part_group_index);
                 ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_DefaultOpen;
@@ -4187,10 +4177,16 @@ static void frame(void *userdata) {
                     bool was_multi = false;
                     if (!ImGui::GetIO().KeyShift) {
                         for (auto &buf2 : g.map_buffers) {
+                            if (&buf2 - g.map_buffers >= g.map_buffers_count) {
+                                break;
+                            }
                             was_multi |= (&buf2 != &buf && buf2.selected);
                             buf2.selected = false;
                         }
                         for (auto &buf2 : g.decal_buffers) {
+                            if (&buf2 - g.decal_buffers >= g.decal_buffers_count) {
+                                break;
+                            }
                             was_multi |= (&buf2 != &buf && buf2.selected);
                             buf2.selected = false;
                         }
@@ -4212,7 +4208,7 @@ static void frame(void *userdata) {
                 };
 
                 if (!g.map_must_update) { // @HACK !!!!!!!!!!!!!!!! @@@@@@ !!!!!!!!
-                    auto &mesh = meshes[buf.global_mesh_index];
+                    auto &mesh = meshes[buf.geometry_mesh_index];
                     auto &mesh_part_group = *buf.mesh_part_group_ptr;
                     int mat_index = mesh_part_group.material_index;
                     ImGui::Text("Material Index:");
@@ -4224,7 +4220,7 @@ static void frame(void *userdata) {
                             mat_index %= g.materials.count;
                         }
                         mesh_part_group.material_index = mat_index;
-                        g.map_must_update = true;
+                        g.staleify_map();
                     }
                 }
             };
@@ -4239,8 +4235,9 @@ static void frame(void *userdata) {
                     ImGui::PopID();
                 };
 
-                Array<MAP_Mesh, The_Arena_Allocator> *const the_mesh_arrays[3] = {&g.opaque_meshes, &g.transparent_meshes, &g.decal_meshes};
+                Array<MAP_Mesh, The_Arena_Allocator> *const the_mesh_arrays[3] = {&geo.opaque_meshes, &geo.transparent_meshes, &geo.decal_meshes};
                 MAP_Geometry_Buffer (*const buffer_arrays[2])[64] = { &g.map_buffers, &g.decal_buffers };
+                int buffer_counts[2] = { g.map_buffers_count, g.decal_buffers_count };
 
                 bool all_on = true;
                 bool any_on = false;
@@ -4248,9 +4245,15 @@ static void frame(void *userdata) {
                 for (auto &meshes : the_mesh_arrays) {
                     for (auto &mesh : *meshes) {
                         for (auto &m : mesh.mesh_part_groups) {
-                            for (auto &buffers : buffer_arrays) {
+                            for (int buffer_array_index = 0; buffer_array_index < 2; buffer_array_index++) {
+                                auto &buffers = buffer_arrays[buffer_array_index];
+                                auto &count = buffer_counts[buffer_array_index];
                                 for (auto &b : *buffers) {
-                                    if (b.geometry_ptr == &geo && b.mesh_part_group_ptr == &m) {
+                                    if (&b - *buffers >= count) {
+                                        break;
+                                    }
+                                    if (b.mesh_part_group_ptr == &m) {
+                                        assert(b.geometry_ptr == &geo);
                                         all_on &= b.shown;
                                         any_on |= b.shown;
                                         any_selected |= b.selected;
@@ -4273,9 +4276,15 @@ static void frame(void *userdata) {
                     for (auto &meshes : the_mesh_arrays) {
                         for (auto &mesh : *meshes) {
                             for (auto &m : mesh.mesh_part_groups) {
-                                for (auto &buffers : buffer_arrays) {
+                                for (int buffer_array_index = 0; buffer_array_index < 2; buffer_array_index++) {
+                                    auto &buffers = buffer_arrays[buffer_array_index];
+                                    auto &count = buffer_counts[buffer_array_index];
                                     for (auto &b : *buffers) {
-                                        if (b.geometry_ptr == &geo && b.mesh_part_group_ptr == &m) {
+                                        if (&b - *buffers >= count) {
+                                            break;
+                                        }
+                                        if (b.mesh_part_group_ptr == &m) {
+                                            assert(b.geometry_ptr == &geo);
                                             b.shown = all_on;
                                             break;
                                         }
@@ -4297,33 +4306,19 @@ static void frame(void *userdata) {
                         ImGui::PopID();
                     };
 
-                    int displayed_mesh_index_separate_from_actual_index = 0;
+                    if (meshes == &geo.transparent_meshes && geo.transparent_meshes.count && geo.opaque_meshes.count) {
+                        ImGui::Separator();
+                    }
+                    if (meshes == &geo.decal_meshes && geo.decal_meshes.count && (geo.opaque_meshes.count || geo.transparent_meshes.count)) {
+                        ImGui::Separator();
+                    }
+
+                    int mesh_index = 0;
                     for (auto &mesh : *meshes) {
-                        // Really dumb @Hack because I didn't want to do rolling geo indices again
-                        // (since we already flattened it into map_buffers, conveniently) and I didn't
-                        // want to add a back-reference global_geometry_index into MAP_Mesh (because
-                        // then we'd have one extra invalidatable reference to backpatch when we edit
-                        // shit.) Highly Unlucky! We'll fix this once everything's a sea of nested
-                        // linked list nodes. Hopefully. 2023-03-11
-                        bool is_this_the_right_geometry = [&] () -> bool {
-                            for (auto &m : mesh.mesh_part_groups) {
-                                for (auto &buffers : buffer_arrays) {
-                                    for (auto &b : *buffers) {
-                                        if (b.mesh_part_group_ptr == &m) {
-                                            return (b.geometry_ptr == &geo);
-                                        }
-                                    }
-                                }
-                            }
-                            return false;
-                        }();
-                        if (!is_this_the_right_geometry) {
-                            continue;
-                        }
 
-                        defer { displayed_mesh_index_separate_from_actual_index++; };
+                        defer { mesh_index++; };
 
-                        ImGui::PushID(displayed_mesh_index_separate_from_actual_index);
+                        ImGui::PushID(mesh_index);
                         defer {
                             ImGui::PopID();
                         };
@@ -4332,9 +4327,15 @@ static void frame(void *userdata) {
                         bool any_on = false;
                         bool any_selected = false;
                         for (auto &m : mesh.mesh_part_groups) {
-                            for (auto &buffers : buffer_arrays) {
+                            for (int buffer_array_index = 0; buffer_array_index < 2; buffer_array_index++) {
+                                auto &buffers = buffer_arrays[buffer_array_index];
+                                auto &count = buffer_counts[buffer_array_index];
                                 for (auto &b : *buffers) {
-                                    if (b.geometry_ptr == &geo && b.mesh_part_group_ptr == &m) {
+                                    if (&b - *buffers >= count) {
+                                        break;
+                                    }
+                                    if (b.mesh_part_group_ptr == &m) {
+                                        assert(b.geometry_ptr == &geo);
                                         all_on &= b.shown;
                                         any_on |= b.shown;
                                         any_selected |= b.selected;
@@ -4353,9 +4354,15 @@ static void frame(void *userdata) {
                         }
                         if (pressed) {
                             for (auto &m : mesh.mesh_part_groups) {
-                                for (auto &buffers : buffer_arrays) {
+                                for (int buffer_array_index = 0; buffer_array_index < 2; buffer_array_index++) {
+                                    auto &buffers = buffer_arrays[buffer_array_index];
+                                    auto &count = buffer_counts[buffer_array_index];
                                     for (auto &b : *buffers) {
-                                        if (b.geometry_ptr == &geo && b.mesh_part_group_ptr == &m) {
+                                        if (&b - *buffers >= count) {
+                                            break;
+                                        }
+                                        if (b.mesh_part_group_ptr == &m) {
+                                            assert(b.geometry_ptr == &geo);
                                             b.shown = all_on;
                                             break;
                                         }
@@ -4365,10 +4372,10 @@ static void frame(void *userdata) {
                         }
 
                         char *source = "???";
-                        if (meshes == &g.opaque_meshes) source = "Opaque";
-                        else if (meshes == &g.transparent_meshes) source = "Transparent";
-                        else if (meshes == &g.decal_meshes) source = "Decal";
-                        char b[512]; snprintf(b, sizeof b, "%s Mesh #%d", source, displayed_mesh_index_separate_from_actual_index);
+                        if (meshes == &geo.opaque_meshes) source = "Opaque";
+                        else if (meshes == &geo.transparent_meshes) source = "Transparent";
+                        else if (meshes == &geo.decal_meshes) source = "Decal";
+                        char b[512]; snprintf(b, sizeof b, "%s Mesh #%d", source, mesh_index);
                         ImGui::SameLine();
                         if (!ImGui::TreeNodeEx(b, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | (any_selected * ImGuiTreeNodeFlags_Selected))) { continue; }
                         defer { ImGui::TreePop(); };
@@ -4376,7 +4383,8 @@ static void frame(void *userdata) {
                         for (auto &m : mesh.mesh_part_groups) {
                             for (auto &buffers : buffer_arrays) {
                                 for (auto &b : *buffers) {
-                                    if (b.geometry_ptr == &geo && b.mesh_part_group_ptr == &m) {
+                                    if (b.mesh_part_group_ptr == &m) {
+                                        assert(b.geometry_ptr == &geo);
                                         ImGui::PushID(&m);
                                         defer {
                                             ImGui::PopID();
@@ -4432,17 +4440,23 @@ static void frame(void *userdata) {
                         face->vertices[3][1] = 0;
                         face->vertices[3][2] = 0;
                     }
-                    g.cld_must_update = true;
+                    g.staleify_cld();
                 }
             }
             ImGui::Separator();
             int num_map_bufs_selected = 0;
             for (auto &buf : g.map_buffers) {
+                if (&buf - g.map_buffers >= g.map_buffers_count) {
+                    break;
+                }
                 if (buf.selected) {
                     num_map_bufs_selected++;
                 }
             }
             for (auto &buf : g.decal_buffers) {
+                if (&buf - g.decal_buffers >= g.decal_buffers_count) {
+                    break;
+                }
                 if (buf.selected) {
                     num_map_bufs_selected++;
                 }
@@ -4504,7 +4518,7 @@ static void frame(void *userdata) {
             auto process_mesh = [&] (MAP_Geometry_Buffer &buf, bool duplicate, bool move, bool scale, bool get_center) {
                 auto &meshes = get_meshes(buf);
                 if (move || scale || get_center) {
-                    auto &mesh = meshes[buf.global_mesh_index];
+                    auto &mesh = meshes[buf.geometry_mesh_index];
                     mesh.bbox_override = false;
                     auto &mesh_part_group = *buf.mesh_part_group_ptr;
                     auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
@@ -4569,12 +4583,12 @@ static void frame(void *userdata) {
                         g.overall_center += center;
                         overall_center_sum += 1;
                     } else {
-                        g.map_must_update = true;
+                        g.staleify_map();
                     }
                 }
                 if (duplicate) {
                     auto &mesh_part_group = *buf.mesh_part_group_ptr;
-                    auto &mesh = meshes[buf.global_mesh_index];
+                    auto &mesh = meshes[buf.geometry_mesh_index];
                     auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
                     int indices_index = 0;
                     for (auto &&mpg : mesh.mesh_part_groups) {
@@ -4647,17 +4661,22 @@ static void frame(void *userdata) {
                     assert(The_Arena_Allocator::contains(new_pushed_mesh, sizeof(*new_pushed_mesh)));
 
                     assert(!g.geometries.empty());
-                    ((MAP_Geometry *)g.geometries.end()->prev)->opaque_mesh_count += 1;
-                    g.map_must_update = true;
+                    g.staleify_map();
                     // Log("Duped!");
                 }
             };
             for (auto &buf : g.map_buffers) {
+                if (&buf - g.map_buffers >= g.map_buffers_count) {
+                    break;
+                }
                 if (buf.selected) {
                     process_mesh(buf, false, false, false, g.overall_center_needs_recalc);
                 }
             }
             for (auto &buf : g.decal_buffers) {
+                if (&buf - g.decal_buffers >= g.decal_buffers_count) {
+                    break;
+                }
                 if (buf.selected) {
                     process_mesh(buf, false, false, false, g.overall_center_needs_recalc);
                 }
@@ -4666,11 +4685,17 @@ static void frame(void *userdata) {
                 g.overall_center /= (float)overall_center_sum;
             }
             for (auto &buf : g.map_buffers) {
+                if (&buf - g.map_buffers >= g.map_buffers_count) {
+                    break;
+                }
                 if (buf.selected) {
                     process_mesh(buf, duplicate, move, scale, false);
                 }
             }
             for (auto &buf : g.decal_buffers) {
+                if (&buf - g.decal_buffers >= g.decal_buffers_count) {
+                    break;
+                }
                 if (buf.selected) {
                     process_mesh(buf, duplicate, move, scale, false);
                 }
@@ -4694,7 +4719,7 @@ static void frame(void *userdata) {
 
             auto clear_out_mesh_part_group_for_deletion = [&] (MAP_Geometry_Buffer &buf) {
                 auto &meshes = get_meshes(buf);
-                MAP_Mesh &mesh = meshes[buf.global_mesh_index];
+                MAP_Mesh &mesh = meshes[buf.geometry_mesh_index];
                 MAP_Mesh_Part_Group &mesh_part_group = *buf.mesh_part_group_ptr;
                 int indices_index = 0;
                 for (auto &&mpg : mesh.mesh_part_groups) {
@@ -4721,18 +4746,24 @@ static void frame(void *userdata) {
             };
             if (del) {
                 for (auto &buf : g.map_buffers) {
+                    if (&buf - g.map_buffers >= g.map_buffers_count) {
+                        break;
+                    }
                     if (buf.selected) {
                         clear_out_mesh_part_group_for_deletion(buf);
                         buf.selected = false;
                     }
                 }
                 for (auto &buf : g.decal_buffers) {
+                    if (&buf - g.decal_buffers >= g.decal_buffers_count) {
+                        break;
+                    }
                     if (buf.selected) {
                         clear_out_mesh_part_group_for_deletion(buf);
                         buf.selected = false;
                     }
                 }
-                g.map_must_update = true;
+                g.staleify_map();
                 g.overall_center_needs_recalc = true;
             }
             auto prune_empty_mesh_part_groups = [&] (MAP_Mesh &mesh) {
@@ -4744,50 +4775,30 @@ static void frame(void *userdata) {
                     mpg.node = (MAP_Mesh_Part_Group *)next;
                 }
             };
-            for (auto &mesh : g.opaque_meshes) {
-                prune_empty_mesh_part_groups(mesh);
-            }
-            for (auto &mesh : g.transparent_meshes) {
-                prune_empty_mesh_part_groups(mesh);
-            }
-            for (auto &mesh : g.decal_meshes) {
-                prune_empty_mesh_part_groups(mesh);
-            }
-            auto prune_empty_meshes = [&] (Array<MAP_Mesh, The_Arena_Allocator> &meshes, MAP_Geometry_Buffer_Source source) {
-                // @Note: BRO this SUUUUCKS!!!!!!!!! please let there eventually be a way that this isn't bogged
-                auto rolling_geo = g.geometries.begin();
-                int64_t rolling_geo_start = 0;
-                for (int64_t mesh_index = 0; mesh_index < meshes.count;) {
-                    MAP_Mesh &mesh = meshes[mesh_index];
-                    assert(rolling_geo != g.geometries.end());
-                    uint32_t *count = nullptr;
-                    do {
-                        auto &geo = *rolling_geo;
-                        if (source == MAP_Geometry_Buffer_Source::Opaque) {
-                            count = &geo.opaque_mesh_count;
-                        } else if (source == MAP_Geometry_Buffer_Source::Transparent) {
-                            count = &geo.transparent_mesh_count;
-                        } else if (source == MAP_Geometry_Buffer_Source::Decal) {
-                            count = &geo.decal_count;
-                        }
-                        if (mesh_index >= rolling_geo_start + *count) {
-                            rolling_geo_start += *count;
-                            ++rolling_geo;
-                            assert(rolling_geo != g.geometries.end());
-                        }
-                    } while (mesh_index >= rolling_geo_start + *count);
-                    auto &geo = *rolling_geo;
-                    if (mesh.mesh_part_groups.empty()) {
-                        meshes.remove_ordered(mesh_index);
-                        --*count;
-                    } else {
-                        ++mesh_index;
-                    }
+            for (auto &geo : g.geometries) {
+                for (auto &mesh : geo.opaque_meshes) {
+                    prune_empty_mesh_part_groups(mesh);
                 }
-            };
-            prune_empty_meshes(g.opaque_meshes, MAP_Geometry_Buffer_Source::Opaque);
-            prune_empty_meshes(g.transparent_meshes, MAP_Geometry_Buffer_Source::Transparent);
-            prune_empty_meshes(g.decal_meshes, MAP_Geometry_Buffer_Source::Decal);
+                for (auto &mesh : geo.transparent_meshes) {
+                    prune_empty_mesh_part_groups(mesh);
+                }
+                for (auto &mesh : geo.decal_meshes) {
+                    prune_empty_mesh_part_groups(mesh);
+                }
+                auto prune_empty_meshes = [&] (Array<MAP_Mesh, The_Arena_Allocator> &meshes) {
+                    for (int64_t mesh_index = 0; mesh_index < meshes.count;) {
+                        MAP_Mesh &mesh = meshes[mesh_index];
+                        if (mesh.mesh_part_groups.empty()) {
+                            meshes.remove_ordered(mesh_index);
+                        } else {
+                            ++mesh_index;
+                        }
+                    }
+                };
+                prune_empty_meshes(geo.opaque_meshes);
+                prune_empty_meshes(geo.transparent_meshes);
+                prune_empty_meshes(geo.decal_meshes);
+            }
         }
     }
 
@@ -5134,7 +5145,7 @@ static void frame(void *userdata) {
                         new_tex.material = tex.material;
                         tex.release();
                         tex = new_tex;
-                        g.map_must_update = true;
+                        g.staleify_map();
                     }
                 }
                 // Semi-@Hack: If we import and fudge up all the textures on reupload,
@@ -5315,7 +5326,7 @@ static void frame(void *userdata) {
         }
         g.redo_stack.clear();
 
-        g.map_must_update = true;
+        g.staleify_map();
     }
 
     if (g.control_z) {
@@ -5323,7 +5334,7 @@ static void frame(void *userdata) {
         if (g.undo_stack.count > 1) {
             g.redo_stack.push(g.undo_stack.pop());
             apply_history_entry(g.undo_stack[g.undo_stack.count - 1]);
-            g.map_must_update = true;
+            g.staleify_map();
         }
     }
     if (g.control_y) {
@@ -5331,7 +5342,7 @@ static void frame(void *userdata) {
         if (g.redo_stack.count > 0) {
             g.undo_stack.push(g.redo_stack.pop());
             apply_history_entry(g.undo_stack[g.undo_stack.count - 1]);
-            g.map_must_update = true;
+            g.staleify_map();
         }
     }
 
