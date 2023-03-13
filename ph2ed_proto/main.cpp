@@ -828,6 +828,9 @@ struct G : Map {
         map_buffers_count = 0;
         decal_buffers_count = 0;
     }
+    bool stale() {
+        return cld_must_update || map_must_update;
+    }
 
     bool subgroup_visible[16] = {true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true};
 
@@ -4093,9 +4096,11 @@ static void frame(void *userdata) {
             }
         }
         ImGui::Separator();
+#ifndef NDEBUG
         ImGui::Text("%lld undo frames", g.undo_stack.count);
         ImGui::Text("%lld redo frames", g.redo_stack.count);
         ImGui::Separator();
+#endif
         if (ImGui::CollapsingHeader("MAP Geometries", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (g.map_buffers_count + g.decal_buffers_count <= 0) {
                 ImGui::BeginDisabled();
@@ -4155,6 +4160,49 @@ static void frame(void *userdata) {
                 // @Note: Bleh!!!
                 g.overall_center_needs_recalc = true;
             }
+
+            auto visit_mesh_buffers = [&] (MAP_Mesh &mesh, auto &&lambda) -> void {
+                MAP_Geometry_Buffer (*const buffer_arrays[2])[64] = { &g.map_buffers, &g.decal_buffers };
+                int buffer_counts[2] = { g.map_buffers_count, g.decal_buffers_count };
+
+                for (MAP_Mesh_Part_Group &m : mesh.mesh_part_groups) {
+                    for (int buffer_array_index = 0; buffer_array_index < 2; buffer_array_index++) {
+                        auto &buffers = buffer_arrays[buffer_array_index];
+                        auto &count = buffer_counts[buffer_array_index];
+                        for (auto &b : *buffers) {
+                            if (&b - *buffers >= count) {
+                                break;
+                            }
+                            if (b.mesh_part_group_ptr == &m) {
+                                lambda(b);
+                                break;
+                            }
+                        }
+                    }
+                }
+            };
+
+            auto deselect_all_buffers_and_check_for_multi_select = [&] (auto &&check) -> bool {
+                bool was_multi = false;
+                for (auto &b : g.map_buffers) {
+                    if (&b - g.map_buffers >= g.map_buffers_count) {
+                        break;
+                    }
+                    was_multi |= check(b);
+                }
+                for (auto &b : g.decal_buffers) {
+                    if (&b - g.decal_buffers >= g.decal_buffers_count) {
+                        break;
+                    }
+                    was_multi |= check(b);
+                }
+
+                for (auto &b : g.map_buffers) b.selected = false;
+                for (auto &b : g.decal_buffers) b.selected = false;
+
+                return was_multi;
+            };
+
             auto map_buffer_ui = [&] (MAP_Geometry_Buffer &buf) {
                 auto &meshes = get_meshes(buf);
                 const char *source = "I made it up";
@@ -4176,20 +4224,9 @@ static void frame(void *userdata) {
                     bool orig = buf.selected;
                     bool was_multi = false;
                     if (!ImGui::GetIO().KeyShift) {
-                        for (auto &buf2 : g.map_buffers) {
-                            if (&buf2 - g.map_buffers >= g.map_buffers_count) {
-                                break;
-                            }
-                            was_multi |= (&buf2 != &buf && buf2.selected);
-                            buf2.selected = false;
-                        }
-                        for (auto &buf2 : g.decal_buffers) {
-                            if (&buf2 - g.decal_buffers >= g.decal_buffers_count) {
-                                break;
-                            }
-                            was_multi |= (&buf2 != &buf && buf2.selected);
-                            buf2.selected = false;
-                        }
+                        was_multi = deselect_all_buffers_and_check_for_multi_select([&] (MAP_Geometry_Buffer &b) -> bool {
+                            return (&b != &buf && b.selected);
+                        });
                     }
                     buf.selected = was_multi || !orig;
                     // @Note: Bleh.
@@ -4226,7 +4263,7 @@ static void frame(void *userdata) {
             };
 
             int i = 0;
-            for (auto &geo : g.geometries) {
+            if (!g.stale()) for (auto &geo : g.geometries) {
                 defer { i++; };
                 ImGui::PushID("MAP Selection Nodes");
                 ImGui::PushID(&geo);
@@ -4236,33 +4273,26 @@ static void frame(void *userdata) {
                 };
 
                 Array<MAP_Mesh, The_Arena_Allocator> *const the_mesh_arrays[3] = {&geo.opaque_meshes, &geo.transparent_meshes, &geo.decal_meshes};
-                MAP_Geometry_Buffer (*const buffer_arrays[2])[64] = { &g.map_buffers, &g.decal_buffers };
-                int buffer_counts[2] = { g.map_buffers_count, g.decal_buffers_count };
 
+                bool empty = true;
                 bool all_on = true;
                 bool any_on = false;
+                bool all_selected = true;
                 bool any_selected = false;
                 for (auto &meshes : the_mesh_arrays) {
                     for (auto &mesh : *meshes) {
-                        for (auto &m : mesh.mesh_part_groups) {
-                            for (int buffer_array_index = 0; buffer_array_index < 2; buffer_array_index++) {
-                                auto &buffers = buffer_arrays[buffer_array_index];
-                                auto &count = buffer_counts[buffer_array_index];
-                                for (auto &b : *buffers) {
-                                    if (&b - *buffers >= count) {
-                                        break;
-                                    }
-                                    if (b.mesh_part_group_ptr == &m) {
-                                        assert(b.geometry_ptr == &geo);
-                                        all_on &= b.shown;
-                                        any_on |= b.shown;
-                                        any_selected |= b.selected;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                        visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                            empty = false;
+                            assert(b.geometry_ptr == &geo);
+                            all_on &= b.shown;
+                            any_on |= b.shown;
+                            all_selected &= b.selected;
+                            any_selected |= b.selected;
+                        });
                     }
+                }
+                if (empty) {
+                    ImGui::BeginDisabled();
                 }
                 bool pressed;
                 if (!all_on && any_on) {
@@ -4275,29 +4305,56 @@ static void frame(void *userdata) {
                 if (pressed) {
                     for (auto &meshes : the_mesh_arrays) {
                         for (auto &mesh : *meshes) {
-                            for (auto &m : mesh.mesh_part_groups) {
-                                for (int buffer_array_index = 0; buffer_array_index < 2; buffer_array_index++) {
-                                    auto &buffers = buffer_arrays[buffer_array_index];
-                                    auto &count = buffer_counts[buffer_array_index];
-                                    for (auto &b : *buffers) {
-                                        if (&b - *buffers >= count) {
-                                            break;
-                                        }
-                                        if (b.mesh_part_group_ptr == &m) {
-                                            assert(b.geometry_ptr == &geo);
-                                            b.shown = all_on;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
+                            visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                                assert(b.geometry_ptr == &geo);
+                                b.shown = all_on;
+                            });
                         }
                     }
+                }
+                if (empty) {
+                    ImGui::EndDisabled();
                 }
 
                 char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d)", i, geo.id);
                 ImGui::SameLine();
-                if (!ImGui::TreeNodeEx(b, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | (any_selected * ImGuiTreeNodeFlags_Selected))) { continue; }
+                auto flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                    ImGuiTreeNodeFlags_OpenOnDoubleClick |
+                    (any_selected * ImGuiTreeNodeFlags_Selected);
+                if (empty) {
+                    flags = ImGuiTreeNodeFlags_Leaf;
+                }
+                ImGui::SameLine(); bool ret = empty ? (ImGui::Text(b), false) : ImGui::TreeNodeEx(b, flags);
+                if (!empty && ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+                    bool orig = all_selected;
+                    bool was_multi = false;
+                    if (!ImGui::GetIO().KeyShift) {
+                        was_multi = deselect_all_buffers_and_check_for_multi_select([&] (MAP_Geometry_Buffer &b) -> bool {
+                            bool inside = false;
+                            for (auto &meshes : the_mesh_arrays) {
+                                for (auto &mesh : *meshes) {
+                                    visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b2) {
+                                        if (&b2 == &b) {
+                                            inside = true;
+                                        }
+                                    });
+                                }
+                            }
+                            return (!inside && b.selected);
+                        });
+                    }
+                    bool selected = was_multi || !orig;
+                    for (auto &meshes : the_mesh_arrays) {
+                        for (auto &mesh : *meshes) {
+                            visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                                b.selected = selected;
+                            });
+                        }
+                    }
+                    // @Note: Bleh.
+                    g.overall_center_needs_recalc = true;
+                }
+                if (!ret) { continue; }
                 defer { ImGui::TreePop(); };
 
                 for (auto &meshes : the_mesh_arrays) {
@@ -4323,27 +4380,21 @@ static void frame(void *userdata) {
                             ImGui::PopID();
                         };
 
+                        bool empty = true;
                         bool all_on = true;
                         bool any_on = false;
+                        bool all_selected = true;
                         bool any_selected = false;
-                        for (auto &m : mesh.mesh_part_groups) {
-                            for (int buffer_array_index = 0; buffer_array_index < 2; buffer_array_index++) {
-                                auto &buffers = buffer_arrays[buffer_array_index];
-                                auto &count = buffer_counts[buffer_array_index];
-                                for (auto &b : *buffers) {
-                                    if (&b - *buffers >= count) {
-                                        break;
-                                    }
-                                    if (b.mesh_part_group_ptr == &m) {
-                                        assert(b.geometry_ptr == &geo);
-                                        all_on &= b.shown;
-                                        any_on |= b.shown;
-                                        any_selected |= b.selected;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                        visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                            assert(b.geometry_ptr == &geo);
+                            empty = false;
+                            all_on &= b.shown;
+                            any_on |= b.shown;
+                            all_selected &= b.selected;
+                            any_selected |= b.selected;
+                        });
+                        assert(!empty);
+
                         bool pressed;
                         if (!all_on && any_on) {
                             ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, true);
@@ -4353,22 +4404,10 @@ static void frame(void *userdata) {
                             pressed = ImGui::Checkbox("###Mesh All Part Groups Visible", &all_on);
                         }
                         if (pressed) {
-                            for (auto &m : mesh.mesh_part_groups) {
-                                for (int buffer_array_index = 0; buffer_array_index < 2; buffer_array_index++) {
-                                    auto &buffers = buffer_arrays[buffer_array_index];
-                                    auto &count = buffer_counts[buffer_array_index];
-                                    for (auto &b : *buffers) {
-                                        if (&b - *buffers >= count) {
-                                            break;
-                                        }
-                                        if (b.mesh_part_group_ptr == &m) {
-                                            assert(b.geometry_ptr == &geo);
-                                            b.shown = all_on;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
+                            visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                                assert(b.geometry_ptr == &geo);
+                                b.shown = all_on;
+                            });
                         }
 
                         char *source = "???";
@@ -4376,26 +4415,43 @@ static void frame(void *userdata) {
                         else if (meshes == &geo.transparent_meshes) source = "Transparent";
                         else if (meshes == &geo.decal_meshes) source = "Decal";
                         char b[512]; snprintf(b, sizeof b, "%s Mesh #%d", source, mesh_index);
-                        ImGui::SameLine();
-                        if (!ImGui::TreeNodeEx(b, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | (any_selected * ImGuiTreeNodeFlags_Selected))) { continue; }
+                        auto flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                            ImGuiTreeNodeFlags_OpenOnDoubleClick |
+                            (any_selected * ImGuiTreeNodeFlags_Selected);
+                        ImGui::SameLine(); bool ret = ImGui::TreeNodeEx(b, flags);
+                        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+                            bool orig = all_selected;
+                            bool was_multi = false;
+                            if (!ImGui::GetIO().KeyShift) {
+                                was_multi = deselect_all_buffers_and_check_for_multi_select([&] (MAP_Geometry_Buffer &b) -> bool {
+                                    bool inside = false;
+                                    visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b2) {
+                                        if (&b2 == &b) {
+                                            inside = true;
+                                        }
+                                    });
+                                    return (!inside && b.selected);
+                                });
+                            }
+                            bool selected = was_multi || !orig;
+                            visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                                b.selected = selected;
+                            });
+                            // @Note: Bleh.
+                            g.overall_center_needs_recalc = true;
+                        }
+                        if (!ret) { continue; }
                         defer { ImGui::TreePop(); };
 
-                        for (auto &m : mesh.mesh_part_groups) {
-                            for (auto &buffers : buffer_arrays) {
-                                for (auto &b : *buffers) {
-                                    if (b.mesh_part_group_ptr == &m) {
-                                        assert(b.geometry_ptr == &geo);
-                                        ImGui::PushID(&m);
-                                        defer {
-                                            ImGui::PopID();
-                                        };
+                        visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                            assert(b.geometry_ptr == &geo);
+                            ImGui::PushID(&b);
+                            defer {
+                                ImGui::PopID();
+                            };
 
-                                        map_buffer_ui(b);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                            map_buffer_ui(b);
+                        });
                     }
                 }
             }
