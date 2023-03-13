@@ -395,8 +395,8 @@ struct MAP_Geometry_Buffer {
     Array<MAP_Geometry_Vertex> vertices = {};
     uint32_t id = 0;
     uint32_t subfile_index = 0;
-    struct MAP_Geometry *geometry_ptr = 0;
-    int geometry_mesh_index = 0; // @Todo: index within geometry
+    struct MAP_Geometry *geometry_ptr = nullptr;
+    struct MAP_Mesh *mesh_ptr = nullptr;
     struct MAP_Mesh_Part_Group *mesh_part_group_ptr = nullptr;
     int mesh_part_group_index = 0;
     bool shown = true;
@@ -516,7 +516,7 @@ struct LinkedList {
         return false;
     }
 
-    void remove(Node *node) {
+    void remove_ordered(Node *node) {
         assert(sentinel && has_node(node));
         node->prev->next = node->next;
         node->next->prev = node->prev;
@@ -533,7 +533,7 @@ struct MAP_Mesh_Part_Group : Node {
 //        This means you can't just store tree nesting structure implicitly on the map meshes, you need
 //        explicit metadata if you want to preserve bit-for-bit roundtrippability.
 //        Geometry subfiles CANNOT be empty (I'm asserting geometry_count >= 1 as of writing). -p 2022-06-25
-struct MAP_Mesh {
+struct MAP_Mesh : Node {
     bool bbox_override = false;
     float bounding_box_a[3] = {};
     float bounding_box_b[3] = {};
@@ -570,9 +570,9 @@ struct MAP_Mesh {
 struct MAP_Geometry : Node {
     uint32_t id = 0;
     uint32_t subfile_index = 0;
-    Array<MAP_Mesh, The_Arena_Allocator> opaque_meshes = {};
-    Array<MAP_Mesh, The_Arena_Allocator> transparent_meshes = {};
-    Array<MAP_Mesh, The_Arena_Allocator> decal_meshes = {};
+    LinkedList<MAP_Mesh, The_Arena_Allocator> opaque_meshes = {};
+    LinkedList<MAP_Mesh, The_Arena_Allocator> transparent_meshes = {};
+    LinkedList<MAP_Mesh, The_Arena_Allocator> decal_meshes = {};
 
     // Only here to preserve bit-for-bit roundtrippability.
     bool has_weird_2_byte_misalignment_before_transparents = false;
@@ -1199,7 +1199,7 @@ void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indi
     }
 }
 // We need 'misalignment' because some mesh groups are weirdly misaligned, and mesh alignment happens *with respect to that misalignment* (!!!!!!!!!!)
-static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh, The_Arena_Allocator> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
+static int map_load_mesh_group_or_decal_group(LinkedList<MAP_Mesh, The_Arena_Allocator> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
     ProfileFunction();
 
     (void)end;
@@ -1207,7 +1207,7 @@ static int map_load_mesh_group_or_decal_group(Array<MAP_Mesh, The_Arena_Allocato
     uint32_t count = 0;
     Read(ptr3, count);
     assert(count > 0);
-    meshes->reserve(count);
+    // meshes->reserve(count);
     const char *mesh_end = nullptr;
     for (uint32_t offset_index = 0; offset_index < count; offset_index++) {
         int32_t offset = 0;
@@ -1546,10 +1546,11 @@ static void map_write_struct(Array<uint8_t> *result, const void *px, size_t size
 #define CreateBackpatch(T) (int64_t)(result->resize(result->count + sizeof(T)), (result->count - sizeof(T)))
 #define WriteBackpatch(T, backpatch_idx, value) do { *(T *)(&(*result)[(backpatch_idx)]) = (T)(value); } while (0)
 
-static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool decals, Array<MAP_Mesh, The_Arena_Allocator> group, int start, int count, int misalignment) {
+static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool decals, LinkedList<MAP_Mesh, The_Arena_Allocator> group, int misalignment) {
     ProfileFunction();
 
     int64_t aligner = result->count;
+    int64_t count = group.count();
     WriteLit(uint32_t, count);
     int64_t offsets_start = result->count;
 
@@ -1557,11 +1558,11 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
         WriteLit(uint32_t, 0); // offset will be backpatched
     }
 
-    for (int mesh_index = 0; mesh_index < count; mesh_index++) {
+    int mesh_index = 0;
+    for (auto &mesh : group) {
         // Mapmesh Header
         int64_t mesh_start = result->count;
         WriteBackpatch(uint32_t, offsets_start + mesh_index * sizeof(uint32_t), mesh_start - offsets_start + sizeof(uint32_t));
-        MAP_Mesh &mesh = group[start + mesh_index];
         if (mesh.bbox_override) {
             Write(mesh.bounding_box_a);
             WriteLit(float, 0);
@@ -1700,6 +1701,8 @@ static void map_write_mesh_group_or_decal_group(Array<uint8_t> *result, bool dec
         while (result->count % 16 != misalignment) {
             result->push(0);
         }
+
+        mesh_index++;
     }
     assert(result->count % 16 == misalignment);
 }
@@ -1752,11 +1755,10 @@ static int32_t map_compute_file_length(G &g) {
                 break;
             }
             file_length += sizeof(PH2MAP__Geometry_Header);
-            if (geo.opaque_meshes.count > 0) {
-                file_length += (1 + (int)geo.opaque_meshes.count) * sizeof(uint32_t); // count + offsets
-                for (int mesh_index = 0; mesh_index < (int)geo.opaque_meshes.count; mesh_index++) {
+            if (!geo.opaque_meshes.empty()) {
+                file_length += (1 + (int)geo.opaque_meshes.count()) * sizeof(uint32_t); // count + offsets
+                for (auto &mesh : geo.opaque_meshes) {
                     file_length += sizeof(PH2MAP__Mapmesh_Header);
-                    MAP_Mesh &mesh = geo.opaque_meshes[mesh_index];
                     for (auto &mesh_part_group : mesh.mesh_part_groups) {
                         file_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
                         file_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
@@ -1771,14 +1773,13 @@ static int32_t map_compute_file_length(G &g) {
                     file_length &= ~15;
                 }
             }
-            if (geo.transparent_meshes.count > 0) {
+            if (!geo.transparent_meshes.empty()) {
                 if (geo.has_weird_2_byte_misalignment_before_transparents) {
                     file_length += 2;
                 }
-                file_length += (1 + (int)geo.transparent_meshes.count) * sizeof(uint32_t); // count + offsets
-                for (int mesh_index = 0; mesh_index < (int)geo.transparent_meshes.count; mesh_index++) {
+                file_length += (1 + (int)geo.transparent_meshes.count()) * sizeof(uint32_t); // count + offsets
+                for (auto &mesh : geo.transparent_meshes) {
                     file_length += sizeof(PH2MAP__Mapmesh_Header);
-                    MAP_Mesh &mesh = geo.transparent_meshes[mesh_index];
                     for (auto &mesh_part_group : mesh.mesh_part_groups) {
                         file_length += sizeof(PH2MAP__Mesh_Part_Group_Header);
                         file_length += (int)(mesh_part_group.mesh_parts.count * sizeof(PH2MAP__Mesh_Part));
@@ -1797,14 +1798,13 @@ static int32_t map_compute_file_length(G &g) {
                     }
                 }
             }
-            if (geo.decal_meshes.count > 0) {
+            if (!geo.decal_meshes.empty()) {
                 if (geo.has_weird_2_byte_misalignment_before_decals) {
                     file_length += 2;
                 }
-                file_length += (1 + (int)geo.decal_meshes.count) * sizeof(uint32_t); // count + offsets
-                for (int decal_index = 0; decal_index < (int)geo.decal_meshes.count; decal_index++) {
+                file_length += (1 + (int)geo.decal_meshes.count()) * sizeof(uint32_t); // count + offsets
+                for (auto &decal : geo.decal_meshes) {
                     file_length += sizeof(PH2MAP__Decal_Header);
-                    MAP_Mesh &decal = geo.decal_meshes[decal_index];
                     file_length += (int)(decal.mesh_part_groups.count() * sizeof(PH2MAP__Sub_Decal));
                     file_length += sizeof(PH2MAP__Vertex_Sections_Header);
                     file_length += (int)(decal.vertex_buffers.count * sizeof(PH2MAP__Vertex_Section_Header));
@@ -1957,40 +1957,40 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
             auto backpatch_transparent_group_offset = CreateBackpatch(int32_t);
             auto backpatch_decal_group_offset = CreateBackpatch(int32_t);
 
-            if (geo.opaque_meshes.count) {
+            if (!geo.opaque_meshes.empty()) {
                 assert(result->count % 16 == 4);
                 misalignment = 0;
                 WriteBackpatch(int32_t, backpatch_opaque_group_offset, result->count - geometry_header_start);
-                map_write_mesh_group_or_decal_group(result, false, geo.opaque_meshes, 0, (int)geo.opaque_meshes.count, misalignment);
+                map_write_mesh_group_or_decal_group(result, false, geo.opaque_meshes, misalignment);
                 assert(result->count % 16 == misalignment);
             }
-            if (geo.transparent_meshes.count) {
+            if (!geo.transparent_meshes.empty()) {
                 if (geo.has_weird_2_byte_misalignment_before_transparents) {
                     result->push(0);
                     result->push(0);
                     misalignment = 2;
                 }
-                if (!geo.opaque_meshes.count) {
+                if (geo.opaque_meshes.empty()) {
                     assert(result->count % 16 == 4);
                 } else {
                     assert(result->count % 16 == misalignment);
                 }
                 WriteBackpatch(int32_t, backpatch_transparent_group_offset, result->count - geometry_header_start);
-                map_write_mesh_group_or_decal_group(result, false, geo.transparent_meshes, 0, (int)geo.transparent_meshes.count, misalignment);
+                map_write_mesh_group_or_decal_group(result, false, geo.transparent_meshes, misalignment);
                 assert(result->count % 16 == misalignment);
             }
-            if (geo.decal_meshes.count) {
+            if (!geo.decal_meshes.empty()) {
                 if (geo.has_weird_2_byte_misalignment_before_transparents || geo.has_weird_2_byte_misalignment_before_decals) {
                     while (result->count % 16 != 2) result->push(0);
                     misalignment = 2;
                 }
-                if (!geo.opaque_meshes.count && !geo.transparent_meshes.count) {
+                if (geo.opaque_meshes.empty() && geo.transparent_meshes.empty()) {
                     assert(result->count % 16 == 4);
                 } else {
                     assert(result->count % 16 == misalignment);
                 }
                 WriteBackpatch(int32_t, backpatch_decal_group_offset, result->count - geometry_header_start);
-                map_write_mesh_group_or_decal_group(result, true, geo.decal_meshes, 0, (int)geo.decal_meshes.count, misalignment);
+                map_write_mesh_group_or_decal_group(result, true, geo.decal_meshes, misalignment);
                 assert(result->count % 16 == misalignment);
             }
             WriteBackpatch(int32_t, backpatch_group_size, result->count - geometry_header_start);
@@ -2421,7 +2421,7 @@ static void map_upload(G &g) {
 
                 map_buffer.subfile_index = geo.subfile_index;
                 map_buffer.geometry_ptr = &geo;
-                map_buffer.geometry_mesh_index = (int)(&mesh - geo.opaque_meshes.data); // @Lazy
+                map_buffer.mesh_ptr = &mesh;
                 map_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
                 map_buffer.mesh_part_group_ptr = &mesh_part_group;
             }
@@ -2444,7 +2444,7 @@ static void map_upload(G &g) {
 
                 decal_buffer.subfile_index = geo.subfile_index;
                 decal_buffer.geometry_ptr = &geo;
-                decal_buffer.geometry_mesh_index = (int)(&mesh - geo.transparent_meshes.data); // @Lazy
+                decal_buffer.mesh_ptr = &mesh;
                 decal_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
                 decal_buffer.mesh_part_group_ptr = &mesh_part_group;
             }
@@ -2467,7 +2467,7 @@ static void map_upload(G &g) {
 
                 decal_buffer.subfile_index = geo.subfile_index;
                 decal_buffer.geometry_ptr = &geo;
-                decal_buffer.geometry_mesh_index = (int)(&mesh - geo.decal_meshes.data); // @Lazy
+                decal_buffer.mesh_ptr = &mesh;
                 decal_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
                 decal_buffer.mesh_part_group_ptr = &mesh_part_group; // @Temporary @Todo @@@
             }
@@ -3644,7 +3644,7 @@ static void frame(void *userdata) {
     // if (g.control_state != ControlState::Normal) {
     //     ImGui::GetStyle().Alpha = 0.333f;
     // }
-    auto get_meshes = [&] (MAP_Geometry_Buffer &buf) -> Array<MAP_Mesh, The_Arena_Allocator> & {
+    auto get_meshes = [&] (MAP_Geometry_Buffer &buf) -> LinkedList<MAP_Mesh, The_Arena_Allocator> & {
         switch (buf.source) {
             default: assert(false);
             case MAP_Geometry_Buffer_Source::Opaque: return buf.geometry_ptr->opaque_meshes;
@@ -4067,18 +4067,24 @@ static void frame(void *userdata) {
                 }
             };
             for (auto &geo : g.geometries) {
-                for (int i = 0; i < geo.opaque_meshes.count; i++) {
-                    iterate_mesh("Opaque Mesh", i, geo.opaque_meshes[i]);
+                int i = 0;
+                for (auto &mesh : geo.opaque_meshes) {
+                    iterate_mesh("Opaque Mesh", i, mesh);
+                    i++;
                 }
             }
             for (auto &geo : g.geometries) {
-                for (int i = 0; i < geo.transparent_meshes.count; i++) {
-                    iterate_mesh("Transparent Mesh", i, geo.transparent_meshes[i]);
+                int i = 0;
+                for (auto &mesh : geo.transparent_meshes) {
+                    iterate_mesh("Transparent Mesh", i, mesh);
+                    i++;
                 }
             }
             for (auto &geo : g.geometries) {
-                for (int i = 0; i < geo.decal_meshes.count; i++) {
-                    iterate_mesh("Decal Mesh", i, geo.decal_meshes[i]);
+                int i = 0;
+                for (auto &mesh : geo.decal_meshes) {
+                    iterate_mesh("Decal Mesh", i, mesh);
+                    i++;
                 }
             }
         }
@@ -4268,7 +4274,7 @@ static void frame(void *userdata) {
                 };
 
                 if (!g.map_must_update) { // @HACK !!!!!!!!!!!!!!!! @@@@@@ !!!!!!!!
-                    auto &mesh = meshes[buf.geometry_mesh_index];
+                    auto &mesh = *buf.mesh_ptr;
                     auto &mesh_part_group = *buf.mesh_part_group_ptr;
                     int mat_index = mesh_part_group.material_index;
                     ImGui::Text("Material Index:");
@@ -4295,7 +4301,7 @@ static void frame(void *userdata) {
                     ImGui::PopID();
                 };
 
-                Array<MAP_Mesh, The_Arena_Allocator> *const the_mesh_arrays[3] = {&geo.opaque_meshes, &geo.transparent_meshes, &geo.decal_meshes};
+                LinkedList<MAP_Mesh, The_Arena_Allocator> *const the_mesh_arrays[3] = {&geo.opaque_meshes, &geo.transparent_meshes, &geo.decal_meshes};
 
                 bool empty = true;
                 bool all_on = true;
@@ -4386,10 +4392,10 @@ static void frame(void *userdata) {
                         ImGui::PopID();
                     };
 
-                    if (meshes == &geo.transparent_meshes && geo.transparent_meshes.count && geo.opaque_meshes.count) {
+                    if (meshes == &geo.transparent_meshes && !geo.transparent_meshes.empty() && !geo.opaque_meshes.empty()) {
                         ImGui::Separator();
                     }
-                    if (meshes == &geo.decal_meshes && geo.decal_meshes.count && (geo.opaque_meshes.count || geo.transparent_meshes.count)) {
+                    if (meshes == &geo.decal_meshes && !geo.decal_meshes.empty() && (!geo.opaque_meshes.empty() || !geo.transparent_meshes.empty())) {
                         ImGui::Separator();
                     }
 
@@ -4597,7 +4603,7 @@ static void frame(void *userdata) {
             auto process_mesh = [&] (MAP_Geometry_Buffer &buf, bool duplicate, bool move, bool scale, bool get_center) {
                 auto &meshes = get_meshes(buf);
                 if (move || scale || get_center) {
-                    auto &mesh = meshes[buf.geometry_mesh_index];
+                    auto &mesh = *buf.mesh_ptr;
                     mesh.bbox_override = false;
                     auto &mesh_part_group = *buf.mesh_part_group_ptr;
                     auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
@@ -4667,7 +4673,7 @@ static void frame(void *userdata) {
                 }
                 if (duplicate) {
                     auto &mesh_part_group = *buf.mesh_part_group_ptr;
-                    auto &mesh = meshes[buf.geometry_mesh_index];
+                    auto &mesh = *buf.mesh_ptr;
                     auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
                     int indices_index = 0;
                     for (auto &&mpg : mesh.mesh_part_groups) {
@@ -4798,7 +4804,7 @@ static void frame(void *userdata) {
 
             auto clear_out_mesh_part_group_for_deletion = [&] (MAP_Geometry_Buffer &buf) {
                 auto &meshes = get_meshes(buf);
-                MAP_Mesh &mesh = meshes[buf.geometry_mesh_index];
+                MAP_Mesh &mesh = *buf.mesh_ptr;
                 MAP_Mesh_Part_Group &mesh_part_group = *buf.mesh_part_group_ptr;
                 int indices_index = 0;
                 for (auto &&mpg : mesh.mesh_part_groups) {
@@ -4849,7 +4855,7 @@ static void frame(void *userdata) {
                 for (auto mpg = mesh.mesh_part_groups.begin(); mpg != mesh.mesh_part_groups.end();) {
                     auto next = mpg.node->next;
                     if ((*mpg).mesh_parts.count <= 0) {
-                        mesh.mesh_part_groups.remove(mpg.node);
+                        mesh.mesh_part_groups.remove_ordered(mpg.node);
                     }
                     mpg.node = (MAP_Mesh_Part_Group *)next;
                 }
@@ -4864,14 +4870,13 @@ static void frame(void *userdata) {
                 for (auto &mesh : geo.decal_meshes) {
                     prune_empty_mesh_part_groups(mesh);
                 }
-                auto prune_empty_meshes = [&] (Array<MAP_Mesh, The_Arena_Allocator> &meshes) {
-                    for (int64_t mesh_index = 0; mesh_index < meshes.count;) {
-                        MAP_Mesh &mesh = meshes[mesh_index];
-                        if (mesh.mesh_part_groups.empty()) {
-                            meshes.remove_ordered(mesh_index);
-                        } else {
-                            ++mesh_index;
+                auto prune_empty_meshes = [&] (LinkedList<MAP_Mesh, The_Arena_Allocator> &meshes) {
+                    for (auto mesh = meshes.begin(); mesh != meshes.end();) {
+                        auto next = mesh.node->next;
+                        if ((*mesh).mesh_part_groups.empty()) {
+                            meshes.remove_ordered(mesh.node);
                         }
+                        mesh.node = (MAP_Mesh *)next;
                     }
                 };
                 prune_empty_meshes(geo.opaque_meshes);
