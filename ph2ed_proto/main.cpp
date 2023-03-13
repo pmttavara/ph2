@@ -203,7 +203,10 @@ extern "C" {
 struct The_Arena_Allocator {
     static char *arena_data;
     static uint64_t arena_head;
+#ifndef NDEBUG
+    static uint64_t bytes_used;
     static int allocations_this_frame;
+#endif
     enum { ARENA_SIZE = 512 * 1024 * 1024 };
     static bool contains(void *p, size_t n) {
         ProfileFunction();
@@ -215,6 +218,9 @@ struct The_Arena_Allocator {
 
         arena_data = (char *)malloc(ARENA_SIZE); // arena_data = (char *)VirtualAlloc(nullptr, ARENA_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         arena_head = 0;
+#ifndef NDEBUG
+        bytes_used = 0;
+#endif
     }
     static void quit() {
         ProfileFunction();
@@ -228,6 +234,9 @@ struct The_Arena_Allocator {
 
         (free)(arena_data, arena_head);
         arena_head = 0;
+#ifndef NDEBUG
+        bytes_used = 0;
+#endif
     }
     static void (free)(void *p, size_t size) {
         ProfileFunction();
@@ -243,6 +252,7 @@ struct The_Arena_Allocator {
         // __asan_poison_memory_region(p, size);
 #ifndef NDEBUG
         memset(p, 0xcc, size);
+        bytes_used -= size;
 #endif
     }
     static void *allocate(size_t size) {
@@ -258,9 +268,10 @@ struct The_Arena_Allocator {
 
         void *result = arena_data + arena_head;
         arena_head += size;
-        ++allocations_this_frame;
 #ifndef NDEBUG
         memset(result, 0xcc, size);
+        bytes_used += size;
+        ++allocations_this_frame;
 #endif
         // __asan_unpoison_memory_region(result, size);
         return result;
@@ -319,7 +330,10 @@ struct The_Arena_Allocator {
 };
 char *The_Arena_Allocator::arena_data;
 uint64_t The_Arena_Allocator::arena_head;
+#ifndef NDEBUG
+uint64_t The_Arena_Allocator::bytes_used;
 int The_Arena_Allocator::allocations_this_frame;
+#endif
 
 struct Ray {
     Ray() = default;
@@ -839,9 +853,21 @@ struct G : Map {
 
     char *opened_map_filename = nullptr;
 
+    void clear_undo_redo_stacks() {
+        for (auto &entry : redo_stack) {
+            entry.release();
+        }
+        redo_stack.clear();
+        for (auto &entry : undo_stack) {
+            entry.release();
+        }
+        undo_stack.clear();
+    }
+
     void release() {
         ProfileFunction();
 
+        clear_undo_redo_stacks();
         undo_stack.release();
         redo_stack.release();
         PH2CLD_free_collision_data(cld);
@@ -2024,14 +2050,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         static_cast<Map &>(g) = Map{};
 
         The_Arena_Allocator::free_all();
-        for (auto &entry : g.redo_stack) {
-            entry.release();
-        }
-        g.redo_stack.clear();
-        for (auto &entry : g.undo_stack) {
-            entry.release();
-        }
-        g.undo_stack.clear();
+        g.clear_undo_redo_stacks();
         g.texture_ui_selected = -1;
     }
     { // Semi-garbage code.
@@ -3542,14 +3561,18 @@ static void frame(void *userdata) {
                 }
             }
         }
-        ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 70.0f);
         double frametime = 0.0f;
         uint64_t last_frame = sapp_frame_count();
         uint64_t first_frame = max((int64_t)(sapp_frame_count() - countof(g.dt_history) + 1), 0);
         for (auto i = first_frame; i <= last_frame; i++) {
             frametime += g.dt_history[sapp_frame_count() % countof(g.dt_history)];
         }
+#ifndef NDEBUG
+        ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 70.0f);
         ImGui::Text("%.0f FPS", (last_frame - first_frame) / frametime);
+        ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 240.0f);
+        ImGui::Text("%.2f MB head, %.2f MB used", The_Arena_Allocator::arena_head / (1024.0 * 1024.0), The_Arena_Allocator::bytes_used / (1024.0 * 1024.0));
+#endif
     }
     if (g.control_state != ControlState::Normal); // drop CTRL-S etc when orbiting/dragging
     else if (g.control_o) {
@@ -5402,11 +5425,13 @@ static void frame(void *userdata) {
         }
     }
 
+#ifndef NDEBUG
     if (The_Arena_Allocator::allocations_this_frame != 0) {
         Log("%d allocations this frame", The_Arena_Allocator::allocations_this_frame);
         Log("The_Arena_Allocator::arena_head is %llu", The_Arena_Allocator::arena_head);
         The_Arena_Allocator::allocations_this_frame = 0;
     }
+#endif
 
     if (g.cld_must_update) {
         bool can_update = true;
