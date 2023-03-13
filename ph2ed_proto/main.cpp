@@ -370,7 +370,7 @@ static void node_insert_before(Node *dest, Node *node) {
 }
 
 // Texture subfiles can be empty, so they can't be implicitly encoded by indices in MAP_Texture.
-struct MAP_Texture_Subfile {
+struct MAP_Texture_Subfile : Node {
     bool came_from_non_numbered_dependency = false; // @Temporary! (maybe? Yuck!)
     int texture_count = 0;
 };
@@ -640,7 +640,7 @@ struct MAP_Texture {
 struct Map {
     LinkedList<MAP_Geometry, The_Arena_Allocator> geometries = {};
 
-    Array<MAP_Texture_Subfile, The_Arena_Allocator> texture_subfiles = {};
+    LinkedList<MAP_Texture_Subfile, The_Arena_Allocator> texture_subfiles = {};
 
     Array<MAP_Texture, The_Arena_Allocator> textures = {};
 
@@ -3864,7 +3864,8 @@ static void frame(void *userdata) {
             bool success = dds_import(dds_file_buf, tex);
             if (success) {
                 g.textures.push(tex);
-                g.texture_subfiles[g.texture_subfiles.count - 1].texture_count++;
+                assert(!g.texture_subfiles.empty());
+                ((MAP_Texture_Subfile *)g.texture_subfiles.end()->prev)->texture_count++;
                 g.staleify_map();
             }
         }
