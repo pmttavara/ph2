@@ -401,7 +401,7 @@ struct MAP_Geometry_Buffer {
     int mesh_part_group_index = 0;
     bool shown = true;
     bool selected = false; // Used by Imgui
-    uint16_t material_index = 0;
+    struct MAP_Material *material_ptr = nullptr;
     void release() {
         ProfileFunction();
 
@@ -596,7 +596,7 @@ struct MAP_Geometry : Node {
 
 
 
-struct MAP_Material {
+struct MAP_Material : Node {
     uint32_t subfile_index = 0;
     int16_t mode;
     uint16_t texture_id;
@@ -644,7 +644,7 @@ struct Map {
 
     Array<MAP_Texture, The_Arena_Allocator> textures = {};
 
-    Array<MAP_Material, The_Arena_Allocator> materials = {};
+    LinkedList<MAP_Material, The_Arena_Allocator> materials = {};
 
     void release_geometry() {
         ProfileFunction();
@@ -2223,7 +2223,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         ptr2 += geometry_header.group_size;
 
                     }
-                    g.materials.reserve(g.materials.count + geometry_subfile_header.material_count);
+                    // g.materials.reserve(g.materials.count + geometry_subfile_header.material_count);
                     for (uint32_t material_index = 0; material_index < geometry_subfile_header.material_count; material_index++) {
                         PH2MAP__Material material = {};
                         Read(ptr2, material);
@@ -4280,11 +4280,12 @@ static void frame(void *userdata) {
                     int mat_index = mesh_part_group.material_index;
                     ImGui::Text("Material Index:");
                     if (ImGui::InputInt("###Material Index", &mat_index)) {
+                        int64_t mat_count = g.materials.count();
                         while (mat_index < 0) {
-                            mat_index += (int)g.materials.count + !g.materials.count;
+                            mat_index += (int)mat_count + (int)!!g.materials.empty();
                         }
-                        if (g.materials.count > 0) {
-                            mat_index %= g.materials.count;
+                        if (!g.materials.empty()) {
+                            mat_index %= mat_count;
                         }
                         mesh_part_group.material_index = mat_index;
                         g.staleify_map();
@@ -5278,15 +5279,16 @@ static void frame(void *userdata) {
         defer {
             ImGui::End();
         };
-        int delete_mat = -1;
-        for (int i = 0; i < g.materials.count; i++) {
+        MAP_Material *delete_mat = nullptr;
+        int i = 0;
+        for (auto &mat : g.materials) {
             ImGui::PushID("Material iteration");
-            ImGui::PushID(i);
+            ImGui::PushID(&mat);
             ImGui::Text("Material #%d", i); {
-                if (g.materials.count > 1) {
+                if (g.materials.count() > 1) {
                     ImGui::SameLine();
                     if (ImGui::Button("Delete###Delete material")) {
-                        delete_mat = i;
+                        delete_mat = &mat;
                     }
                 }
 
@@ -5294,7 +5296,7 @@ static void frame(void *userdata) {
                 defer {
                     ImGui::Unindent();
                 };
-                auto &mat = g.materials[i];
+
                 ImGui::Columns(2);
                 {
                     int x = mat.mode;
@@ -5324,15 +5326,16 @@ static void frame(void *userdata) {
             }
             ImGui::PopID();
             ImGui::PopID();
+            i++;
         }
-        if (delete_mat >= 0) {
+        if (delete_mat) {
             g.materials.remove_ordered(delete_mat);
             // @Todo @@@: Index patching on EVERY SINGLE mesh group!!!!!!!!!!!!!!!!! @@@
         }
         if (ImGui::Button("New Material")) {
             MAP_Material mat = {};
-            assert(g.materials.count > 0);
-            mat.subfile_index = g.materials[g.materials.count - 1].subfile_index;
+            assert(!g.materials.empty());
+            mat.subfile_index = ((MAP_Material *)g.materials.end()->prev)->subfile_index;
             mat.mode = 1;
             mat.texture_id = 0;
             mat.material_color = 0xffffffff;
