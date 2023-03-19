@@ -424,7 +424,7 @@ struct MAP_Mesh_Part {
 
 template <class T, class Allocator = Mallocator>
 struct LinkedList {
-    Node *sentinel = nullptr;
+    Node *sentinel = nullptr; // @Todo @Temporary: by value node, no pointer
 
     bool empty() {
         return !sentinel || sentinel->next == sentinel;
@@ -439,6 +439,19 @@ struct LinkedList {
             ++result;
         }
         return result;
+    }
+    T *at_index(int64_t index) {
+        assert(sentinel);
+
+        int64_t i = 0;
+        for (Node *node = sentinel->next; node != sentinel; node = node->next) {
+            if (i == index) {
+                return (T *)node;
+            }
+            ++i;
+        }
+
+        return nullptr;
     }
 
     void init() {
@@ -2417,7 +2430,7 @@ static void map_upload(G &g) {
                 map_buffer.id = geo.id;
                 assert(mesh_part_group.material_index >= 0);
                 assert(mesh_part_group.material_index < 65536);
-                map_buffer.material_index = (uint16_t)mesh_part_group.material_index;
+                map_buffer.material_ptr = g.materials.at_index(mesh_part_group.material_index);
 
                 map_buffer.subfile_index = geo.subfile_index;
                 map_buffer.geometry_ptr = &geo;
@@ -2440,7 +2453,7 @@ static void map_upload(G &g) {
                 decal_buffer.id = geo.id;
                 assert(mesh_part_group.material_index >= 0);
                 assert(mesh_part_group.material_index < 65536);
-                decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
+                decal_buffer.material_ptr = g.materials.at_index(mesh_part_group.material_index);
 
                 decal_buffer.subfile_index = geo.subfile_index;
                 decal_buffer.geometry_ptr = &geo;
@@ -2463,7 +2476,7 @@ static void map_upload(G &g) {
                 decal_buffer.id = geo.id;
                 assert(mesh_part_group.material_index >= 0);
                 assert(mesh_part_group.material_index < 65536);
-                decal_buffer.material_index = (uint16_t)mesh_part_group.material_index;
+                decal_buffer.material_ptr = g.materials.at_index(mesh_part_group.material_index);
 
                 decal_buffer.subfile_index = geo.subfile_index;
                 decal_buffer.geometry_ptr = &geo;
@@ -5285,11 +5298,9 @@ static void frame(void *userdata) {
             ImGui::PushID("Material iteration");
             ImGui::PushID(&mat);
             ImGui::Text("Material #%d", i); {
-                if (g.materials.count() > 1) {
-                    ImGui::SameLine();
-                    if (ImGui::Button("Delete###Delete material")) {
-                        delete_mat = &mat;
-                    }
+                ImGui::SameLine();
+                if (ImGui::Button("Delete###Delete material")) {
+                    delete_mat = &mat;
                 }
 
                 ImGui::Indent();
@@ -5610,11 +5621,10 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
                 sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
                 sg_image tex = g.missing_texture;
-                assert(buf.material_index >= 0);
-                if (buf.material_index < g.materials.count) {
-                    assert(g.materials[buf.material_index].texture_id >= 0);
-                    assert(g.materials[buf.material_index].texture_id < 65536);
-                    auto map_tex = map_get_texture_by_id(g.textures, g.map_textures, g.materials[buf.material_index].texture_id);
+                if (buf.material_ptr) {
+                    assert(buf.material_ptr->texture_id >= 0);
+                    assert(buf.material_ptr->texture_id < 65536);
+                    auto map_tex = map_get_texture_by_id(g.textures, g.map_textures, buf.material_ptr->texture_id);
                     if (map_tex) {
                         assert(map_tex->id);
                         tex = *map_tex;
@@ -5632,7 +5642,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
             sg_apply_pipeline(g.decal_pipeline);
             for (int i = 0; i < g.decal_buffers_count; i++) {
                 auto &buf = g.decal_buffers[i];
-                if (!g.decal_buffers[i].shown) continue;
+                if (!buf.shown) continue;
                 {
                     vs_params.scaling_factor = { 1, 1, 1 };
                     vs_params.displacement = { 0, 0, 0 };
@@ -5654,11 +5664,10 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
                 sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
                 sg_image tex = g.missing_texture;
-                assert(buf.material_index >= 0);
-                if (buf.material_index < g.materials.count) {
-                    assert(g.materials[buf.material_index].texture_id >= 0);
-                    assert(g.materials[buf.material_index].texture_id < 65536);
-                    auto map_tex = map_get_texture_by_id(g.textures, g.map_textures, g.materials[buf.material_index].texture_id);
+                if (buf.material_ptr) {
+                    assert(buf.material_ptr->texture_id >= 0);
+                    assert(buf.material_ptr->texture_id < 65536);
+                    auto map_tex = map_get_texture_by_id(g.textures, g.map_textures, buf.material_ptr->texture_id);
                     if (map_tex) {
                         assert(map_tex->id);
                         tex = *map_tex;
