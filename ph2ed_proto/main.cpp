@@ -2077,10 +2077,9 @@ static sg_image *map_get_texture_by_id(G &g, uint32_t id) {
 
     return nullptr;
 }
-static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false) {
-    ProfileFunction();
+static void map_unload(G &g, bool release_only_geometry = false) {
 
-    if (is_non_numbered_dependency) {
+    if (release_only_geometry) {
         g.release_geometry();
     } else {
 
@@ -2091,6 +2090,28 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         g.ui_selected_texture_subfile = nullptr;
         g.ui_selected_texture = nullptr;
     }
+
+    g.staleify_map();
+    if (g.opened_map_filename) {
+        free(g.opened_map_filename);
+        g.opened_map_filename = nullptr;
+    }
+
+    for (auto &buf : g.map_buffers) {
+        buf.shown = true;
+        buf.selected = false;
+    }
+    for (auto &buf : g.decal_buffers) {
+        buf.shown = true;
+        buf.selected = false;
+    }
+
+}
+static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false, bool round_trip_test = false) {
+    ProfileFunction();
+
+    map_unload(g, is_non_numbered_dependency);
+
     { // Semi-garbage code.
         int len = (int)strlen(filename);
         char *non_numbered = (char *) malloc(len + 1);
@@ -2122,7 +2143,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         snprintf(mem, n, "%s.map", non_numbered);
                         if (strcmp(filename, mem) != 0) {
                             // Log("Loading \"%s\" for base textures", mem);
-                            map_load(g, mem, true);
+                            map_load(g, mem, true, round_trip_test);
                         }
                     }
                 }
@@ -2399,7 +2420,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     
     // upload textures and geometries IFF this is a top-level call
     if (!is_non_numbered_dependency) {
-        { // Round-trip test
+        if (round_trip_test) { // Round-trip test
             Array<uint8_t> round_trip = {};
             defer {
                 round_trip.release();
@@ -2410,22 +2431,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         }
     }
 
-    g.staleify_map();
-    if (g.opened_map_filename) {
-        free(g.opened_map_filename);
-        g.opened_map_filename = nullptr;
-    }
     g.opened_map_filename = strdup(filename);
     assert(g.opened_map_filename);
-
-    for (auto &buf : g.map_buffers) {
-        buf.shown = true;
-        buf.selected = false;
-    }
-    for (auto &buf : g.decal_buffers) {
-        buf.shown = true;
-        buf.selected = false;
-    }
 }
 static void map_upload(G &g) {
     ProfileFunction();
@@ -2564,7 +2571,8 @@ static void test_all_maps(G &g) {
         snprintf(b, sizeof(b), "map/%s", find_data.name);
         // Log("Loading map \"%s\"", b);
         // printf("%c\r", "|/-\\"[spinner++ % 4]);
-        map_load(g, b);
+        sapp_set_window_title(b);
+        map_load(g, b, false, true);
         ++num_tested;
         if (_findnext(directory, &find_data) < 0) {
             if (errno == ENOENT) break;
@@ -2573,6 +2581,7 @@ static void test_all_maps(G &g) {
     }
     _findclose(directory);
     Log("Tested %d maps.", num_tested);
+    map_unload(g);
 }
 
 static void imgui_do_console(G &g) {
@@ -2611,7 +2620,7 @@ static void imgui_do_console(G &g) {
     char buf[sizeof(LogMsg::buf)] = {};
     ImGui::Text("Command:");
     ImGui::SameLine();
-    if (ImGui::InputText("###console input", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+    if (ImGui::InputTextWithHint("###console input", "help", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
         // Process buf
         LogC(IM_COL32_WHITE, "> %s", buf);
         if (memcmp("cld_load ", buf, sizeof("cld_load ") - 1) == 0) {
@@ -2624,6 +2633,14 @@ static void imgui_do_console(G &g) {
             map_load(g, p);
         } else if (memcmp("test_all_maps", buf, sizeof("test_all_maps") - 1) == 0) {
             test_all_maps(g);
+        } else if (memcmp("help", buf, sizeof("help") - 1) == 0) {
+            Log("Command List:");
+            LogC(IM_COL32_WHITE, "  cld_load <filename>");
+            Log("    - Loads a .CLD (collision data) file.");
+            LogC(IM_COL32_WHITE, "  map_load <filename>");
+            Log("    - Loads a .MAP (map textures/geometry) file.");
+            LogC(IM_COL32_WHITE, "  test_all_maps");
+            Log("    - Developer test tool - loads all maps in the map/ folder (relative to the current working directory).");
         } else {
             Log("Unknown command :)");
         }
@@ -2881,11 +2898,13 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
             buffer.buf = sg_make_buffer(d);
         }
     }
-    if (1) {
+#ifndef NDEBUG
+    {
         map_load(g, "map/ob01 (2).map");
         // test_all_maps(g);
         // sapp_request_quit();
     }
+#endif
 
     {
         sg_pipeline_desc d = {};
@@ -3594,6 +3613,7 @@ static void frame(void *userdata) {
             defer { ImGui::EndMenu(); };
             ImGui::MenuItem("Editor", nullptr, &g.show_editor);
             ImGui::MenuItem("Viewport", nullptr, &g.show_viewport);
+            ImGui::MenuItem("Edit Widget", nullptr, &g.show_edit_widget);
             ImGui::MenuItem("Textures", nullptr, &g.show_textures);
             ImGui::MenuItem("Materials", nullptr, &g.show_materials);
             ImGui::MenuItem("Console", nullptr, &g.show_console);
@@ -3601,7 +3621,6 @@ static void frame(void *userdata) {
         if (ImGui::BeginMenu("About")) {
             defer { ImGui::EndMenu(); };
             ImGui::MenuItem("Psilent pHill 2 Editor v0.001", nullptr, false, false);
-            ImGui::MenuItem("Built On: " __DATE__ " " __TIME__, nullptr, false, false);
             ImGui::Separator();
 #define URL "https://github.com/pmttavara/ph2"
             if (ImGui::MenuItem(URL)) {

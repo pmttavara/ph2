@@ -8,7 +8,7 @@
 		<ShowEmptyFolders>true</ShowEmptyFolders>
 		<IsVirtual>false</IsVirtual>
 		<IsFolder>false</IsFolder>
-		<BuildCommand>build.bat</BuildCommand>
+		<BuildCommand>build.bat $(Configuration)</BuildCommand>
 		<RebuildCommand></RebuildCommand>
 		<BuildFileCommand></BuildFileCommand>
 		<CleanCommand></CleanCommand>
@@ -25,7 +25,6 @@
 		</Configurations>
 		<Platforms>
 			<Platform>x64</Platform>
-			<Platform>Win32</Platform>
 		</Platforms>
 		<AdditionalIncludePaths></AdditionalIncludePaths>
 		<Defines></Defines>
@@ -38,6 +37,12 @@
 			<Config>
 				<Name>Debug</Name>
 				<Defines></Defines>
+			</Config>
+			<Config>
+				<Name>Release</Name>
+				<Defines>
+					<Define>NDEBUG</Define>
+				</Defines>
 			</Config>
 			<Platform>
 				<Name>x64</Name>

@@ -1,4 +1,8 @@
 
+#ifndef NDEBUG
+#define SOKOL_WIN32_FORCE_MAIN
+#endif
+
 #define STB_LEAKCHECK_IMPLEMENTATION
 #include "common.hpp"
 
