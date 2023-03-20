@@ -3862,7 +3862,7 @@ static void frame(void *userdata) {
                     assert((*mesh.mesh_part_groups.begin()).mesh_parts[0].strip_length > 0);
 
                     assert(!g.geometries.empty());
-                    ((MAP_Geometry *)g.geometries.end()->prev)->opaque_meshes.push(mesh);
+                    ((MAP_Geometry *)g.geometries.sentinel->prev)->opaque_meshes.push(mesh);
                     mesh = {};
                     mesh_verts_count = 0;
                 };
@@ -3915,7 +3915,7 @@ static void frame(void *userdata) {
             bool success = dds_import(dds_file_buf, tex);
             if (success) {
                 assert(!g.texture_subfiles.empty());
-                ((MAP_Texture_Subfile *)g.texture_subfiles.end()->prev)->textures.push(tex);
+                ((MAP_Texture_Subfile *)g.texture_subfiles.sentinel->prev)->textures.push(tex);
                 g.staleify_map();
             }
         }
@@ -4183,15 +4183,14 @@ static void frame(void *userdata) {
         ImGui::Separator();
 #endif
         if (ImGui::CollapsingHeader("MAP Geometries", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (g.map_buffers_count + g.decal_buffers_count <= 0) {
+            bool disabled = (g.map_buffers_count + g.decal_buffers_count <= 0);
+            if (disabled) {
                 ImGui::BeginDisabled();
             }
-            ImGui::Indent();
             defer {
-                if (g.map_buffers_count + g.decal_buffers_count <= 0) {
+                if (disabled) {
                     ImGui::EndDisabled();
                 }
-                ImGui::Unindent();
             };
             bool all_buffers_shown = g.map_buffers_count + g.decal_buffers_count > 0;
             bool all_buffers_selected = g.map_buffers_count + g.decal_buffers_count > 0;
@@ -4475,7 +4474,7 @@ static void frame(void *userdata) {
                             all_selected &= b.selected;
                             any_selected |= b.selected;
                         });
-                        assert(!empty);
+                        // assert(!empty);
 
                         bool pressed;
                         if (!all_on && any_on) {
@@ -5402,7 +5401,7 @@ static void frame(void *userdata) {
         if (ImGui::Button("New Material")) {
             MAP_Material mat = {};
             assert(!g.materials.empty());
-            mat.subfile_index = ((MAP_Material *)g.materials.end()->prev)->subfile_index;
+            mat.subfile_index = ((MAP_Material *)g.materials.sentinel->prev)->subfile_index;
             mat.mode = 1;
             mat.texture_id = 0;
             mat.material_color = 0xffffffff;
