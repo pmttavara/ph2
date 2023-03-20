@@ -853,11 +853,13 @@ struct G : Map {
     CLD_Face_Buffer cld_face_buffers[cld_buffers_count] = {};
 
     sg_pipeline map_pipeline = {};
+    sg_pipeline map_pipeline_no_cull = {};
     enum { map_buffers_max = 64 };
     MAP_Geometry_Buffer map_buffers[map_buffers_max];// = {};
     int map_buffers_count = 0;
 
     sg_pipeline decal_pipeline = {};
+    sg_pipeline decal_pipeline_no_cull = {};
     enum { decal_buffers_max = 64 };
     MAP_Geometry_Buffer decal_buffers[decal_buffers_max];// = {};
     int decal_buffers_count = 0;
@@ -891,6 +893,7 @@ struct G : Map {
 
     bool textured = true;
     bool lit = true;
+    bool cull_backfaces = false;
 
     char *opened_map_filename = nullptr;
 
@@ -917,10 +920,12 @@ struct G : Map {
             sg_destroy_buffer(buf.buf);
         }
         sg_destroy_pipeline(map_pipeline);
+        sg_destroy_pipeline(map_pipeline_no_cull);
         for (auto &buf : map_buffers) {
             buf.release();
         }
         sg_destroy_pipeline(decal_pipeline);
+        sg_destroy_pipeline(decal_pipeline_no_cull);
         for (auto &buf : decal_buffers) {
             buf.release();
         }
@@ -2900,16 +2905,30 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
         d.depth.write_enabled = true;
         d.alpha_to_coverage_enabled = true;
         d.depth.compare = SG_COMPAREFUNC_GREATER;
-        d.cull_mode = SG_CULLMODE_BACK;
         d.face_winding = SG_FACEWINDING_CCW;
         // d.primitive_type = SG_PRIMITIVETYPE_POINTS;
-        g.map_pipeline = sg_make_pipeline(d);
+
+        { // Make the pipelines
+            d.cull_mode = SG_CULLMODE_BACK;
+            g.map_pipeline = sg_make_pipeline(d);
+            d.cull_mode = SG_CULLMODE_NONE;
+            g.map_pipeline_no_cull = sg_make_pipeline(d);
+        }
+
+
         d.depth.write_enabled = false;
         d.alpha_to_coverage_enabled = false;
         d.colors[0].blend.enabled = true;
         d.colors[0].blend.src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA;
         d.colors[0].blend.dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        g.decal_pipeline = sg_make_pipeline(d);
+
+        { // Make the pipelines
+            d.cull_mode = SG_CULLMODE_BACK;
+            g.decal_pipeline = sg_make_pipeline(d);
+            d.cull_mode = SG_CULLMODE_NONE;
+            g.decal_pipeline_no_cull = sg_make_pipeline(d);
+        }
+
     }
 
     {
@@ -5414,6 +5433,7 @@ static void frame(void *userdata) {
             ImGui::SameLine(); ImGui::Text("(%.0f, %.0f, %.0f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
             ImGui::Columns(1);
             ImGui::Checkbox("MAP Textured", &g.textured); ImGui::SameLine(); ImGui::Checkbox("MAP Lit", &g.lit);
+            ImGui::SameLine(); ImGui::Checkbox("MAP Cull Backfaces", &g.cull_backfaces);
             if (ImGui::BeginChild("###Viewport Rendering Region")) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
                 dl->AddCallback(viewport_callback, &g);
@@ -5635,7 +5655,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
             vs_params.cam_pos = g.cam_pos;
             vs_params.P = perspective;
             vs_params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
-            sg_apply_pipeline(g.map_pipeline);
+            sg_apply_pipeline(g.cull_backfaces ? g.map_pipeline : g.map_pipeline_no_cull);
             for (int i = 0; i < g.map_buffers_count; i++) {
                 auto &buf = g.map_buffers[i];
                 if (!buf.shown) continue;
@@ -5678,7 +5698,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 }
             }
             fs_params.do_a2c_sharpening = false;
-            sg_apply_pipeline(g.decal_pipeline);
+            sg_apply_pipeline(g.cull_backfaces ? g.decal_pipeline : g.decal_pipeline_no_cull);
             for (int i = 0; i < g.decal_buffers_count; i++) {
                 auto &buf = g.decal_buffers[i];
                 if (!buf.shown) continue;
