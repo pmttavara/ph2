@@ -3998,8 +3998,8 @@ static void frame(void *userdata) {
             ImGui::End();
         };
         {
-            static bool (vertices_touched[4])[UINT16_MAX] = {};
-            static int (vertex_remap[4])[UINT16_MAX] = {};
+            static bool (vertices_touched[4])[65536] = {};
+            static int (vertex_remap[4])[65536] = {};
             auto iterate_mesh = [&] (const char *str, int i, MAP_Mesh &mesh) {
                 int num_untouched = 0;
                 int num_untouched_per_buf[4] = {};
@@ -4096,6 +4096,7 @@ static void frame(void *userdata) {
                             ++vert_index_to_remove;
                         }
                     }
+                    buf.data.shrink_to_fit();
                 }
             };
             for (auto &geo : g.geometries) {
@@ -4888,6 +4889,7 @@ static void frame(void *userdata) {
                 for (auto mpg = mesh.mesh_part_groups.begin(); mpg != mesh.mesh_part_groups.end();) {
                     auto next = mpg.node->next;
                     if ((*mpg).mesh_parts.count <= 0) {
+                        mpg->release();
                         mesh.mesh_part_groups.remove_ordered(mpg.node);
                     }
                     mpg.node = (MAP_Mesh_Part_Group *)next;
@@ -4907,6 +4909,7 @@ static void frame(void *userdata) {
                     for (auto mesh = meshes.begin(); mesh != meshes.end();) {
                         auto next = mesh.node->next;
                         if ((*mesh).mesh_part_groups.empty()) {
+                            mesh->release();
                             meshes.remove_ordered(mesh.node);
                         }
                         mesh.node = (MAP_Mesh *)next;

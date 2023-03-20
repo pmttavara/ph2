@@ -168,6 +168,16 @@ template <class T, class Allocator = Mallocator> struct Array {
         for (int64_t i = count; i < new_count; i += 1) data[i] = value;
         count = new_count;
     }
+    void shrink_to_fit() {
+        assert(array_invariants());
+        if (count < capacity) {
+            auto old_capacity = capacity;
+            capacity = count;
+            data = (T *)Allocator::reallocate(data, capacity * sizeof(T), old_capacity * sizeof(T));
+            ++num_array_resizes;
+            assert(array_invariants());
+        }
+    }
     Array copy() {
         assert(array_invariants());
         Array result = {};
