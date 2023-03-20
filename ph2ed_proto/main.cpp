@@ -1974,6 +1974,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
         int misalignment = 0;
         geometry_index = 0;
         for (auto &geo : g.geometries) {
+            defer { geometry_index++; };
             if (geometry_index < geometry_start) {
                 continue;
             }
@@ -2149,6 +2150,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             PH2MAP__Header header = {};
             {
                 char *filedata = filedata_do_not_modify_me_please;
+                assert((uintptr_t)filedata % 16 == 0);
                 uint32_t file_len = (uint32_t)fread(filedata, 1, MAP_FILE_DATA_LENGTH_MAX, f);
                 file_len_do_not_modify_me_please = file_len;
                 ptr = filedata;
@@ -2183,10 +2185,10 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                     for (uint32_t geometry_index = 0; geometry_index < geometry_subfile_header.geometry_count; geometry_index++) {
                         // Log("  In geometry %u", geometry_index);
                         const char *geometry_start = ptr2;
-                        assert((uintptr_t)geometry_start % 16 == 0);
+                        // assert((uintptr_t)geometry_start % 16 == 0);
                         PH2MAP__Geometry_Header geometry_header = {};
                         Read(ptr2, geometry_header);
-                        assert(geometry_header.group_size > 0);
+                        assert(geometry_header.group_size >= sizeof(PH2MAP__Geometry_Header));
                         assert(geometry_header.group_size < 1024 * 1024 * 1024); // please have map files smaller than a gig, i guess.
                         assert(geometry_header.opaque_group_offset >= 0);
                         assert(geometry_header.transparent_group_offset >= 0);
@@ -2251,7 +2253,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         }
                         length_sum += decal_group_length;
                         assert(length_sum == geometry_header.group_size);
-                        
+
                         ptr2 += geometry_header.group_size;
 
                     }

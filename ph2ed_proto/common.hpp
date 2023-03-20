@@ -73,12 +73,14 @@ template<typename T, size_t N> constexpr size_t countof(T (&)[N]) {
 extern "C" {
 #endif
 #pragma comment(linker, "/alternatename:__imp_my_MessageBoxA=__imp_MessageBoxA")
-#pragma comment(linker, "/alternatename:__imp_my_ExitProcess=__imp_ExitProcess")
+#pragma comment(linker, "/alternatename:__imp_my_GetCurrentProcess=__imp_GetCurrentProcess")
+#pragma comment(linker, "/alternatename:__imp_my_TerminateProcess=__imp_TerminateProcess")
 extern __declspec(dllimport) int __stdcall my_MessageBoxA(void *hWnd, const char *lpText, const char *lpCaption, unsigned int uType);
-extern __declspec(dllimport) void __stdcall my_ExitProcess(unsigned int uExitCode);
+extern __declspec(dllimport) void *__stdcall my_GetCurrentProcess(void);
+extern __declspec(dllimport) void __stdcall my_TerminateProcess(void *hProcess, unsigned int uExitCode);
 static inline int assert_(const char *s) {
     int x = my_MessageBoxA(0, s, "Assertion Failed", 0x1012);
-    if (x == 3) my_ExitProcess(1);
+    if (x == 3) my_TerminateProcess(my_GetCurrentProcess(), 1);
     return x == 4;
 }
 #define assert_STR_(LINE) #LINE
