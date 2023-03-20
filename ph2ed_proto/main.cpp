@@ -369,12 +369,6 @@ static void node_insert_before(Node *dest, Node *node) {
     dest->prev = node;
 }
 
-// Texture subfiles can be empty, so they can't be implicitly encoded by indices in MAP_Texture.
-struct MAP_Texture_Subfile : Node {
-    bool came_from_non_numbered_dependency = false; // @Temporary! (maybe? Yuck!)
-    int texture_count = 0;
-};
-
 struct MAP_Geometry_Vertex {
     float position[3] = {};
     float normal[3] = {};
@@ -409,6 +403,11 @@ struct MAP_Geometry_Buffer {
         vertices.release();
         *this = {};
     }
+};
+struct MAP_Texture_Buffer {
+    sg_image tex = {};
+    struct MAP_Texture_Subfile *subfile_ptr = nullptr;
+    int texture_index = 0;
 };
 struct MAP_Mesh_Vertex_Buffer {
     int bytes_per_vertex;
@@ -650,12 +649,18 @@ struct MAP_Texture {
     }
 };
 
+// Texture subfiles can be empty, so they can't be implicitly encoded by indices in MAP_Texture.
+struct MAP_Texture_Subfile : Node {
+    bool came_from_non_numbered_dependency = false; // @Temporary! (maybe? Yuck!)
+
+    Array<MAP_Texture, The_Arena_Allocator> textures = {};
+};
+
+
 struct Map {
     LinkedList<MAP_Geometry, The_Arena_Allocator> geometries = {};
 
     LinkedList<MAP_Texture_Subfile, The_Arena_Allocator> texture_subfiles = {};
-
-    Array<MAP_Texture, The_Arena_Allocator> textures = {};
 
     LinkedList<MAP_Material, The_Arena_Allocator> materials = {};
 
@@ -672,10 +677,12 @@ struct Map {
 
         materials.release();
 
-        for (auto &tex : textures) {
-            tex.release();
+        for (auto &sub : texture_subfiles) {
+            for (auto &tex : sub.textures) {
+                tex.release();
+            }
+            sub.textures.release();
         }
-        textures.release();
 
         texture_subfiles.release();
     }
@@ -835,14 +842,15 @@ struct G : Map {
     MAP_Geometry_Buffer decal_buffers[decal_buffers_max];// = {};
     int decal_buffers_count = 0;
 
-    Array<sg_image> map_textures = {};
+    Array<MAP_Texture_Buffer> map_textures = {};
 
     sg_buffer highlight_vertex_circle_buffer = {};
     sg_pipeline highlight_vertex_circle_pipeline = {};
 
     sg_image missing_texture = {};
 
-    int texture_ui_selected = -1;
+    MAP_Texture_Subfile *ui_selected_texture_subfile = nullptr;
+    int ui_selected_texture_index = -1;
 
     bool cld_must_update = false;
     bool map_must_update = false;
@@ -900,7 +908,7 @@ struct G : Map {
         sg_destroy_pipeline(highlight_vertex_circle_pipeline);
         sg_destroy_image(missing_texture);
         for (auto &tex : map_textures) {
-            sg_destroy_image(tex);
+            sg_destroy_image(tex.tex);
         }
         map_textures.release();
         free(opened_map_filename); opened_map_filename = nullptr;
@@ -1725,20 +1733,16 @@ static int32_t map_compute_file_length(G &g) {
     int32_t file_length = 0;
     file_length += sizeof(PH2MAP__Header);
     int subfile_count = 0;
-    int rolling_texture_index = 0;
     for (auto &sub : g.texture_subfiles) {
         if (sub.came_from_non_numbered_dependency) { // @Temporary i hope!
-            rolling_texture_index += sub.texture_count;
             continue;
         }
         ++subfile_count;
         file_length += sizeof(PH2MAP__Subfile_Header) + sizeof(PH2MAP__Texture_Subfile_Header);
-        for (int texture_index = rolling_texture_index; texture_index < rolling_texture_index + sub.texture_count; texture_index++) {
-            auto &tex = g.textures[texture_index];
+        for (auto &tex : sub.textures) {
             file_length += sizeof(PH2MAP__BC_Texture_Header) + tex.sprite_count * sizeof(PH2MAP__Sprite_Header) + (int32_t)tex.blob.count;
         }
         file_length += 16;
-        rolling_texture_index += sub.texture_count;
     }
     for (;;) {
         int geometry_start = 0;
@@ -1859,11 +1863,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
     WriteLit(uint32_t, 0);
 
     int subfile_count = 0;
-    int rolling_texture_index = 0;
     for (auto &sub : g.texture_subfiles) {
-        defer {
-            rolling_texture_index += sub.texture_count;
-        };
         if (sub.came_from_non_numbered_dependency) { // @Temporary i hope!
             continue;
         }
@@ -1881,8 +1881,7 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
         texture_subfile_header.always1 = 1;
         Write(texture_subfile_header);
 
-        for (int texture_index = rolling_texture_index; texture_index < rolling_texture_index + sub.texture_count; texture_index++) {
-            MAP_Texture &tex = g.textures[texture_index];
+        for (auto &tex : sub.textures) {
             PH2MAP__BC_Texture_Header bc_texture_header = {};
             bc_texture_header.id = tex.id;
             bc_texture_header.width = tex.width;
@@ -2039,18 +2038,17 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
     WriteBackpatch(uint32_t, backpatch_subfile_count, subfile_count);
     assert(file_length == result->count);
 }
-static sg_image *map_get_texture_by_id(Array<MAP_Texture, The_Arena_Allocator> textures, Array<sg_image> map_textures, uint32_t id) {
+static sg_image *map_get_texture_by_id(G &g, uint32_t id) {
     ProfileFunction();
 
-    for (int i = 0;; i++) {
-        if (i >= textures.count || i >= map_textures.count) {
-            break;
-        }
-
-        if (textures[i].id == id) {
-            return &map_textures[i];
+    for (auto &map_tex : g.map_textures) {
+        assert(map_tex.subfile_ptr);
+        assert(map_tex.texture_index < map_tex.subfile_ptr->textures.count);
+        if (map_tex.subfile_ptr->textures[map_tex.texture_index].id == id) {
+            return &map_tex.tex;
         }
     }
+
     return nullptr;
 }
 static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false) {
@@ -2064,7 +2062,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
 
         The_Arena_Allocator::free_all();
         g.clear_undo_redo_stacks();
-        g.texture_ui_selected = -1;
+        g.ui_selected_texture_subfile = nullptr;
+        g.ui_selected_texture_index = -1;
     }
     { // Semi-garbage code.
         int len = (int)strlen(filename);
@@ -2268,10 +2267,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                     assert(texture_subfile_header.pad[1] == 0);
                     assert(texture_subfile_header.always1 == 1);
 
-                    MAP_Texture_Subfile texture_subfile = {};
-                    defer {
-                        g.texture_subfiles.push(texture_subfile);
-                    };
+                    MAP_Texture_Subfile &texture_subfile = *g.texture_subfiles.push(); // @Cleanup: replace ref with ptr here
                     texture_subfile.came_from_non_numbered_dependency = is_non_numbered_dependency;
 
                     for (; ; ) {
@@ -2288,7 +2284,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                                 break;
                             }
                         }
-                        ++texture_subfile.texture_count;
+
                         PH2MAP__BC_Texture_Header bc_texture_header = {};
                         Read(ptr, bc_texture_header);
                         assert(bc_texture_header.id <= 0xffff);
@@ -2302,7 +2298,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         assert(bc_texture_header.pad[1] == 0);
                         assert(bc_texture_header.pad[2] == 0);
 
-                        MAP_Texture &tex = *g.textures.push(); // @Cleanup: replace ref with ptr here
+                        MAP_Texture &tex = *texture_subfile.textures.push(); // @Cleanup: replace ref with ptr here
                         tex.id = (uint16_t)bc_texture_header.id;
                         tex.width = bc_texture_header.width;
                         tex.height = bc_texture_header.height;
@@ -2410,8 +2406,8 @@ static void map_upload(G &g) {
     g.map_buffers_count = 0;
     g.decal_buffers_count = 0;
     for (auto &tex : g.map_textures) {
-        if (tex.id) {
-            sg_destroy_image(tex);
+        if (tex.tex.id) {
+            sg_destroy_image(tex.tex);
         }
     }
     g.map_textures.clear();
@@ -2486,8 +2482,8 @@ static void map_upload(G &g) {
             }
         }
     }
-    {
-        for (auto &tex : g.textures) {
+    for (auto &sub : g.texture_subfiles) {
+        for (auto &tex : sub.textures) {
             sg_image_desc d = {};
             d.width = tex.width;
             d.height = tex.height;
@@ -2503,8 +2499,11 @@ static void map_upload(G &g) {
             d.mag_filter = SG_FILTER_NEAREST;
             d.max_anisotropy = 16;
             d.data.subimage[0][0] = { tex.blob.data, (size_t)tex.blob.count };
-            auto &new_tex = *g.map_textures.push(sg_make_image(d));
-            assert(new_tex.id);
+            auto &new_tex = *g.map_textures.push();
+            new_tex.tex = sg_make_image(d);
+            assert(new_tex.tex.id);
+            new_tex.subfile_ptr = &sub;
+            new_tex.texture_index = (int)(&tex - sub.textures.data); // @Lazy
         }
 
         // Log("%lld geometries", g.geometries.count);
@@ -3583,7 +3582,7 @@ static void frame(void *userdata) {
 #ifndef NDEBUG
         ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 70.0f);
         ImGui::Text("%.0f FPS", (last_frame - first_frame) / frametime);
-        ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 240.0f);
+        ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 300.0f);
         ImGui::Text("%.2f MB head, %.2f MB used", The_Arena_Allocator::arena_head / (1024.0 * 1024.0), The_Arena_Allocator::bytes_used / (1024.0 * 1024.0));
 #endif
     }
@@ -3876,9 +3875,8 @@ static void frame(void *userdata) {
             MAP_Texture tex = {};
             bool success = dds_import(dds_file_buf, tex);
             if (success) {
-                g.textures.push(tex);
                 assert(!g.texture_subfiles.empty());
-                ((MAP_Texture_Subfile *)g.texture_subfiles.end()->prev)->texture_count++;
+                ((MAP_Texture_Subfile *)g.texture_subfiles.end()->prev)->textures.push(tex);
                 g.staleify_map();
             }
         }
@@ -5135,7 +5133,8 @@ static void frame(void *userdata) {
     // @Hack: the map updates after Imgui gets an Image() call, but before Imgui renders,
     //        so we just make it never call Image() on a frame that reuploads textures
     if (g.map_must_update) {
-        g.texture_ui_selected = -1;
+        g.ui_selected_texture_subfile = nullptr;
+        g.ui_selected_texture_index = -1;
     }
     if (g.show_textures) {
         ImGui::SetNextWindowPos(ImVec2 { 60, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
@@ -5145,50 +5144,51 @@ static void frame(void *userdata) {
             ImGui::End();
         };
         auto size = ImGui::GetWindowSize();
-        {
-            ImGui::BeginChild("texture_list", ImVec2(80, size.y - 50));
+        ImGui::BeginChild("texture_list", ImVec2(80, size.y - 50));
+        for (auto &sub : g.texture_subfiles) {
+            ImGui::PushID(&sub);
             defer {
-                ImGui::EndChild();
+                ImGui::PopID();
             };
-            for (int i = 0; i < g.textures.count; i++) {
-                char b[16]; snprintf(b, sizeof b, "ID %d", g.textures[i].id);
-                if (ImGui::Selectable(b, g.texture_ui_selected == i)) {
-                    if (g.texture_ui_selected == i) {
-                        g.texture_ui_selected = -1;
+            for (int i = 0; i < sub.textures.count; i++) {
+                char b[16]; snprintf(b, sizeof b, "ID %d", sub.textures[i].id);
+                bool selected = g.ui_selected_texture_subfile == &sub && g.ui_selected_texture_index == i;
+                if (ImGui::Selectable(b, selected)) {
+                    if (selected) {
+                        g.ui_selected_texture_subfile = nullptr;
+                        g.ui_selected_texture_index = -1;
                     } else {
-                        g.texture_ui_selected = i;
+                        g.ui_selected_texture_subfile = &sub;
+                        g.ui_selected_texture_index = i;
                     }
                 }
             }
         }
+        ImGui::EndChild();
+
         ImGui::SameLine(0, -1);
-        if (g.texture_ui_selected >= 0) {
+        if (g.ui_selected_texture_subfile && g.ui_selected_texture_index >= 0) {
             ImGui::BeginChild("texture_panel");
-            ImGui::PushID(g.texture_ui_selected);
+            ImGui::PushID(g.ui_selected_texture_subfile);
+            ImGui::PushID(g.ui_selected_texture_index);
             defer {
+                ImGui::PopID();
                 ImGui::PopID();
                 ImGui::EndChild();
             };
-            
+
+            assert(g.ui_selected_texture_index < g.ui_selected_texture_subfile->textures.count);
+
             if (ImGui::Button("Delete")) {
-                // Perform index patching on subfiles.
-                int rolling_texture_index = 0;
-                for (auto &sub : g.texture_subfiles) {
-                    int start = rolling_texture_index;
-                    int end = rolling_texture_index + sub.texture_count;
-                    if (g.texture_ui_selected >= start && g.texture_ui_selected < end) {
-                        sub.texture_count--;
-                        break;
-                    }
-                    rolling_texture_index = end;
-                }
-                g.textures[g.texture_ui_selected].release();
-                g.textures.remove_ordered(g.texture_ui_selected);
-                if (g.texture_ui_selected >= g.textures.count) {
-                    g.texture_ui_selected = -1;
+                auto &sub = *g.ui_selected_texture_subfile;
+                sub.textures[g.ui_selected_texture_index].release();
+                sub.textures.remove_ordered(g.ui_selected_texture_index);
+                if (g.ui_selected_texture_index >= sub.textures.count) {
+                    g.ui_selected_texture_index = -1;
                 }
             } else {
-                auto &tex = g.textures[g.texture_ui_selected];
+                auto &sub = *g.ui_selected_texture_subfile;
+                auto &tex = sub.textures[g.ui_selected_texture_index];
                 char *dds_export_path = nullptr;
                 ImGui::SameLine(); if (ImGui::Button("Export DDS...")) {
                     dds_export_path = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds\0"
@@ -5247,19 +5247,25 @@ static void frame(void *userdata) {
                         g.staleify_map();
                     }
                 }
-                // Semi-@Hack: If we import and fudge up all the textures on reupload,
-                //             we don't wanna send Imgui a stale texture id.
-                if (!import_success) {
+                // @Hack: If we fudge up all the textures,
+                //        we don't wanna send Imgui a stale texture id.
+                if (!g.control_z && !g.control_y && !import_success) {
                     {
                         int x = tex.id;
                         ImGui::InputInt("ID", &x);
                         x = clamp(x, 0, 65535);
+                        if (x != tex.id) {
+                            g.staleify_map(); // @Hack.
+                        }
                         tex.id = (uint16_t)x;
                     }
                     {
                         int x = tex.material;
                         ImGui::InputInt("\"Material\" (?)", &x);
                         x = clamp(x, 0, 255);
+                        if (x != tex.material) {
+                            g.staleify_map(); // @Hack.
+                        }
                         tex.material = (uint8_t)x;
                     }
                     
@@ -5276,10 +5282,20 @@ static void frame(void *userdata) {
                         h = size.y - 50;
                         w = h * aspect;
                     }
-                    assert(g.texture_ui_selected < g.map_textures.count);
-                    assert(g.map_textures[g.texture_ui_selected].id);
-                    if (w > 0 && h > 0) {
-                        ImGui::Image((ImTextureID)(uintptr_t)g.map_textures[g.texture_ui_selected].id, ImVec2(w, h));
+                    MAP_Texture_Buffer *map_texture = nullptr;
+                    for (auto &map_tex : g.map_textures) {
+                        assert(map_tex.subfile_ptr);
+                        assert(map_tex.texture_index < map_tex.subfile_ptr->textures.count);
+                        if (map_tex.subfile_ptr == g.ui_selected_texture_subfile &&
+                            map_tex.texture_index == g.ui_selected_texture_index) {
+                            map_texture = &map_tex;
+                            break;
+                        }
+                    }
+                    assert(map_texture);
+                    assert(map_texture->tex.id);
+                    if (w > 0 && h > 0 && !g.stale()) {
+                        ImGui::Image((ImTextureID)(uintptr_t)map_texture->tex.id, ImVec2(w, h));
                     }
                 }
             }
@@ -5624,7 +5640,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 if (buf.material_ptr) {
                     assert(buf.material_ptr->texture_id >= 0);
                     assert(buf.material_ptr->texture_id < 65536);
-                    auto map_tex = map_get_texture_by_id(g.textures, g.map_textures, buf.material_ptr->texture_id);
+                    auto map_tex = map_get_texture_by_id(g, buf.material_ptr->texture_id);
                     if (map_tex) {
                         assert(map_tex->id);
                         tex = *map_tex;
@@ -5667,7 +5683,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 if (buf.material_ptr) {
                     assert(buf.material_ptr->texture_id >= 0);
                     assert(buf.material_ptr->texture_id < 65536);
-                    auto map_tex = map_get_texture_by_id(g.textures, g.map_textures, buf.material_ptr->texture_id);
+                    auto map_tex = map_get_texture_by_id(g, buf.material_ptr->texture_id);
                     if (map_tex) {
                         assert(map_tex->id);
                         tex = *map_tex;
