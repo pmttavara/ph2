@@ -203,10 +203,8 @@ extern "C" {
 struct The_Arena_Allocator {
     static char *arena_data;
     static uint64_t arena_head;
-#ifndef NDEBUG
     static uint64_t bytes_used;
     static int allocations_this_frame;
-#endif
     enum { ARENA_SIZE = 512 * 1024 * 1024 };
     static bool contains(void *p, size_t n) {
         ProfileFunction();
@@ -218,9 +216,7 @@ struct The_Arena_Allocator {
 
         arena_data = (char *)malloc(ARENA_SIZE); // arena_data = (char *)VirtualAlloc(nullptr, ARENA_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         arena_head = 0;
-#ifndef NDEBUG
         bytes_used = 0;
-#endif
     }
     static void quit() {
         ProfileFunction();
@@ -234,9 +230,7 @@ struct The_Arena_Allocator {
 
         (free)(arena_data, arena_head);
         arena_head = 0;
-#ifndef NDEBUG
         bytes_used = 0;
-#endif
     }
     static void (free)(void *p, size_t size) {
         ProfileFunction();
@@ -251,9 +245,14 @@ struct The_Arena_Allocator {
 
         // __asan_poison_memory_region(p, size);
 #ifndef NDEBUG
-        memset(p, 0xcc, size);
-        bytes_used -= size;
+        // I'd like to be able to memset invalid regions,
+        // but I don't want to slow down release mode,
+        // and I don't want to introduce a discrepancy
+        // between debug and release undo/redo behaviour,
+        // so I'm just not gonna memset right now.
+        // memset(p, 0xcc, size);
 #endif
+        bytes_used -= size;
     }
     static void *allocate(size_t size) {
         ProfileFunction();
@@ -269,10 +268,15 @@ struct The_Arena_Allocator {
         void *result = arena_data + arena_head;
         arena_head += size;
 #ifndef NDEBUG
-        memset(result, 0xcc, size);
+        // I'd like to be able to memset invalid regions,
+        // but I don't want to slow down release mode,
+        // and I don't want to introduce a discrepancy
+        // between debug and release undo/redo behaviour,
+        // so I'm just not gonna memset right now.
+        // memset(result, 0xcc, size);
+#endif
         bytes_used += size;
         ++allocations_this_frame;
-#endif
         // __asan_unpoison_memory_region(result, size);
         return result;
     }
@@ -330,10 +334,8 @@ struct The_Arena_Allocator {
 };
 char *The_Arena_Allocator::arena_data;
 uint64_t The_Arena_Allocator::arena_head;
-#ifndef NDEBUG
 uint64_t The_Arena_Allocator::bytes_used;
 int The_Arena_Allocator::allocations_this_frame;
-#endif
 
 struct Ray {
     Ray() = default;
@@ -407,12 +409,18 @@ struct MAP_Geometry_Buffer {
 struct MAP_Texture_Buffer {
     sg_image tex = {};
     struct MAP_Texture_Subfile *subfile_ptr = nullptr;
-    int texture_index = 0;
+    struct MAP_Texture *texture_ptr = nullptr;
 };
 struct MAP_Mesh_Vertex_Buffer {
     int bytes_per_vertex;
     Array<char, The_Arena_Allocator> data;
     int num_vertices;
+
+    void release() {
+        ProfileFunction();
+
+        data.release();
+    }
 };
 struct MAP_Mesh_Part {
     int strip_length;
@@ -540,6 +548,12 @@ struct MAP_Mesh_Part_Group : Node {
     uint32_t material_index;
     uint32_t section_index;
     Array<MAP_Mesh_Part, The_Arena_Allocator> mesh_parts = {};
+
+    void release() {
+        ProfileFunction();
+
+        mesh_parts.release();
+    }
 };
 // @Note: Geometries can be empty -- contain 0 mesh groups (no opaque, no transparent, no decal).
 //        This means you can't just store tree nesting structure implicitly on the map meshes, you need
@@ -555,12 +569,12 @@ struct MAP_Mesh : Node {
     void release() {
         ProfileFunction();
 
-        for (MAP_Mesh_Part_Group &mesh_part_group : mesh_part_groups) {
-            mesh_part_group.mesh_parts.release();
+        for (auto &mpg : mesh_part_groups) {
+            mpg.release();
         }
         mesh_part_groups.release();
-        for (MAP_Mesh_Vertex_Buffer & vertex_buffer : vertex_buffers) {
-            vertex_buffer.data.release();
+        for (auto &buf : vertex_buffers) {
+            buf.release();
         }
         vertex_buffers.release();
         indices.release();
@@ -629,7 +643,7 @@ enum MAP_Texture_Format {
 // @Note: Texture subfiles can be empty -- contain 0 textures.
 //        This means you can't just store tree nesting structure implicitly on the textures, you need
 //        explicit metadata if you want to preserve bit-for-bit roundtrippability. -p 2022-06-25
-struct MAP_Texture {
+struct MAP_Texture : Node {
     uint16_t id = 0;
     uint16_t width = 0;
     uint16_t height = 0;
@@ -645,7 +659,6 @@ struct MAP_Texture {
         ProfileFunction();
 
         blob.release();
-        *this = {};
     }
 };
 
@@ -653,7 +666,16 @@ struct MAP_Texture {
 struct MAP_Texture_Subfile : Node {
     bool came_from_non_numbered_dependency = false; // @Temporary! (maybe? Yuck!)
 
-    Array<MAP_Texture, The_Arena_Allocator> textures = {};
+    LinkedList<MAP_Texture, The_Arena_Allocator> textures = {};
+
+    void release() {
+        ProfileFunction();
+
+        for (auto &tex : textures) {
+            tex.release();
+        }
+        textures.release();
+    }
 };
 
 
@@ -678,10 +700,7 @@ struct Map {
         materials.release();
 
         for (auto &sub : texture_subfiles) {
-            for (auto &tex : sub.textures) {
-                tex.release();
-            }
-            sub.textures.release();
+            sub.release();
         }
 
         texture_subfiles.release();
@@ -698,6 +717,7 @@ struct Map_History_Entry {
     uint64_t hash = 0;
     char *data = nullptr;
     size_t count = 0;
+    size_t bytes_used = 0;
     void release() {
         ProfileFunction();
 
@@ -850,7 +870,7 @@ struct G : Map {
     sg_image missing_texture = {};
 
     MAP_Texture_Subfile *ui_selected_texture_subfile = nullptr;
-    int ui_selected_texture_index = -1;
+    MAP_Texture *ui_selected_texture = nullptr;
 
     bool cld_must_update = false;
     bool map_must_update = false;
@@ -2043,8 +2063,8 @@ static sg_image *map_get_texture_by_id(G &g, uint32_t id) {
 
     for (auto &map_tex : g.map_textures) {
         assert(map_tex.subfile_ptr);
-        assert(map_tex.texture_index < map_tex.subfile_ptr->textures.count);
-        if (map_tex.subfile_ptr->textures[map_tex.texture_index].id == id) {
+        assert(map_tex.texture_ptr);
+        if (map_tex.texture_ptr->id == id) {
             return &map_tex.tex;
         }
     }
@@ -2063,7 +2083,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         The_Arena_Allocator::free_all();
         g.clear_undo_redo_stacks();
         g.ui_selected_texture_subfile = nullptr;
-        g.ui_selected_texture_index = -1;
+        g.ui_selected_texture = nullptr;
     }
     { // Semi-garbage code.
         int len = (int)strlen(filename);
@@ -2503,7 +2523,7 @@ static void map_upload(G &g) {
             new_tex.tex = sg_make_image(d);
             assert(new_tex.tex.id);
             new_tex.subfile_ptr = &sub;
-            new_tex.texture_index = (int)(&tex - sub.textures.data); // @Lazy
+            new_tex.texture_ptr = &tex;
         }
 
         // Log("%lld geometries", g.geometries.count);
@@ -3579,12 +3599,10 @@ static void frame(void *userdata) {
         for (auto i = first_frame; i <= last_frame; i++) {
             frametime += g.dt_history[sapp_frame_count() % countof(g.dt_history)];
         }
-#ifndef NDEBUG
-        ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 70.0f);
+        ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 60.0f);
         ImGui::Text("%.0f FPS", (last_frame - first_frame) / frametime);
-        ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 300.0f);
+        ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 250.0f);
         ImGui::Text("%.2f MB head, %.2f MB used", The_Arena_Allocator::arena_head / (1024.0 * 1024.0), The_Arena_Allocator::bytes_used / (1024.0 * 1024.0));
-#endif
     }
     if (g.control_state != ControlState::Normal); // drop CTRL-S etc when orbiting/dragging
     else if (g.control_o) {
@@ -5134,7 +5152,7 @@ static void frame(void *userdata) {
     //        so we just make it never call Image() on a frame that reuploads textures
     if (g.map_must_update) {
         g.ui_selected_texture_subfile = nullptr;
-        g.ui_selected_texture_index = -1;
+        g.ui_selected_texture = nullptr;
     }
     if (g.show_textures) {
         ImGui::SetNextWindowPos(ImVec2 { 60, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
@@ -5150,16 +5168,16 @@ static void frame(void *userdata) {
             defer {
                 ImGui::PopID();
             };
-            for (int i = 0; i < sub.textures.count; i++) {
-                char b[16]; snprintf(b, sizeof b, "ID %d", sub.textures[i].id);
-                bool selected = g.ui_selected_texture_subfile == &sub && g.ui_selected_texture_index == i;
+            for (auto &tex : sub.textures) {
+                char b[16]; snprintf(b, sizeof b, "ID %d", tex.id);
+                bool selected = g.ui_selected_texture_subfile == &sub && g.ui_selected_texture == &tex;
                 if (ImGui::Selectable(b, selected)) {
                     if (selected) {
                         g.ui_selected_texture_subfile = nullptr;
-                        g.ui_selected_texture_index = -1;
+                        g.ui_selected_texture = nullptr;
                     } else {
                         g.ui_selected_texture_subfile = &sub;
-                        g.ui_selected_texture_index = i;
+                        g.ui_selected_texture = &tex;
                     }
                 }
             }
@@ -5167,28 +5185,26 @@ static void frame(void *userdata) {
         ImGui::EndChild();
 
         ImGui::SameLine(0, -1);
-        if (g.ui_selected_texture_subfile && g.ui_selected_texture_index >= 0) {
+        if (g.ui_selected_texture_subfile && g.ui_selected_texture) {
             ImGui::BeginChild("texture_panel");
             ImGui::PushID(g.ui_selected_texture_subfile);
-            ImGui::PushID(g.ui_selected_texture_index);
+            ImGui::PushID(g.ui_selected_texture);
             defer {
                 ImGui::PopID();
                 ImGui::PopID();
                 ImGui::EndChild();
             };
 
-            assert(g.ui_selected_texture_index < g.ui_selected_texture_subfile->textures.count);
+            assert(g.ui_selected_texture_subfile->textures.has_node(g.ui_selected_texture));
 
             if (ImGui::Button("Delete")) {
-                auto &sub = *g.ui_selected_texture_subfile;
-                sub.textures[g.ui_selected_texture_index].release();
-                sub.textures.remove_ordered(g.ui_selected_texture_index);
-                if (g.ui_selected_texture_index >= sub.textures.count) {
-                    g.ui_selected_texture_index = -1;
-                }
+                g.ui_selected_texture_subfile->textures.remove_ordered(g.ui_selected_texture);
+                g.ui_selected_texture->release();
+                g.ui_selected_texture_subfile = nullptr;
+                g.ui_selected_texture = nullptr;
             } else {
                 auto &sub = *g.ui_selected_texture_subfile;
-                auto &tex = sub.textures[g.ui_selected_texture_index];
+                auto &tex = *g.ui_selected_texture;
                 char *dds_export_path = nullptr;
                 ImGui::SameLine(); if (ImGui::Button("Export DDS...")) {
                     dds_export_path = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds\0"
@@ -5285,9 +5301,9 @@ static void frame(void *userdata) {
                     MAP_Texture_Buffer *map_texture = nullptr;
                     for (auto &map_tex : g.map_textures) {
                         assert(map_tex.subfile_ptr);
-                        assert(map_tex.texture_index < map_tex.subfile_ptr->textures.count);
+                        assert(map_tex.texture_ptr);
                         if (map_tex.subfile_ptr == g.ui_selected_texture_subfile &&
-                            map_tex.texture_index == g.ui_selected_texture_index) {
+                            map_tex.texture_ptr == g.ui_selected_texture) {
                             map_texture = &map_tex;
                             break;
                         }
@@ -5415,6 +5431,7 @@ static void frame(void *userdata) {
         entry.hash = map_hash;
 
         entry.count = The_Arena_Allocator::arena_head;
+        entry.bytes_used = The_Arena_Allocator::bytes_used;
 
         entry.data = (char *)malloc(entry.count);
         assert(entry.data);
@@ -5427,6 +5444,7 @@ static void frame(void *userdata) {
     auto apply_history_entry = [&] (Map_History_Entry entry) {
         assert(entry.count <= The_Arena_Allocator::ARENA_SIZE);
         The_Arena_Allocator::arena_head = entry.count;
+        The_Arena_Allocator::bytes_used = entry.bytes_used;
         no_asan_memcpy(The_Arena_Allocator::arena_data, entry.data, The_Arena_Allocator::arena_head);
     };
 
