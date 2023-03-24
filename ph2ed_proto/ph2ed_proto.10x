@@ -34,6 +34,11 @@
 				<Defines></Defines>
 				<ForceIncludes></ForceIncludes>
 			</ConfigAndPlatform>
+			<ConfigAndPlatform>
+				<Name>Release:x64</Name>
+				<Defines></Defines>
+				<ForceIncludes></ForceIncludes>
+			</ConfigAndPlatform>
 			<Config>
 				<Name>Debug</Name>
 				<Defines></Defines>
@@ -46,7 +51,9 @@
 			</Config>
 			<Platform>
 				<Name>x64</Name>
-				<Defines></Defines>
+				<Defines>
+					<Define>_WIN32</Define>
+				</Defines>
 			</Platform>
 		</ConfigProperties>
 		<Children></Children>

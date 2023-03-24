@@ -78,9 +78,12 @@ extern "C" {
 extern __declspec(dllimport) int __stdcall my_MessageBoxA(void *hWnd, const char *lpText, const char *lpCaption, unsigned int uType);
 extern __declspec(dllimport) void *__stdcall my_GetCurrentProcess(void);
 extern __declspec(dllimport) void __stdcall my_TerminateProcess(void *hProcess, unsigned int uExitCode);
+static bool in_assert = false;
 static inline int assert_(const char *s) {
+    in_assert = true;
     int x = my_MessageBoxA(0, s, "Assertion Failed", 0x1012);
     if (x == 3) my_TerminateProcess(my_GetCurrentProcess(), 1);
+    in_assert = false;
     return x == 4;
 }
 #define assert_STR_(LINE) #LINE
