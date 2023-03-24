@@ -1,8 +1,4 @@
 
-#ifndef NDEBUG
-#define SOKOL_WIN32_FORCE_MAIN
-#endif
-
 #define STB_LEAKCHECK_IMPLEMENTATION
 #include "common.hpp"
 
@@ -29,6 +25,7 @@
 #include "sokol_app.h"
 #include "sokol_gfx.h"
 #include "sokol_imgui.h"
+#include "sokol_log.h"
 
 // sokol_glue.h
 SOKOL_API_IMPL sg_context_desc sapp_sgcontext(void) {

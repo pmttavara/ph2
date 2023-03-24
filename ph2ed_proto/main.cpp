@@ -5,10 +5,7 @@
 // Dear Imgui is licensed under MIT License. https://github.com/ocornut/imgui/blob/master/LICENSE.txt
 
 #ifdef NDEBUG
-#pragma comment(linker, "/subsystem:windows")
 #include "libs.cpp"
-#else
-#pragma comment(linker, "/subsystem:console")
 #endif
 
 #include "common.hpp"
@@ -93,6 +90,7 @@ struct ScopedTraceTimer {
 #include "sokol_app.h"
 #include "sokol_gfx.h"
 #include "sokol_imgui.h"
+#include "sokol_log.h"
 #endif
 
 #include "zip.h"
@@ -390,15 +388,13 @@ struct MAP_Geometry_Buffer {
     sg_buffer index_buffer = {};
     MAP_Geometry_Buffer_Source source = MAP_Geometry_Buffer_Source::Opaque;
     Array<MAP_Geometry_Vertex> vertices = {}; // @Todo: convert to local variable that gets released once uploaded
+    Array<uint32_t> indices = {};
     uint32_t id = 0;
     uint32_t subfile_index = 0;
     struct MAP_Geometry *geometry_ptr = nullptr;
     struct MAP_Mesh *mesh_ptr = nullptr;
-    struct MAP_Mesh_Part_Group *mesh_part_group_ptr = nullptr;
-    int mesh_part_group_index = 0;
     bool shown = true;
     bool selected = false; // Used by Imgui
-    struct MAP_Material *material_ptr = nullptr;
     void release() {
         ProfileFunction();
 
@@ -1205,16 +1201,10 @@ MAP_Geometry_Vertex map_extract_packed_vertex(char *vertex_buffer, int vertex_si
 
 }*/
 
-void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indices_index, const MAP_Mesh &mesh, MAP_Mesh_Part_Group mesh_part_group) {
+void map_destrip_mesh_part_group(MAP_Geometry_Buffer &buffer, int &indices_index, const MAP_Mesh &mesh, MAP_Mesh_Part_Group mesh_part_group) {
     ProfileFunction();
 
     assert(mesh_part_group.mesh_parts.count > 0);
-    vertices.clear();
-    int vertices_reserve = 0;
-    for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
-        vertices_reserve += 3 * mesh_part.strip_count * mesh_part.strip_length;
-    }
-    vertices.reserve(vertices_reserve);
     for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
         int vertex_size = mesh.vertex_buffers[mesh_part_group.section_index].bytes_per_vertex;
         char *vertex_buffer = mesh.vertex_buffers[mesh_part_group.section_index].data.data;
@@ -1225,6 +1215,8 @@ void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indi
         assert(vertex_buffer);
         int outer_max = mesh_part.strip_count;
         int inner_max = mesh_part.strip_length;
+
+        int num_vertices_written = 0;
         for (int strip_index = 0; strip_index < outer_max; strip_index++) {
             unsigned int memory = (mesh.indices[indices_index++]) << 0x10;
             unsigned int mask = 0xFFFF0000;
@@ -1238,11 +1230,17 @@ void map_destrip_mesh_part_group(Array<MAP_Geometry_Vertex> &vertices, int &indi
                 auto triangle_v0 = map_extract_packed_vertex(vertex_buffer, vertex_size, num_vertices, memory >> 0x10);
                 auto triangle_v1 = map_extract_packed_vertex(vertex_buffer, vertex_size, num_vertices, memory & 0xffff);
                 auto triangle_v2 = map_extract_packed_vertex(vertex_buffer, vertex_size, num_vertices, currentIndex);
-                vertices.push(triangle_v0);
-                vertices.push(triangle_v1);
-                vertices.push(triangle_v2);
+                buffer.indices.push((uint32_t)buffer.vertices.count);
+                buffer.vertices.push(triangle_v0);
+                buffer.indices.push((uint32_t)buffer.vertices.count);
+                buffer.vertices.push(triangle_v1);
+                buffer.indices.push((uint32_t)buffer.vertices.count);
+                buffer.vertices.push(triangle_v2);
+                num_vertices_written += 3;
             }
         }
+
+        assert(num_vertices_written == (inner_max - 2) * 3 * outer_max);
     }
 }
 // We need 'misalignment' because some mesh groups are weirdly misaligned, and mesh alignment happens *with respect to that misalignment* (!!!!!!!!!!)
@@ -2466,23 +2464,28 @@ static void map_upload(G &g) {
                 //     map_buffer.mesh_part_group_ptr = mesh.mesh_part_groups.begin().node; // @Temporary @Todo
                 // }
 
-                int mesh_part_group_index = 0; // @Lazy
+                assert(g.map_buffers_count < g.map_buffers_max);
+                auto &map_buffer = g.map_buffers[g.map_buffers_count++];
+                map_buffer.source = source;
+                map_buffer.vertices.clear();
+                map_buffer.indices.clear();
+                int vertices_reserve = 0;
                 for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-                    assert(g.map_buffers_count < g.map_buffers_max);
-                    auto &map_buffer = g.map_buffers[g.map_buffers_count++];
-                    map_buffer.source = source;
-                    map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
+                    for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
+                        vertices_reserve += 3 * mesh_part.strip_count * mesh_part.strip_length;
+                    }
+                }
+                map_buffer.vertices.reserve(vertices_reserve);
+                map_buffer.indices.reserve(vertices_reserve);
+                for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
+                    map_destrip_mesh_part_group(map_buffer, indices_index, mesh, mesh_part_group);
                     assert(map_buffer.vertices.count % 3 == 0);
+                    assert(map_buffer.indices.count % 3 == 0);
                     map_buffer.id = geo.id;
-                    assert(mesh_part_group.material_index >= 0);
-                    assert(mesh_part_group.material_index < 65536);
-                    map_buffer.material_ptr = g.materials.at_index(mesh_part_group.material_index);
 
                     map_buffer.subfile_index = geo.subfile_index;
                     map_buffer.geometry_ptr = &geo;
                     map_buffer.mesh_ptr = &mesh;
-                    map_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
-                    map_buffer.mesh_part_group_ptr = &mesh_part_group; // @Temporary @Todo @@@
                 }
             }
         }
@@ -2523,7 +2526,7 @@ static void map_upload(G &g) {
     for (int i = 0; i < g.map_buffers_count; i++) {
         auto &buf = g.map_buffers[i];
         sg_update_buffer(buf.vertex_buffer, sg_range { buf.vertices.data, buf.vertices.count * sizeof(buf.vertices[0]) });
-        // sg_update_buffer(buf.index_buffer, sg_range { buf.indices.data, buf.indices.count * sizeof(buf.indices[0]) });
+        sg_update_buffer(buf.index_buffer, sg_range { buf.indices.data, buf.indices.count * sizeof(buf.indices[0]) });
     }
 }
 static void test_all_maps(G &g) {
@@ -2727,7 +2730,8 @@ static void init(void *userdata) {
     g.last_time = get_time();
     sg_desc desc = {};
     desc.context = sapp_sgcontext();
-    desc.buffer_pool_size = 256;
+    desc.buffer_pool_size = 512;
+    desc.logger.func = slog_func;
     sg_setup(&desc);
     simgui_desc_t simgui_desc = {};
     simgui_desc.no_default_font = true;
@@ -2860,7 +2864,9 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
         d.usage = SG_USAGE_DYNAMIC;
         d.size = MAP_BUFFER_SIZE;
         for (auto &buffer : g.map_buffers) {
+            d.type = SG_BUFFERTYPE_VERTEXBUFFER;
             buffer.vertex_buffer = sg_make_buffer(d);
+            d.type = SG_BUFFERTYPE_INDEXBUFFER;
             buffer.index_buffer = sg_make_buffer(d);
         }
     }
@@ -2892,6 +2898,7 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
         d.depth.compare = SG_COMPAREFUNC_GREATER;
         d.face_winding = SG_FACEWINDING_CCW;
         // d.primitive_type = SG_PRIMITIVETYPE_POINTS;
+        d.index_type = SG_INDEXTYPE_UINT32;
 
         { // Make the pipelines
             d.cull_mode = SG_CULLMODE_BACK;
@@ -4193,16 +4200,14 @@ static void frame(void *userdata) {
                 g.overall_center_needs_recalc = true;
             }
 
-            auto visit_mesh_buffers = [&] (MAP_Mesh &mesh, auto &&lambda) -> void {
-                for (MAP_Mesh_Part_Group &m : mesh.mesh_part_groups) {
-                    for (auto &b : g.map_buffers) {
-                        if (&b - g.map_buffers >= g.map_buffers_count) {
-                            break;
-                        }
-                        if (b.mesh_part_group_ptr == &m) {
-                            lambda(b);
-                            break;
-                        }
+            auto visit_mesh_buffer = [&] (MAP_Mesh &mesh, auto &&lambda) -> void {
+                for (auto &b : g.map_buffers) {
+                    if (&b - g.map_buffers >= g.map_buffers_count) {
+                        break;
+                    }
+                    if (b.mesh_ptr == &mesh) {
+                        lambda(b);
+                        break;
                     }
                 }
             };
@@ -4231,52 +4236,36 @@ static void frame(void *userdata) {
                     default: { assert(false); } break;
                 }
 
-                char b[512]; snprintf(b, sizeof b, "Group #%d", buf.mesh_part_group_index);
-                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_DefaultOpen;
-                if (buf.selected) {
-                    flags |= ImGuiTreeNodeFlags_Selected;
-                }
-                ImGui::Checkbox("", &buf.shown);
-                ImGui::SameLine(); bool ret = ImGui::TreeNodeEx(b, flags);
-                if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-                    bool orig = buf.selected;
-                    bool was_multi = false;
-                    if (!ImGui::GetIO().KeyShift) {
-                        was_multi = deselect_all_buffers_and_check_for_multi_select([&] (MAP_Geometry_Buffer &b) -> bool {
-                            return (&b != &buf && b.selected);
-                        });
-                    }
-                    buf.selected = was_multi || !orig;
-                    // @Note: Bleh.
-                    g.overall_center_needs_recalc = true;
-                }
-                if (!ret) {
-                    return;
-                }
-                defer {
-                    ImGui::TreePop();
-                };
-                
-                ImGui::Indent();
-                defer {
-                    ImGui::Unindent();
-                };
-
                 if (!g.map_must_update) { // @HACK !!!!!!!!!!!!!!!! @@@@@@ !!!!!!!!
                     auto &mesh = *buf.mesh_ptr;
-                    auto &mesh_part_group = *buf.mesh_part_group_ptr;
-                    int mat_index = mesh_part_group.material_index;
-                    ImGui::Text("Material Index:");
-                    if (ImGui::InputInt("###Material Index", &mat_index)) {
-                        int64_t mat_count = g.materials.count();
-                        while (mat_index < 0) {
-                            mat_index += (int)mat_count + (int)!!g.materials.empty();
+                    int mesh_part_group_index = 0; // @Lazy
+                    for (auto &mesh_part_group : mesh.mesh_part_groups) {
+                        char b[256]; snprintf(b, sizeof(b), "Mesh Part Group #%d", mesh_part_group_index);
+                        defer { mesh_part_group_index++; };
+                        if (!ImGui::TreeNodeEx(b, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_DefaultOpen)) {
+                            continue;
                         }
-                        if (!g.materials.empty()) {
-                            mat_index %= mat_count;
+                        ImGui::Indent();
+                        ImGui::PushID(&mesh_part_group);
+                        defer {
+                            ImGui::PopID();
+                            ImGui::Unindent();
+                            ImGui::TreePop();
+                        };
+
+                        int mat_index = mesh_part_group.material_index;
+                        ImGui::Text("Material Index:");
+                        if (ImGui::InputInt("###Material Index", &mat_index)) {
+                            int64_t mat_count = g.materials.count();
+                            while (mat_index < 0) {
+                                mat_index += (int)mat_count + (int)!!g.materials.empty();
+                            }
+                            if (!g.materials.empty()) {
+                                mat_index %= mat_count;
+                            }
+                            mesh_part_group.material_index = mat_index;
+                            g.staleify_map();
                         }
-                        mesh_part_group.material_index = mat_index;
-                        g.staleify_map();
                     }
                 }
             };
@@ -4300,7 +4289,7 @@ static void frame(void *userdata) {
                 bool any_selected = false;
                 for (auto &meshes : the_mesh_arrays) {
                     for (auto &mesh : *meshes) {
-                        visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                        visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
                             empty = false;
                             assert(b.geometry_ptr == &geo);
                             all_on &= b.shown;
@@ -4324,7 +4313,7 @@ static void frame(void *userdata) {
                 if (pressed) {
                     for (auto &meshes : the_mesh_arrays) {
                         for (auto &mesh : *meshes) {
-                            visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                            visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
                                 assert(b.geometry_ptr == &geo);
                                 b.shown = all_on;
                             });
@@ -4352,7 +4341,7 @@ static void frame(void *userdata) {
                             bool inside = false;
                             for (auto &meshes : the_mesh_arrays) {
                                 for (auto &mesh : *meshes) {
-                                    visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b2) {
+                                    visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b2) {
                                         if (&b2 == &b) {
                                             inside = true;
                                         }
@@ -4365,7 +4354,7 @@ static void frame(void *userdata) {
                     bool selected = was_multi || !orig;
                     for (auto &meshes : the_mesh_arrays) {
                         for (auto &mesh : *meshes) {
-                            visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                            visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
                                 b.selected = selected;
                             });
                         }
@@ -4404,7 +4393,7 @@ static void frame(void *userdata) {
                         bool any_on = false;
                         bool all_selected = true;
                         bool any_selected = false;
-                        visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                        visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
                             assert(b.geometry_ptr == &geo);
                             empty = false;
                             all_on &= b.shown;
@@ -4423,7 +4412,7 @@ static void frame(void *userdata) {
                             pressed = ImGui::Checkbox("###Mesh All Part Groups Visible", &all_on);
                         }
                         if (pressed) {
-                            visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                            visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
                                 assert(b.geometry_ptr == &geo);
                                 b.shown = all_on;
                             });
@@ -4444,7 +4433,7 @@ static void frame(void *userdata) {
                             if (!ImGui::GetIO().KeyShift) {
                                 was_multi = deselect_all_buffers_and_check_for_multi_select([&] (MAP_Geometry_Buffer &b) -> bool {
                                     bool inside = false;
-                                    visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b2) {
+                                    visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b2) {
                                         if (&b2 == &b) {
                                             inside = true;
                                         }
@@ -4453,7 +4442,7 @@ static void frame(void *userdata) {
                                 });
                             }
                             bool selected = was_multi || !orig;
-                            visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                            visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
                                 b.selected = selected;
                             });
                             // @Note: Bleh.
@@ -4462,7 +4451,7 @@ static void frame(void *userdata) {
                         if (!ret) { continue; }
                         defer { ImGui::TreePop(); };
 
-                        visit_mesh_buffers(mesh, [&] (MAP_Geometry_Buffer &b) {
+                        visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
                             assert(b.geometry_ptr == &geo);
                             ImGui::PushID(&b);
                             defer {
@@ -4587,42 +4576,15 @@ static void frame(void *userdata) {
                 if (move || scale || get_center) {
                     auto &mesh = *buf.mesh_ptr;
                     mesh.bbox_override = false;
-                    auto &mesh_part_group = *buf.mesh_part_group_ptr;
-                    auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
 
                     assert(The_Arena_Allocator::contains(&mesh, sizeof(mesh)));
-                    assert(The_Arena_Allocator::contains(&mesh_part_group, sizeof(mesh_part_group)));
-                    assert(The_Arena_Allocator::contains(&buf, sizeof(buf)));
-                    assert(The_Arena_Allocator::contains(buf.data.data, buf.data.count));
 
-                    int indices_index = 0;
-                    for (auto &&mpg : mesh.mesh_part_groups) {
-                        if (&mpg == &mesh_part_group) {
-                            break;
-                        }
-                        for (auto &part : mpg.mesh_parts) {
-                            indices_index += part.strip_length * part.strip_count;
-                        }
-                    }
-                    // Log("Starting at index %d...", indices_index);
-                    assert(indices_index < mesh.indices.count);
-                    int indices_to_process = 0;
-                    for (auto &part : mesh_part_group.mesh_parts) {
-                        indices_to_process += part.strip_length * part.strip_count;
-                    }
-                    // Log("We're going to process %d indices...", indices_to_process);
-                    assert(indices_index + indices_to_process <= mesh.indices.count);
-                    // Log("Scaling by %f, %f, %f", g.scaling_factor.X, g.scaling_factor.Y, g.scaling_factor.Z);
-                    static bool vert_referenced[65536];
-                    int unique_indices_count = 0;
-                    memset(vert_referenced, 0, sizeof(vert_referenced));
+                    int vertices_count = 0;
                     hmm_vec3 center = {};
-                    for (int i = 0; i < indices_to_process; i++) {
-                        int index = mesh.indices.data[indices_index + i];
-                        if (!vert_referenced[index]) {
-                            vert_referenced[index] = true;
-                            unique_indices_count++;
-                            float (*position)[3] = (float(*)[3])(buf.data.data + buf.bytes_per_vertex * index);
+                    for (auto &vertex_buffer : mesh.vertex_buffers) {
+                        for (int i = 0; i < vertex_buffer.num_vertices; i++) {
+                            vertices_count++;
+                            float (*position)[3] = (float(*)[3])(vertex_buffer.data.data + vertex_buffer.bytes_per_vertex * i);
                             center.X += (*position)[0];
                             center.Y += (*position)[1];
                             center.Z += (*position)[2];
@@ -4646,7 +4608,7 @@ static void frame(void *userdata) {
                     }
                     // Log("Moved/Scaled!");
                     if (get_center) {
-                        center /= (float)unique_indices_count + !unique_indices_count;
+                        center /= (float)vertices_count + !vertices_count;
                         g.overall_center += center;
                         overall_center_sum += 1;
                     } else {
@@ -4654,78 +4616,39 @@ static void frame(void *userdata) {
                     }
                 }
                 if (duplicate) {
-                    auto &mesh_part_group = *buf.mesh_part_group_ptr;
                     auto &mesh = *buf.mesh_ptr;
-                    auto &buf = mesh.vertex_buffers[mesh_part_group.section_index];
-                    int indices_index = 0;
-                    for (auto &&mpg : mesh.mesh_part_groups) {
-                        if (&mpg == &mesh_part_group) {
-                            break;
-                        }
-                        for (auto &part : mpg.mesh_parts) {
-                            indices_index += part.strip_length * part.strip_count;
-                        }
-                    }
-                    // Log("Starting at index %d...", indices_index);
-                    assert(indices_index < mesh.indices.count);
-                    int indices_to_process = 0;
-                    for (auto &part : mesh_part_group.mesh_parts) {
-                        indices_to_process += part.strip_length * part.strip_count;
-                    }
-                    // Log("We're going to process %d indices...", indices_to_process);
-                    assert(indices_index + indices_to_process <= mesh.indices.count);
 
-                    hmm_vec3 center = {};
+                    MAP_Mesh &new_mesh = *meshes.push();
+                    new_mesh.bbox_override = false;
+                    new_mesh.indices.resize(mesh.indices.count);
+                    assert(new_mesh.indices.data);
+                    memcpy(new_mesh.indices.data, mesh.indices.data, mesh.indices.count * sizeof(mesh.indices[0]));
 
-                    // @Note: I think this is a GGGAAAARRRRRBBBBBAAAGGGEE way to dupe a mesh.
-                    //        Yikes! It would be nice to have a better way to do so later.
-                    MAP_Mesh new_mesh = {};
-                    new_mesh.indices.reserve(indices_to_process);
-                    auto &new_vertex_buffer = *new_mesh.vertex_buffers.push();
-                    new_vertex_buffer.bytes_per_vertex = buf.bytes_per_vertex;
-                    new_vertex_buffer.data.resize(indices_to_process * buf.bytes_per_vertex);
-                    assert(new_vertex_buffer.data.data);
-
-                    for (int i = 0; i < indices_to_process; i++) {
-                        int vert_index = mesh.indices[indices_index + i];
-                        switch (buf.bytes_per_vertex) {
-                            case 0x14: {
-                                auto verts_in = (PH2MAP__Vertex14 *)buf.data.data;
-                                auto verts_out = (PH2MAP__Vertex14 *)new_vertex_buffer.data.data;
-                                verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
-                            } break;
-                            case 0x18: {
-                                auto verts_in = (PH2MAP__Vertex18 *)buf.data.data;
-                                auto verts_out = (PH2MAP__Vertex18 *)new_vertex_buffer.data.data;
-                                verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
-                            } break;
-                            case 0x20: {
-                                auto verts_in = (PH2MAP__Vertex20 *)buf.data.data;
-                                auto verts_out = (PH2MAP__Vertex20 *)new_vertex_buffer.data.data;
-                                verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
-                            } break;
-                            case 0x24: {
-                                auto verts_in = (PH2MAP__Vertex24 *)buf.data.data;
-                                auto verts_out = (PH2MAP__Vertex24 *)new_vertex_buffer.data.data;
-                                verts_out[new_vertex_buffer.num_vertices] = verts_in[vert_index];
-                            } break;
-                        }
-                        new_mesh.indices.push((uint16_t)(new_vertex_buffer.num_vertices));
-                        new_vertex_buffer.num_vertices++;
+                    new_mesh.vertex_buffers.reserve(mesh.vertex_buffers.count);
+                    assert(new_mesh.vertex_buffers.data);
+                    for (auto &vertex_buffer : mesh.vertex_buffers) {
+                        MAP_Mesh_Vertex_Buffer &new_vertex_buffer = *new_mesh.vertex_buffers.push();
+                        assert(&new_vertex_buffer);
+                        new_vertex_buffer.bytes_per_vertex = vertex_buffer.bytes_per_vertex;
+                        new_vertex_buffer.num_vertices = vertex_buffer.num_vertices;
+                        int n = vertex_buffer.num_vertices * vertex_buffer.bytes_per_vertex;
+                        assert(n == vertex_buffer.data.count);
+                        new_vertex_buffer.data.resize(n);
+                        assert(new_vertex_buffer.data.data);
+                        memcpy(new_vertex_buffer.data.data, vertex_buffer.data.data, n);
                     }
-                    assert(new_vertex_buffer.num_vertices == indices_to_process);
-                    auto &new_group = *new_mesh.mesh_part_groups.push();
-                    new_group.material_index = mesh_part_group.material_index;
-                    for (auto &part : mesh_part_group.mesh_parts) {
-                        new_group.mesh_parts.push(part);
-                    }
-                    auto new_pushed_mesh = meshes.push(new_mesh);
 
-                    assert(The_Arena_Allocator::contains(&new_vertex_buffer, sizeof(new_vertex_buffer)));
-                    assert(The_Arena_Allocator::contains(new_vertex_buffer.data.data, new_vertex_buffer.data.count));
-                    assert(The_Arena_Allocator::contains(new_mesh.indices.data, new_mesh.indices.count));
-                    assert(The_Arena_Allocator::contains(&new_group, sizeof(new_group)));
-                    assert(The_Arena_Allocator::contains(new_pushed_mesh, sizeof(*new_pushed_mesh)));
+                    for (auto &mpg : mesh.mesh_part_groups) {
+                        MAP_Mesh_Part_Group &new_mpg = *new_mesh.mesh_part_groups.push();
+                        assert(&new_mpg);
+                        new_mpg.material_index = mpg.material_index;
+                        new_mpg.section_index = mpg.section_index;
+                        new_mpg.mesh_parts.resize(mpg.mesh_parts.count);
+                        assert(new_mpg.mesh_parts.data);
+                        memcpy(new_mpg.mesh_parts.data, mpg.mesh_parts.data, mpg.mesh_parts.count * sizeof(mpg.mesh_parts[0]));
+                    }
+
+                    assert(The_Arena_Allocator::contains(&new_mesh, sizeof(new_mesh)));
 
                     assert(!g.geometries.empty());
                     g.staleify_map();
@@ -4768,32 +4691,10 @@ static void frame(void *userdata) {
                 g.displacement = {};
             }
 
-            auto clear_out_mesh_part_group_for_deletion = [&] (MAP_Geometry_Buffer &buf) {
+            auto clear_out_mesh_for_deletion = [&] (MAP_Geometry_Buffer &buf) {
                 auto &meshes = get_meshes(buf);
                 MAP_Mesh &mesh = *buf.mesh_ptr;
-                MAP_Mesh_Part_Group &mesh_part_group = *buf.mesh_part_group_ptr;
-                int indices_index = 0;
-                for (auto &&mpg : mesh.mesh_part_groups) {
-                    if (&mpg == &mesh_part_group) {
-                        break;
-                    }
-                    for (auto &part : mpg.mesh_parts) {
-                        indices_index += part.strip_length * part.strip_count;
-                    }
-                }
-                // Log("Starting at index %d...", indices_index);
-                assert(indices_index < mesh.indices.count);
-                int indices_to_process = 0;
-                for (auto &part : mesh_part_group.mesh_parts) {
-                    indices_to_process += part.strip_length * part.strip_count;
-                }
-                // Log("We're going to process %d indices...", indices_to_process);
-                assert(indices_index + indices_to_process <= mesh.indices.count);
-                mesh.indices.remove_ordered(indices_index, indices_to_process);
-                mesh_part_group.mesh_parts.release();
-                Node node = (Node)mesh_part_group;
-                mesh_part_group = {};
-                memcpy(&mesh_part_group, &node, sizeof(node));
+                mesh.release(); // @Lazy.
             };
             if (del) {
                 for (auto &buf : g.map_buffers) {
@@ -4801,33 +4702,14 @@ static void frame(void *userdata) {
                         break;
                     }
                     if (buf.selected) {
-                        clear_out_mesh_part_group_for_deletion(buf);
+                        clear_out_mesh_for_deletion(buf);
                         buf.selected = false;
                     }
                 }
                 g.staleify_map();
                 g.overall_center_needs_recalc = true;
             }
-            auto prune_empty_mesh_part_groups = [&] (MAP_Mesh &mesh) {
-                for (auto mpg = mesh.mesh_part_groups.begin(); mpg != mesh.mesh_part_groups.end();) {
-                    auto next = mpg.node->next;
-                    if ((*mpg).mesh_parts.count <= 0) {
-                        mpg->release();
-                        mesh.mesh_part_groups.remove_ordered(mpg.node);
-                    }
-                    mpg.node = (MAP_Mesh_Part_Group *)next;
-                }
-            };
             for (auto &geo : g.geometries) {
-                for (auto &mesh : geo.opaque_meshes) {
-                    prune_empty_mesh_part_groups(mesh);
-                }
-                for (auto &mesh : geo.transparent_meshes) {
-                    prune_empty_mesh_part_groups(mesh);
-                }
-                for (auto &mesh : geo.decal_meshes) {
-                    prune_empty_mesh_part_groups(mesh);
-                }
                 auto prune_empty_meshes = [&] (LinkedList<MAP_Mesh, The_Arena_Allocator> &meshes) {
                     for (auto mesh = meshes.begin(); mesh != meshes.end();) {
                         auto next = mesh.node->next;
@@ -5589,22 +5471,37 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 }
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
                 sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
-                sg_image tex = g.missing_texture;
-                if (buf.material_ptr) {
-                    assert(buf.material_ptr->texture_id >= 0);
-                    assert(buf.material_ptr->texture_id < 65536);
-                    auto map_tex = map_get_texture_by_id(g, buf.material_ptr->texture_id);
-                    if (map_tex) {
-                        assert(map_tex->id);
-                        tex = *map_tex;
+                MAP_Mesh &mesh = *buf.mesh_ptr;
+                int vertices_start = 0;
+                for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
+                    sg_image tex = g.missing_texture;
+                    assert(mpg.material_index >= 0);
+                    assert(mpg.material_index < 65536);
+                    MAP_Material *material = g.materials.at_index(mpg.material_index);
+                    if (material) {
+                        assert(material->texture_id >= 0);
+                        assert(material->texture_id < 65536);
+                        auto map_tex = map_get_texture_by_id(g, material->texture_id);
+                        if (map_tex) {
+                            assert(map_tex->id);
+                            tex = *map_tex;
+                        }
                     }
-                }
-                {
-                    sg_bindings b = {};
-                    b.vertex_buffers[0] = buf.vertex_buffer;
-                    b.fs_images[0] = tex;
-                    sg_apply_bindings(b);
-                    sg_draw(0, (int)buf.vertices.count, 1);
+                    int num_vertices = 0;
+                    for (MAP_Mesh_Part &mesh_part : mpg.mesh_parts) {
+                        assert(mesh_part.strip_length >= 3);
+                        num_vertices += mesh_part.strip_count * 3 * (mesh_part.strip_length - 2);
+                    }
+                    {
+                        sg_bindings b = {};
+                        b.vertex_buffers[0] = buf.vertex_buffer;
+                        b.index_buffer = buf.index_buffer;
+                        b.fs_images[0] = tex;
+                        sg_apply_bindings(b);
+                        // @Todo: draw indexed with an index start offset of vertices_start.
+                        sg_draw(vertices_start, (int)num_vertices, 1);
+                    }
+                    vertices_start += num_vertices;
                 }
             }
         }
