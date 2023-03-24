@@ -474,6 +474,7 @@ struct LinkedList {
             }
             (Allocator::free)(sentinel, sizeof(Node));
         }
+        *this = {};
     }
     T *push(T value = {}) {
         if (!sentinel) {
@@ -2980,6 +2981,10 @@ static void event(const sapp_event *e_, void *userdata) {
 
     G &g = *(G *)userdata;
     const sapp_event &e = *e_;
+    if (e.type == SAPP_EVENTTYPE_QUIT_REQUESTED) {
+        // @Todo: check for unsaved changes and prompt to make sure the user wants to discard them.
+        // sapp_cancel_quit();
+    }
     if (e.type == SAPP_EVENTTYPE_UNFOCUSED) {
         g.control_state = ControlState::Normal;
     }
