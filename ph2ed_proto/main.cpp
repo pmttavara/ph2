@@ -138,6 +138,8 @@ void MsgBox_(const char *title, int flag, const char *msg, ...) {
 
 #include "HandmadeMath.h"
 
+#include "meshoptimizer.h"
+
 #define PH2CLD_IMPLEMENTATION
 #include "../cld/ph2_cld.h"
 #include <io.h> // @Debug @Temporary @Remove
@@ -1374,6 +1376,7 @@ static int map_load_mesh_group_or_decal_group(LinkedList<MAP_Mesh, The_Arena_All
                 vertex_section_header.bytes_per_vertex == 0x24);
             assert(vertex_section_header.section_length > 0);
             assert(vertex_section_header.section_length % vertex_section_header.bytes_per_vertex == 0);
+            assert(vertex_section_header.section_length / vertex_section_header.bytes_per_vertex < 65536);
 
             MAP_Mesh_Vertex_Buffer vertex_buffer = {};
             defer {
@@ -3700,13 +3703,12 @@ static void frame(void *userdata) {
                     fclose(f);
                 };
 
-                Array<hmm_vec3> positions = {}; defer { positions.release(); };
-                Array<hmm_vec2> uvs = {}; defer { uvs.release(); };
-                Array<hmm_vec3> normals = {}; defer { normals.release(); };
-                // Array<uint32_t> colours = {}; defer { colours.release(); };
-                Array<PH2MAP__Vertex20> verts = {}; defer { verts.release(); }; // @Errdefer
+                Array<hmm_vec3> obj_positions = {}; defer { obj_positions.release(); };
+                Array<hmm_vec2> obj_uvs = {}; defer { obj_uvs.release(); };
+                Array<hmm_vec3> obj_normals = {}; defer { obj_normals.release(); };
+                Array<uint32_t> obj_colours = {}; defer { obj_colours.release(); };
 
-                Array<int> unstripped_indices = {}; defer { unstripped_indices.release(); };
+                Array<PH2MAP__Vertex20> unstripped_verts = {}; defer { unstripped_verts.release(); };
 
                 char b[1024];
                 hmm_vec3 center = {};
@@ -3719,7 +3721,7 @@ static void frame(void *userdata) {
                         // Position
                         assert(matches == 4);
                         // Log("Position: (%s, %s, %s)", args[0], args[1], args[2]);
-                        auto &pos = *positions.push();
+                        auto &pos = *obj_positions.push();
                         pos.X = (float)atof(args[0]);
                         pos.Y = (float)atof(args[1]);
                         pos.Z = (float)atof(args[2]);
@@ -3728,14 +3730,14 @@ static void frame(void *userdata) {
                         // UV
                         assert(matches == 3);
                         // Log("UV: (%s, %s)", args[0], args[1]);
-                        auto &uv = *uvs.push();
+                        auto &uv = *obj_uvs.push();
                         uv.X = (float)atof(args[0]);
                         uv.Y = (float)atof(args[1]);
                     } else if (strcmp("vn", directive) == 0) {
                         // Normal
                         assert(matches == 4);
                         // Log("Normal: (%s, %s, %s)", args[0], args[1], args[2]);
-                        auto &normal = *normals.push();
+                        auto &normal = *obj_normals.push();
                         normal.X = (float)atof(args[0]);
                         normal.Y = (float)atof(args[1]);
                         normal.Z = (float)atof(args[2]);
@@ -3743,7 +3745,7 @@ static void frame(void *userdata) {
                         // Triangle/Quad
                         assert(matches == 4 || matches == 5);
                         // Log("Triangle/Quad: (%s, %s, %s%s%s)", args[0], args[1], args[2], matches == 5 ? ", " : "", matches == 5 ? args[3] : "");
-                        int indices_to_push[4] = {};
+                        PH2MAP__Vertex20 verts_to_push[4] = {};
                         for (int i = 0; i < matches - 1; i++) {
                             PH2MAP__Vertex20 vert = {};
                             int index_pos = 0;
@@ -3752,47 +3754,43 @@ static void frame(void *userdata) {
                             int sub_matches = sscanf(args[i], "%d/%d/%d", &index_pos, &index_uv, &index_normal);
                             if (sub_matches >= 1) { // %d[...]
                                 assert(index_pos > 0);
-                                vert.position[0] = positions[index_pos - 1].X;
-                                vert.position[1] = positions[index_pos - 1].Y;
-                                vert.position[2] = positions[index_pos - 1].Z;
+                                vert.position[0] = obj_positions[index_pos - 1].X;
+                                vert.position[1] = obj_positions[index_pos - 1].Y;
+                                vert.position[2] = obj_positions[index_pos - 1].Z;
                             } else {
                                 assert(false); // @Lazy
                             }
                             if (sub_matches == 3) { // %d/%d/%d
                                 assert(index_uv > 0);
                                 assert(index_normal > 0);
-                                vert.uv[0] = uvs[index_uv - 1].X;
-                                vert.uv[1] = uvs[index_uv - 1].Y;
-                                vert.normal[0] = normals[index_normal - 1].X;
-                                vert.normal[1] = normals[index_normal - 1].Y;
-                                vert.normal[2] = normals[index_normal - 1].Z;
+                                vert.uv[0] = obj_uvs[index_uv - 1].X;
+                                vert.uv[1] = obj_uvs[index_uv - 1].Y;
+                                vert.normal[0] = obj_normals[index_normal - 1].X;
+                                vert.normal[1] = obj_normals[index_normal - 1].Y;
+                                vert.normal[2] = obj_normals[index_normal - 1].Z;
                             } else if (sub_matches == 2) { // %d/%d
                                 assert(index_uv > 0);
-                                vert.uv[0] = uvs[index_uv - 1].X;
-                                vert.uv[1] = uvs[index_uv - 1].Y;
+                                vert.uv[0] = obj_uvs[index_uv - 1].X;
+                                vert.uv[1] = obj_uvs[index_uv - 1].Y;
                             } else if (sub_matches == 1) { // %d[...]
                                 int dummy = 0;
                                 sub_matches = sscanf(args[i], "%d//%d", &dummy, &index_normal);
                                 assert(dummy == index_pos);
                                 if (sub_matches == 2) { // %d//%d
                                     assert(index_normal > 0);
-                                    vert.normal[0] = normals[index_normal - 1].X;
-                                    vert.normal[1] = normals[index_normal - 1].Y;
-                                    vert.normal[2] = normals[index_normal - 1].Z;
+                                    vert.normal[0] = obj_normals[index_normal - 1].X;
+                                    vert.normal[1] = obj_normals[index_normal - 1].Y;
+                                    vert.normal[2] = obj_normals[index_normal - 1].Z;
                                 } else {
                                     assert(false);
                                 }
                             }
-                            verts.push(vert);
-                            indices_to_push[i] = (int)verts.count - 1;
+                            verts_to_push[i] = vert;
                         }
                         auto push_wound = [&] (int a, int b, int c) {
-                            int idx_a = indices_to_push[a];
-                            int idx_b = indices_to_push[b];
-                            int idx_c = indices_to_push[c];
-                            PH2MAP__Vertex20 vert_a = verts[idx_a];
-                            PH2MAP__Vertex20 vert_b = verts[idx_b];
-                            PH2MAP__Vertex20 vert_c = verts[idx_c];
+                            PH2MAP__Vertex20 vert_a = verts_to_push[a];
+                            PH2MAP__Vertex20 vert_b = verts_to_push[b];
+                            PH2MAP__Vertex20 vert_c = verts_to_push[c];
                             // Infer face winding by comparing cross product to normal
                             hmm_vec3 v0 = { vert_a.position[0], vert_a.position[1], vert_a.position[2] };
                             hmm_vec3 v1 = { vert_b.position[0], vert_b.position[1], vert_b.position[2] };
@@ -3810,13 +3808,13 @@ static void frame(void *userdata) {
                             bool is_wound_right = (dot >= 0);
 
                             if (is_wound_right) {
-                                unstripped_indices.push(idx_b);
-                                unstripped_indices.push(idx_a);
-                                unstripped_indices.push(idx_c);
+                                unstripped_verts.push(vert_b);
+                                unstripped_verts.push(vert_a);
+                                unstripped_verts.push(vert_c);
                             } else {
-                                unstripped_indices.push(idx_b);
-                                unstripped_indices.push(idx_a);
-                                unstripped_indices.push(idx_c);
+                                unstripped_verts.push(vert_b);
+                                unstripped_verts.push(vert_a);
+                                unstripped_verts.push(vert_c);
                             }
                         };
                         push_wound(0, 1, 2);
@@ -3826,75 +3824,87 @@ static void frame(void *userdata) {
                     }
                     memset(b, 0, sizeof b);
                 }
-                // Log("We got %lld positions, %lld uvs, %lld normals.", positions.count, uvs.count, normals.count);
-                // Log("We built %lld vertices.", verts.count);
-                // Log("We built %lld stripped indices.", stripped_indices.count);
-                MAP_Mesh mesh = {}; defer { mesh.release(); }; // @Errdefer
 
-                static PH2MAP__Vertex20 mesh_verts[65536] = {};
-                int mesh_verts_count = 0;
-
-                auto flush_mesh = [&] { // @Todo: return bool
-                    MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
-                    buf.data.resize(mesh_verts_count * sizeof(mesh_verts[0]));
-                    assert(buf.data.data);
-                    buf.num_vertices = mesh_verts_count;
-                    buf.bytes_per_vertex = sizeof(mesh_verts[0]);
-                    memcpy(buf.data.data, mesh_verts, mesh_verts_count * sizeof(mesh_verts[0]));
-
-                    MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
-                    group.material_index = 0; // @Todo
-                    group.section_index = 0;
-                    MAP_Mesh_Part &part = *group.mesh_parts.push();
-                    part.strip_count = 1;
-                    part.strip_length = (uint16_t)mesh.indices.count;
-                    assert((*mesh.mesh_part_groups.begin()).mesh_parts[0].strip_count > 0);
-                    assert((*mesh.mesh_part_groups.begin()).mesh_parts[0].strip_length > 0);
-
-                    assert(!g.geometries.empty());
-                    ((MAP_Geometry *)g.geometries.sentinel->prev)->opaque_meshes.push(mesh);
-                    mesh = {};
-                    mesh_verts_count = 0;
-                };
-
-                for (int i = 0; i < unstripped_indices.count; i += 3) {
-                    mesh_verts[mesh_verts_count + 0] = verts[unstripped_indices[i + 0]];
-                    mesh_verts[mesh_verts_count + 1] = verts[unstripped_indices[i + 1]];
-                    mesh_verts[mesh_verts_count + 2] = verts[unstripped_indices[i + 2]];
-                    assert(mesh_verts_count + 0 >= 0);
-                    assert(mesh_verts_count + 2 <= 65535);
-                    mesh.indices.push((uint16_t)(mesh_verts_count + 0));
-                    mesh.indices.push((uint16_t)(mesh_verts_count + 0));
-                    mesh.indices.push((uint16_t)(mesh_verts_count + 1));
-                    mesh.indices.push((uint16_t)(mesh_verts_count + 2));
-                    mesh.indices.push((uint16_t)(mesh_verts_count + 2));
-                    mesh.indices.push((uint16_t)(mesh_verts_count + 2));
-                    mesh_verts_count += 3;
-                    if (mesh_verts_count >= 65536 - 2 ||
-                        mesh.indices.count >= 65536 - 5) {
-                        flush_mesh();
-                        assert(mesh_verts_count == 0);
-                        assert(mesh.indices.count == 0);
-                    }
-                }
-                if (mesh_verts_count > 0) {
-                    assert(mesh.indices.count > 0);
-                    flush_mesh();
-                }
-                assert(mesh_verts_count == 0);
-                assert(mesh.indices.count == 0);
-
-                g.staleify_map();
-
-                assert(positions.count);
-                if (positions.count) {
-                    center /= (float)positions.count;
+                assert(obj_positions.count);
+                if (obj_positions.count) {
+                    center /= (float)obj_positions.count;
                     g.cam_pos = center;
                     g.cam_pos.X *= 1 * SCALE;
                     g.cam_pos.Y *= -1 * SCALE;
                     g.cam_pos.Z *= -1 * SCALE;
                 }
-                
+
+                Log("We got %lld positions, %lld uvs, %lld normals.", obj_positions.count, obj_uvs.count, obj_normals.count);
+                Log("We built %lld unstripped vertices.", unstripped_verts.count);
+
+                int num_meshes_to_add = ((int)unstripped_verts.count + 65534) / 65535;
+                assert(num_meshes_to_add >= 1);
+
+                for (int i = 0; i < num_meshes_to_add; ++i) {
+
+                    int input_vertex_start = (i * 65535);
+                    int input_vertex_count = i < num_meshes_to_add - 1 ? 65535 : (unstripped_verts.count % 65535);
+
+                    const PH2MAP__Vertex20 *input_verts_data = &unstripped_verts[input_vertex_start];
+
+                    size_t index_count = input_vertex_count;
+                    Array<unsigned int> remap = {}; defer { remap.release(); };
+                    remap.resize(index_count); // allocate temporary memory for the remap table
+                    size_t vertex_count = meshopt_generateVertexRemap(&remap[0], NULL, index_count, &input_verts_data[0], index_count, sizeof(input_verts_data[0]));
+
+                    Array<unsigned int> list_indices = {}; defer { list_indices.release(); };
+                    Array<PH2MAP__Vertex20> vertices = {}; defer { vertices.release(); };
+
+                    list_indices.resize(index_count);
+                    vertices.resize(vertex_count);
+
+                    meshopt_remapIndexBuffer(list_indices.data, NULL, index_count, &remap[0]);
+                    meshopt_remapVertexBuffer(vertices.data, &input_verts_data[0], index_count, sizeof(input_verts_data[0]), &remap[0]);
+
+                    meshopt_optimizeVertexCacheStrip(list_indices.data, list_indices.data, index_count, vertex_count);
+
+                    meshopt_optimizeOverdraw(list_indices.data, list_indices.data, index_count, &vertices[0].position[0], vertex_count, sizeof(vertices[0]), 1.05f);
+
+                    meshopt_optimizeVertexFetch(vertices.data, list_indices.data, index_count, vertices.data, vertex_count, sizeof(vertices[0]));
+
+                    Array<unsigned int> strip_indices = {}; defer { strip_indices.release(); };
+                    strip_indices.resize(meshopt_stripifyBound(index_count));
+                    unsigned int restart_index = 0; // ~0u;
+                    size_t strip_size = meshopt_stripify(&strip_indices[0], list_indices.data, index_count, vertex_count, restart_index);
+
+                    strip_indices.resize(strip_size);
+
+                    assert(!g.geometries.empty());
+                    auto &geo = *(MAP_Geometry *)g.geometries.sentinel->prev;
+
+                    MAP_Mesh &mesh = *geo.opaque_meshes.push();
+
+                    MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
+                    buf.num_vertices = (int)vertices.count;
+                    buf.bytes_per_vertex = sizeof(vertices[0]);
+                    buf.data.resize(vertices.count * sizeof(vertices[0]));
+                    assert(buf.data.data);
+                    memcpy(buf.data.data, vertices.data, vertices.count * sizeof(vertices[0]));
+
+                    mesh.indices.resize(strip_indices.count);
+                    assert(mesh.indices.data);
+                    for (int i = 0; i < strip_indices.count; ++i) {
+                        assert(strip_indices.data[i] < 65536);
+                        mesh.indices.data[i] = (uint16_t)strip_indices.data[i];
+                    }
+
+                    MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
+                    group.material_index = 0;
+                    group.section_index = 0;
+
+                    MAP_Mesh_Part &part = *group.mesh_parts.push();
+                    part.strip_count = 1;
+                    part.strip_length = (int)mesh.indices.count;
+
+                }
+
+                g.staleify_map();
+
                 MsgInfo("OBJ Import", "Imported!");
             } else {
                 MsgErr("OBJ Load Error", "Couldn't open file \"%s\"!!", obj_file_buf);

@@ -50,3 +50,19 @@ SOKOL_API_IMPL sg_context_desc sapp_sgcontext(void) {
 }
 
 #include "zip.c"
+
+// #include "meshoptimizer/allocator.cpp"
+// #include "meshoptimizer/clusterizer.cpp"
+// #include "meshoptimizer/indexcodec.cpp"
+#include "meshoptimizer/indexgenerator.cpp"
+// #include "meshoptimizer/overdrawanalyzer.cpp"
+#include "meshoptimizer/overdrawoptimizer.cpp"
+// #include "meshoptimizer/simplifier.cpp"
+// #include "meshoptimizer/spatialorder.cpp"
+#include "meshoptimizer/stripifier.cpp"
+// #include "meshoptimizer/vcacheanalyzer.cpp"
+#include "meshoptimizer/vcacheoptimizer.cpp"
+// #include "meshoptimizer/vertexcodec.cpp"
+// #include "meshoptimizer/vertexfilter.cpp"
+// #include "meshoptimizer/vfetchanalyzer.cpp"
+#include "meshoptimizer/vfetchoptimizer.cpp"
