@@ -4668,9 +4668,6 @@ static void frame(void *userdata) {
                 }
             };
             for (auto &buf : g.map_buffers) {
-                if (&buf - g.map_buffers >= g.map_buffers_count) {
-                    break;
-                }
                 if (buf.selected) {
                     process_mesh(buf, false, false, false, g.overall_center_needs_recalc);
                 }
@@ -4679,9 +4676,6 @@ static void frame(void *userdata) {
                 g.overall_center /= (float)overall_center_sum;
             }
             for (auto &buf : g.map_buffers) {
-                if (&buf - g.map_buffers >= g.map_buffers_count) {
-                    break;
-                }
                 if (buf.selected) {
                     process_mesh(buf, duplicate, move, scale, false);
                 }
