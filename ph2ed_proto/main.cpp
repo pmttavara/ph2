@@ -2442,90 +2442,48 @@ static void map_upload(G &g) {
     }
     g.map_textures.clear();
     for (auto &geo : g.geometries) {
-        // Log("about to upload %d map meshes", (int)geo.opaque_meshes.count);
-        for (MAP_Mesh &mesh : geo.opaque_meshes) {
-            int indices_index = 0;
+        LinkedList<MAP_Mesh, The_Arena_Allocator> *lists[3] = { &geo.opaque_meshes, &geo.transparent_meshes, &geo.decal_meshes };
+        MAP_Geometry_Buffer_Source sources[countof(lists)] = { MAP_Geometry_Buffer_Source::Opaque, MAP_Geometry_Buffer_Source::Transparent, MAP_Geometry_Buffer_Source::Decal };
+        for (int i = 0; i < countof(lists); ++i) {
+            auto &meshes = *lists[i];
+            auto source = sources[i];
+            for (MAP_Mesh &mesh : meshes) {
+                int indices_index = 0;
 
-            // for (MAP_Mesh_Vertex_Buffer &vertex_buffer : mesh.vertex_buffers) {
-            //     assert(g.map_buffers_count < g.map_buffers_max);
-            //     auto &map_buffer = g.map_buffers[g.map_buffers_count++];
-            //     map_buffer.source = MAP_Geometry_Buffer_Source::Opaque;
-            //     for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-            //         map_buffer.vertices.clear();
-            //     }
-            //     assert(map_buffer.vertices.count % 3 == 0);
-            //     map_buffer.id = geo.id;
-            //     map_buffer.material_ptr = g.materials.begin().node; // @Temporary @Todo
-            //     map_buffer.subfile_index = geo.subfile_index;
-            //     map_buffer.mesh_ptr = &mesh;
-            //     map_buffer.mesh_part_group_index = 0;
-            //     map_buffer.mesh_part_group_ptr = mesh.mesh_part_groups.begin().node; // @Temporary @Todo
-            // }
+                // for (MAP_Mesh_Vertex_Buffer &vertex_buffer : mesh.vertex_buffers) {
+                //     assert(g.map_buffers_count < g.map_buffers_max);
+                //     auto &map_buffer = g.map_buffers[g.map_buffers_count++];
+                //     map_buffer.source = source;
+                //     for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
+                //         map_buffer.vertices.clear();
+                //     }
+                //     assert(map_buffer.vertices.count % 3 == 0);
+                //     map_buffer.id = geo.id;
+                //     map_buffer.material_ptr = g.materials.begin().node; // @Temporary @Todo
+                //     map_buffer.subfile_index = geo.subfile_index;
+                //     map_buffer.mesh_ptr = &mesh;
+                //     map_buffer.mesh_part_group_index = 0;
+                //     map_buffer.mesh_part_group_ptr = mesh.mesh_part_groups.begin().node; // @Temporary @Todo
+                // }
 
-            // Log("about to upload %d mesh part groups", (int)mesh.mesh_part_groups.count);
-            int mesh_part_group_index = 0; // @Lazy
-            for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-                assert(g.map_buffers_count < g.map_buffers_max);
-                auto &map_buffer = g.map_buffers[g.map_buffers_count++];
-                map_buffer.source = MAP_Geometry_Buffer_Source::Opaque;
-                map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
-                assert(map_buffer.vertices.count % 3 == 0);
-                map_buffer.id = geo.id;
-                assert(mesh_part_group.material_index >= 0);
-                assert(mesh_part_group.material_index < 65536);
-                map_buffer.material_ptr = g.materials.at_index(mesh_part_group.material_index);
+                int mesh_part_group_index = 0; // @Lazy
+                for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
+                    assert(g.map_buffers_count < g.map_buffers_max);
+                    auto &map_buffer = g.map_buffers[g.map_buffers_count++];
+                    map_buffer.source = source;
+                    map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
+                    assert(map_buffer.vertices.count % 3 == 0);
+                    map_buffer.id = geo.id;
+                    assert(mesh_part_group.material_index >= 0);
+                    assert(mesh_part_group.material_index < 65536);
+                    map_buffer.material_ptr = g.materials.at_index(mesh_part_group.material_index);
 
-                map_buffer.subfile_index = geo.subfile_index;
-                map_buffer.geometry_ptr = &geo;
-                map_buffer.mesh_ptr = &mesh;
-                map_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
-                map_buffer.mesh_part_group_ptr = &mesh_part_group;
-            }
-        }
-    }
-    for (auto &geo : g.geometries) {
-        for (MAP_Mesh &mesh : geo.transparent_meshes) {
-            int indices_index = 0;
-            int mesh_part_group_index = 0; // @Lazy
-            for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-                assert(g.map_buffers_count < g.map_buffers_max);
-                auto &map_buffer = g.map_buffers[g.map_buffers_count++];
-                map_buffer.source = MAP_Geometry_Buffer_Source::Transparent;
-                map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
-                assert(map_buffer.vertices.count % 3 == 0);
-                map_buffer.id = geo.id;
-                assert(mesh_part_group.material_index >= 0);
-                assert(mesh_part_group.material_index < 65536);
-                map_buffer.material_ptr = g.materials.at_index(mesh_part_group.material_index);
-
-                map_buffer.subfile_index = geo.subfile_index;
-                map_buffer.geometry_ptr = &geo;
-                map_buffer.mesh_ptr = &mesh;
-                map_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
-                map_buffer.mesh_part_group_ptr = &mesh_part_group;
-            }
-        }
-    }
-    for (auto &geo : g.geometries) {
-        for (MAP_Mesh &mesh : geo.decal_meshes) {
-            int indices_index = 0;
-            int mesh_part_group_index = 0; // @Lazy
-            for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-                assert(g.map_buffers_count < g.map_buffers_max);
-                auto &map_buffer = g.map_buffers[g.map_buffers_count++];
-                map_buffer.source = MAP_Geometry_Buffer_Source::Decal;
-                map_destrip_mesh_part_group(map_buffer.vertices, indices_index, mesh, mesh_part_group);
-                assert(map_buffer.vertices.count % 3 == 0);
-                map_buffer.id = geo.id;
-                assert(mesh_part_group.material_index >= 0);
-                assert(mesh_part_group.material_index < 65536);
-                map_buffer.material_ptr = g.materials.at_index(mesh_part_group.material_index);
-
-                map_buffer.subfile_index = geo.subfile_index;
-                map_buffer.geometry_ptr = &geo;
-                map_buffer.mesh_ptr = &mesh;
-                map_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
-                map_buffer.mesh_part_group_ptr = &mesh_part_group; // @Temporary @Todo @@@
+                    map_buffer.subfile_index = geo.subfile_index;
+                    map_buffer.geometry_ptr = &geo;
+                    map_buffer.mesh_ptr = &mesh;
+                    map_buffer.mesh_part_group_index = mesh_part_group_index++; // @Lazy
+                    map_buffer.mesh_part_group_ptr = &mesh_part_group; // @Temporary @Todo @@@
+                }
             }
         }
     }
