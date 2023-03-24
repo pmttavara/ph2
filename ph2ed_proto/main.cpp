@@ -856,7 +856,7 @@ struct G : Map {
     sg_pipeline decal_pipeline = {};
     sg_pipeline decal_pipeline_no_cull = {};
 
-    enum { map_buffers_max = 128 };
+    enum { map_buffers_max = 64 };
     MAP_Geometry_Buffer map_buffers[map_buffers_max];// = {};
     int map_buffers_count = 0;
 
@@ -1195,26 +1195,31 @@ MAP_Geometry_Vertex map_extract_packed_vertex(char *vertex_buffer, int vertex_si
     return result;
 }
 
-/*void map_unpack_mesh_vertex_buffer(MAP_Mesh_Vertex_Buffer &vertex_buffer, int &indices_index, const MAP_Mesh &mesh) {
+void map_unpack_mesh_vertex_buffer(MAP_Geometry_Buffer &buffer, MAP_Mesh &mesh) {
     ProfileFunction();
 
+    for (MAP_Mesh_Vertex_Buffer &vertex_buffer : mesh.vertex_buffers) {
+        for (int i = 0; i < vertex_buffer.num_vertices; i++) {
+            auto unpacked_vertex = map_extract_packed_vertex(vertex_buffer.data.data, vertex_buffer.bytes_per_vertex, vertex_buffer.num_vertices, i);
+            buffer.vertices.push(unpacked_vertex);
+        }
+    }
 
-}*/
+}
 
 void map_destrip_mesh_part_group(MAP_Geometry_Buffer &buffer, int &indices_index, const MAP_Mesh &mesh, MAP_Mesh_Part_Group mesh_part_group) {
     ProfileFunction();
 
     assert(mesh_part_group.mesh_parts.count > 0);
     for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
-        int vertex_size = mesh.vertex_buffers[mesh_part_group.section_index].bytes_per_vertex;
-        char *vertex_buffer = mesh.vertex_buffers[mesh_part_group.section_index].data.data;
-        int num_vertices = mesh.vertex_buffers[mesh_part_group.section_index].num_vertices;
-        // @Note: these assertions are probably not sanity checks, but rather real
-        //        logical assert()s, because my code is broken if these are zero.
-        assert(vertex_size);
-        assert(vertex_buffer);
+        uint32_t base_of_this_section = 0;
+        for (uint32_t i = 0; i < mesh_part_group.section_index; i++) {
+            base_of_this_section += mesh.vertex_buffers[i].num_vertices;
+        }
+
         int outer_max = mesh_part.strip_count;
         int inner_max = mesh_part.strip_length;
+        assert(inner_max >= 3);
 
         int num_vertices_written = 0;
         for (int strip_index = 0; strip_index < outer_max; strip_index++) {
@@ -1227,15 +1232,10 @@ void map_destrip_mesh_part_group(MAP_Geometry_Buffer &buffer, int &indices_index
 
                 currentIndex = (mesh.indices[indices_index++]);
 
-                auto triangle_v0 = map_extract_packed_vertex(vertex_buffer, vertex_size, num_vertices, memory >> 0x10);
-                auto triangle_v1 = map_extract_packed_vertex(vertex_buffer, vertex_size, num_vertices, memory & 0xffff);
-                auto triangle_v2 = map_extract_packed_vertex(vertex_buffer, vertex_size, num_vertices, currentIndex);
-                buffer.indices.push((uint32_t)buffer.vertices.count);
-                buffer.vertices.push(triangle_v0);
-                buffer.indices.push((uint32_t)buffer.vertices.count);
-                buffer.vertices.push(triangle_v1);
-                buffer.indices.push((uint32_t)buffer.vertices.count);
-                buffer.vertices.push(triangle_v2);
+                buffer.indices.push(base_of_this_section + (uint32_t)(memory >> 0x10));
+                buffer.indices.push(base_of_this_section + (uint32_t)(memory & 0xffff));
+                buffer.indices.push(base_of_this_section + (uint32_t)(currentIndex));
+
                 num_vertices_written += 3;
             }
         }
@@ -2446,47 +2446,41 @@ static void map_upload(G &g) {
             auto &meshes = *lists[i];
             auto source = sources[i];
             for (MAP_Mesh &mesh : meshes) {
-                int indices_index = 0;
-
-                // for (MAP_Mesh_Vertex_Buffer &vertex_buffer : mesh.vertex_buffers) {
-                //     assert(g.map_buffers_count < g.map_buffers_max);
-                //     auto &map_buffer = g.map_buffers[g.map_buffers_count++];
-                //     map_buffer.source = source;
-                //     for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-                //         map_buffer.vertices.clear();
-                //     }
-                //     assert(map_buffer.vertices.count % 3 == 0);
-                //     map_buffer.id = geo.id;
-                //     map_buffer.material_ptr = g.materials.begin().node; // @Temporary @Todo
-                //     map_buffer.subfile_index = geo.subfile_index;
-                //     map_buffer.mesh_ptr = &mesh;
-                //     map_buffer.mesh_part_group_index = 0;
-                //     map_buffer.mesh_part_group_ptr = mesh.mesh_part_groups.begin().node; // @Temporary @Todo
-                // }
 
                 assert(g.map_buffers_count < g.map_buffers_max);
                 auto &map_buffer = g.map_buffers[g.map_buffers_count++];
                 map_buffer.source = source;
-                map_buffer.vertices.clear();
-                map_buffer.indices.clear();
-                int vertices_reserve = 0;
-                for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
-                    for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
-                        vertices_reserve += 3 * mesh_part.strip_count * mesh_part.strip_length;
+                map_buffer.id = geo.id;
+                map_buffer.subfile_index = geo.subfile_index;
+                map_buffer.geometry_ptr = &geo;
+                map_buffer.mesh_ptr = &mesh;
+
+                {
+                    map_buffer.vertices.clear();
+                    int vertices_reserve = 0;
+                    for (MAP_Mesh_Vertex_Buffer &vertex_buffer : mesh.vertex_buffers) {
+                        vertices_reserve += vertex_buffer.num_vertices;
                     }
+                    map_buffer.vertices.reserve(vertices_reserve);
+                    map_unpack_mesh_vertex_buffer(map_buffer, mesh);
                 }
-                map_buffer.vertices.reserve(vertices_reserve);
-                map_buffer.indices.reserve(vertices_reserve);
+
+                {
+                    map_buffer.indices.clear();
+                    int indices_reserve = 0;
+                    for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
+                        for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
+                            indices_reserve += 3 * mesh_part.strip_count * mesh_part.strip_length;
+                        }
+                    }
+                    map_buffer.indices.reserve(indices_reserve);
+                }
+
+                int indices_index = 0;
                 for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
                     map_destrip_mesh_part_group(map_buffer, indices_index, mesh, mesh_part_group);
-                    assert(map_buffer.vertices.count % 3 == 0);
-                    assert(map_buffer.indices.count % 3 == 0);
-                    map_buffer.id = geo.id;
-
-                    map_buffer.subfile_index = geo.subfile_index;
-                    map_buffer.geometry_ptr = &geo;
-                    map_buffer.mesh_ptr = &mesh;
                 }
+                assert(map_buffer.indices.count % 3 == 0);
             }
         }
     }
@@ -2527,6 +2521,9 @@ static void map_upload(G &g) {
         auto &buf = g.map_buffers[i];
         sg_update_buffer(buf.vertex_buffer, sg_range { buf.vertices.data, buf.vertices.count * sizeof(buf.vertices[0]) });
         sg_update_buffer(buf.index_buffer, sg_range { buf.indices.data, buf.indices.count * sizeof(buf.indices[0]) });
+
+        // Log("Vertex buffer for map buffer #%d is %d vertices", i, (int)buf.vertices.count);
+        // Log("Index buffer for map buffer #%d is %d indices", i, (int)buf.indices.count);
     }
 }
 static void test_all_maps(G &g) {
@@ -2730,7 +2727,7 @@ static void init(void *userdata) {
     g.last_time = get_time();
     sg_desc desc = {};
     desc.context = sapp_sgcontext();
-    desc.buffer_pool_size = 512;
+    desc.buffer_pool_size = 256;
     desc.logger.func = slog_func;
     sg_setup(&desc);
     simgui_desc_t simgui_desc = {};
@@ -5472,7 +5469,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
                 sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
                 MAP_Mesh &mesh = *buf.mesh_ptr;
-                int vertices_start = 0;
+                int indices_start = 0;
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
                     sg_image tex = g.missing_texture;
                     assert(mpg.material_index >= 0);
@@ -5487,10 +5484,10 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                             tex = *map_tex;
                         }
                     }
-                    int num_vertices = 0;
+                    int num_indices = 0;
                     for (MAP_Mesh_Part &mesh_part : mpg.mesh_parts) {
                         assert(mesh_part.strip_length >= 3);
-                        num_vertices += mesh_part.strip_count * 3 * (mesh_part.strip_length - 2);
+                        num_indices += mesh_part.strip_count * 3 * (mesh_part.strip_length - 2);
                     }
                     {
                         sg_bindings b = {};
@@ -5498,10 +5495,9 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                         b.index_buffer = buf.index_buffer;
                         b.fs_images[0] = tex;
                         sg_apply_bindings(b);
-                        // @Todo: draw indexed with an index start offset of vertices_start.
-                        sg_draw(vertices_start, (int)num_vertices, 1);
+                        sg_draw(indices_start, (int)num_indices, 1);
                     }
-                    vertices_start += num_vertices;
+                    indices_start += num_indices;
                 }
             }
         }
