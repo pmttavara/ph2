@@ -3808,8 +3808,8 @@ static void frame(void *userdata) {
                             bool is_wound_right = (dot >= 0);
 
                             if (is_wound_right) {
-                                unstripped_verts.push(vert_b);
                                 unstripped_verts.push(vert_a);
+                                unstripped_verts.push(vert_b);
                                 unstripped_verts.push(vert_c);
                             } else {
                                 unstripped_verts.push(vert_b);
