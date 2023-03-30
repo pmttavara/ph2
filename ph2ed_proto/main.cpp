@@ -408,8 +408,17 @@ struct MAP_Geometry_Buffer {
 };
 struct MAP_Texture_Buffer {
     sg_image tex = {};
+    int width = 0;
+    int height = 0;
     struct MAP_Texture_Subfile *subfile_ptr = nullptr;
     struct MAP_Texture *texture_ptr = nullptr;
+
+    void release() {
+        if (tex.id) {
+            sg_destroy_image(tex);
+        }
+        *this = {};
+    }
 };
 struct MAP_Mesh_Vertex_Buffer {
     int bytes_per_vertex;
@@ -868,7 +877,7 @@ struct G : Map {
     sg_buffer highlight_vertex_circle_buffer = {};
     sg_pipeline highlight_vertex_circle_pipeline = {};
 
-    sg_image missing_texture = {};
+    MAP_Texture_Buffer missing_texture = {};
 
     MAP_Texture_Subfile *ui_selected_texture_subfile = nullptr;
     MAP_Texture *ui_selected_texture = nullptr;
@@ -926,9 +935,9 @@ struct G : Map {
         }
         sg_destroy_buffer(highlight_vertex_circle_buffer);
         sg_destroy_pipeline(highlight_vertex_circle_pipeline);
-        sg_destroy_image(missing_texture);
+        missing_texture.release();
         for (auto &tex : map_textures) {
-            sg_destroy_image(tex.tex);
+            tex.release();
         }
         map_textures.release();
         free(opened_map_filename); opened_map_filename = nullptr;
@@ -2067,14 +2076,14 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
     WriteBackpatch(uint32_t, backpatch_subfile_count, subfile_count);
     assert(file_length == result->count);
 }
-static sg_image *map_get_texture_by_id(G &g, uint32_t id) {
+static MAP_Texture_Buffer *map_get_texture_by_id(G &g, uint32_t id) {
     ProfileFunction();
 
     for (auto &map_tex : g.map_textures) {
         assert(map_tex.subfile_ptr);
         assert(map_tex.texture_ptr);
         if (map_tex.texture_ptr->id == id) {
-            return &map_tex.tex;
+            return &map_tex;
         }
     }
 
@@ -2437,12 +2446,7 @@ static void map_upload(G &g) {
     ProfileFunction();
 
     g.map_buffers_count = 0;
-    for (auto &tex : g.map_textures) {
-        if (tex.tex.id) {
-            sg_destroy_image(tex.tex);
-        }
-    }
-    g.map_textures.clear();
+    assert(g.map_textures.count == 0);
     for (auto &geo : g.geometries) {
         LinkedList<MAP_Mesh, The_Arena_Allocator> *lists[3] = { &geo.opaque_meshes, &geo.transparent_meshes, &geo.decal_meshes };
         MAP_Geometry_Buffer_Source sources[countof(lists)] = { MAP_Geometry_Buffer_Source::Opaque, MAP_Geometry_Buffer_Source::Transparent, MAP_Geometry_Buffer_Source::Decal };
@@ -2508,6 +2512,8 @@ static void map_upload(G &g) {
             auto &new_tex = *g.map_textures.push();
             new_tex.tex = sg_make_image(d);
             assert(new_tex.tex.id);
+            new_tex.width = tex.width;
+            new_tex.height = tex.height;
             new_tex.subfile_ptr = &sub;
             new_tex.texture_ptr = &tex;
         }
@@ -2529,6 +2535,7 @@ static void map_upload(G &g) {
         // Log("Vertex buffer for map buffer #%d is %d vertices", i, (int)buf.vertices.count);
         // Log("Index buffer for map buffer #%d is %d indices", i, (int)buf.indices.count);
     }
+
 }
 static void test_all_maps(G &g) {
     ProfileFunction();
@@ -2940,7 +2947,9 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
         d.mag_filter = SG_FILTER_LINEAR_MIPMAP_LINEAR;
         d.max_anisotropy = 16;
         d.data.subimage[0][0] = SG_RANGE(pixels);
-        g.missing_texture = sg_make_image(d);
+        g.missing_texture.tex = sg_make_image(d);
+        g.missing_texture.width = N;
+        g.missing_texture.height = N;
     }
 }
 
@@ -3018,11 +3027,13 @@ static void event(const sapp_event *e_, void *userdata) {
         if (!e.key_repeat && e.key_code == SAPP_KEYCODE_O && (e.modifiers & SAPP_MODIFIER_CTRL)) {
             g.control_o = true;
         }
-        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_Z && (e.modifiers & SAPP_MODIFIER_CTRL)) {
-            g.control_z = true;
-        }
-        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_Y && (e.modifiers & SAPP_MODIFIER_CTRL)) {
-            g.control_y = true;
+        if (!ImGui::GetIO().WantCaptureKeyboard) {
+            if (e.key_code == SAPP_KEYCODE_Z && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+                g.control_z = true;
+            }
+            if (e.key_code == SAPP_KEYCODE_Y && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+                g.control_y = true;
+            }
         }
     }
     simgui_handle_event(&e);
@@ -3903,8 +3914,6 @@ static void frame(void *userdata) {
 
                 }
 
-                g.staleify_map();
-
                 MsgInfo("OBJ Import", "Imported!");
             } else {
                 MsgErr("OBJ Load Error", "Couldn't open file \"%s\"!!", obj_file_buf);
@@ -3916,7 +3925,6 @@ static void frame(void *userdata) {
             if (success) {
                 assert(!g.texture_subfiles.empty());
                 ((MAP_Texture_Subfile *)g.texture_subfiles.sentinel->prev)->textures.push(tex);
-                g.staleify_map();
             }
         }
     auto export_to_obj = [&] {
@@ -4268,15 +4276,61 @@ static void frame(void *userdata) {
                         int mat_index = mesh_part_group.material_index;
                         ImGui::Text("Material Index:");
                         if (ImGui::InputInt("###Material Index", &mat_index)) {
-                            int64_t mat_count = g.materials.count();
-                            while (mat_index < 0) {
-                                mat_index += (int)mat_count + (int)!!g.materials.empty();
+                            int mat_count = (int)g.materials.count() + (int)!!g.materials.empty();
+                            mat_index = (mat_index % mat_count + mat_count) % mat_count;
+                            mesh_part_group.material_index = (uint16_t)mat_index;
+                        }
+                        {
+                            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                                ImGui::BeginTooltip();
+
+                                MAP_Texture_Buffer *tex = &g.missing_texture;
+                                MAP_Material *material = nullptr;
+
+                                int attempted_tex_id = 0;
+
+                                if (mat_index >= 0 && mat_index < 65536) {
+                                    material = g.materials.at_index(mat_index);
+                                    if (material) {
+                                        assert(material->texture_id >= 0);
+                                        assert(material->texture_id < 65536);
+                                        attempted_tex_id = material->texture_id;
+                                        auto map_tex = map_get_texture_by_id(g, material->texture_id);
+                                        if (map_tex) {
+                                            assert(map_tex->tex.id);
+                                            tex = map_tex;
+                                        }
+                                    }
+                                }
+
+                                if (!material) {
+                                    ImGui::Text("Material #%u => (No such material)", mat_index);
+                                } else if (tex == &g.missing_texture) {
+                                    ImGui::Text("Material #%u => (No such texture ID #%u)", mat_index, attempted_tex_id);
+                                } else {
+                                    ImGui::Text("Material #%u => Texture ID #%u", mat_index, attempted_tex_id);
+                                }
+
+                                assert(tex);
+                                assert(tex->tex.id);
+                                float w = (float)tex->width;
+                                float h = (float)tex->height;
+                                float aspect = w / h;
+                                if (w > 128) {
+                                    w = 128;
+                                    h = w / aspect;
+                                }
+                                if (h > 128) {
+                                    h = 128;
+                                    w = h * aspect;
+                                }
+
+                                if (w > 0 && h > 0) {
+                                    ImGui::Image((ImTextureID)(uintptr_t)tex->tex.id, ImVec2(w, h));
+                                }
+
+                                ImGui::EndTooltip();
                             }
-                            if (!g.materials.empty()) {
-                                mat_index %= mat_count;
-                            }
-                            mesh_part_group.material_index = mat_index;
-                            g.staleify_map();
                         }
                     }
                 }
@@ -4623,8 +4677,6 @@ static void frame(void *userdata) {
                         center /= (float)vertices_count + !vertices_count;
                         g.overall_center += center;
                         overall_center_sum += 1;
-                    } else {
-                        g.staleify_map();
                     }
                 }
                 if (duplicate) {
@@ -4663,7 +4715,7 @@ static void frame(void *userdata) {
                     assert(The_Arena_Allocator::contains(&new_mesh, sizeof(new_mesh)));
 
                     assert(!g.geometries.empty());
-                    g.staleify_map();
+
                     // Log("Duped!");
                 }
             };
@@ -4712,7 +4764,6 @@ static void frame(void *userdata) {
                         buf.selected = false;
                     }
                 }
-                g.staleify_map();
                 g.overall_center_needs_recalc = true;
             }
             for (auto &geo : g.geometries) {
@@ -5072,32 +5123,24 @@ static void frame(void *userdata) {
                     MAP_Texture new_tex = {};
                     import_success = dds_import(dds_import_buf, new_tex);
                     if (import_success) {
+                        (Node &)new_tex = (Node &)tex;
                         new_tex.id = tex.id;
                         new_tex.material = tex.material;
                         tex.release();
                         tex = new_tex;
-                        g.staleify_map();
                     }
                 }
-                // @Hack: If we fudge up all the textures,
-                //        we don't wanna send Imgui a stale texture id.
-                if (!g.control_z && !g.control_y && !import_success) {
+                {
                     {
                         int x = tex.id;
                         ImGui::InputInt("ID", &x);
                         x = clamp(x, 0, 65535);
-                        if (x != tex.id) {
-                            g.staleify_map(); // @Hack.
-                        }
                         tex.id = (uint16_t)x;
                     }
                     {
                         int x = tex.material;
                         ImGui::InputInt("\"Material\" (?)", &x);
                         x = clamp(x, 0, 255);
-                        if (x != tex.material) {
-                            g.staleify_map(); // @Hack.
-                        }
                         tex.material = (uint8_t)x;
                     }
                     
@@ -5126,7 +5169,7 @@ static void frame(void *userdata) {
                     }
                     assert(map_texture);
                     assert(map_texture->tex.id);
-                    if (w > 0 && h > 0 && !g.stale()) {
+                    if (w > 0 && h > 0) {
                         ImGui::Image((ImTextureID)(uintptr_t)map_texture->tex.id, ImVec2(w, h));
                     }
                 }
@@ -5266,9 +5309,10 @@ static void frame(void *userdata) {
     };
 
     uint64_t map_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
-    if (g.undo_stack.count < 1 || map_hash != g.undo_stack[g.undo_stack.count - 1].hash) {
+    if (g.undo_stack.count < 1 ||
+        (!ImGui::GetIO().WantCaptureKeyboard && map_hash != g.undo_stack[g.undo_stack.count - 1].hash)) {
         Log("Undo/redo frame! Hash: %llu", map_hash);
-        
+
         g.undo_stack.push(make_history_entry(map_hash));
 
         for (auto &entry : g.redo_stack) {
@@ -5319,6 +5363,19 @@ static void frame(void *userdata) {
             g.cld_must_update = false;
         }
     }
+
+    // @Note: We delay texture destruction until after imgui is done drawing images,
+    //        so we can staleify and reupload maps on this frame while still letting
+    //        imgui display any old images from earlier in the frame that may or may
+    //        not have been destroyed. -p 2023-03-29
+    Array<MAP_Texture_Buffer> textures_to_destroy = {};
+    defer {
+        for (auto &tex : textures_to_destroy) {
+            tex.release();
+        }
+        textures_to_destroy.release();
+    };
+
     if (g.map_must_update) {
         bool can_update = true;
         for (int i = 0; i < g.map_buffers_count; i++) {
@@ -5331,6 +5388,10 @@ static void frame(void *userdata) {
             }
         }
         if (can_update) {
+            {
+                textures_to_destroy = g.map_textures;
+                g.map_textures = {};
+            }
             map_upload(g);
             g.map_must_update = false;
         }
@@ -5480,7 +5541,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 MAP_Mesh &mesh = *buf.mesh_ptr;
                 int indices_start = 0;
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
-                    sg_image tex = g.missing_texture;
+                    MAP_Texture_Buffer tex = g.missing_texture;
                     assert(mpg.material_index >= 0);
                     assert(mpg.material_index < 65536);
                     MAP_Material *material = g.materials.at_index(mpg.material_index);
@@ -5489,7 +5550,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                         assert(material->texture_id < 65536);
                         auto map_tex = map_get_texture_by_id(g, material->texture_id);
                         if (map_tex) {
-                            assert(map_tex->id);
+                            assert(map_tex->tex.id);
                             tex = *map_tex;
                         }
                     }
@@ -5502,7 +5563,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                         sg_bindings b = {};
                         b.vertex_buffers[0] = buf.vertex_buffer;
                         b.index_buffer = buf.index_buffer;
-                        b.fs_images[0] = tex;
+                        b.fs_images[0] = tex.tex;
                         sg_apply_bindings(b);
                         sg_draw(indices_start, (int)num_indices, 1);
                     }
