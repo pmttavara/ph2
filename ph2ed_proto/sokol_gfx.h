@@ -2393,6 +2393,7 @@ typedef struct sg_pipeline_desc {
     sg_color_state colors[SG_MAX_COLOR_ATTACHMENTS];
     sg_primitive_type primitive_type;
     sg_index_type index_type;
+    bool wireframe;
     sg_cull_mode cull_mode;
     sg_face_winding face_winding;
     int sample_count;
@@ -9716,7 +9717,7 @@ _SOKOL_PRIVATE sg_resource_state _sg_d3d11_create_pipeline(_sg_pipeline_t* pip, 
     /* create rasterizer state */
     D3D11_RASTERIZER_DESC rs_desc;
     _sg_clear(&rs_desc, sizeof(rs_desc));
-    rs_desc.FillMode = D3D11_FILL_SOLID;
+    rs_desc.FillMode = desc->wireframe ? D3D11_FILL_WIREFRAME : D3D11_FILL_SOLID;
     rs_desc.CullMode = _sg_d3d11_cull_mode(desc->cull_mode);
     rs_desc.FrontCounterClockwise = desc->face_winding == SG_FACEWINDING_CCW;
     rs_desc.DepthBias = (INT) pip->cmn.depth.bias;

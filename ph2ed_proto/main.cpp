@@ -391,6 +391,7 @@ struct MAP_Geometry_Buffer {
     MAP_Geometry_Buffer_Source source = MAP_Geometry_Buffer_Source::Opaque;
     Array<MAP_Geometry_Vertex> vertices = {}; // @Todo: convert to local variable that gets released once uploaded
     Array<uint32_t> indices = {};
+    Array<int> faces_per_mesh_part_group = {}; // parallel with mesh part groups; indicates how many triangles in each group.
     uint32_t id = 0;
     uint32_t subfile_index = 0;
     struct MAP_Geometry *geometry_ptr = nullptr;
@@ -864,9 +865,13 @@ struct G : Map {
 
     sg_pipeline map_pipeline = {};
     sg_pipeline map_pipeline_no_cull = {};
+    sg_pipeline map_pipeline_wireframe = {};
+    sg_pipeline map_pipeline_no_cull_wireframe = {};
 
     sg_pipeline decal_pipeline = {};
     sg_pipeline decal_pipeline_no_cull = {};
+    sg_pipeline decal_pipeline_wireframe = {};
+    sg_pipeline decal_pipeline_no_cull_wireframe = {};
 
     enum { map_buffers_max = 64 };
     MAP_Geometry_Buffer map_buffers[map_buffers_max];// = {};
@@ -901,6 +906,7 @@ struct G : Map {
     bool textured = true;
     bool lit = true;
     bool cull_backfaces = false;
+    bool wireframe = false;
 
     char *opened_map_filename = nullptr;
 
@@ -1222,6 +1228,7 @@ void map_unpack_mesh_vertex_buffer(MAP_Geometry_Buffer &buffer, MAP_Mesh &mesh) 
 void map_destrip_mesh_part_group(MAP_Geometry_Buffer &buffer, int &indices_index, const MAP_Mesh &mesh, MAP_Mesh_Part_Group mesh_part_group) {
     ProfileFunction();
 
+    int num_vertices_written = 0;
     assert(mesh_part_group.mesh_parts.count > 0);
     for (MAP_Mesh_Part &mesh_part : mesh_part_group.mesh_parts) {
         uint32_t base_of_this_section = 0;
@@ -1233,7 +1240,7 @@ void map_destrip_mesh_part_group(MAP_Geometry_Buffer &buffer, int &indices_index
         int inner_max = mesh_part.strip_length;
         assert(inner_max >= 3);
 
-        int num_vertices_written = 0;
+        int num_vertices_written_in_this_strip = 0;
         for (int strip_index = 0; strip_index < outer_max; strip_index++) {
             unsigned int memory = (mesh.indices[indices_index++]) << 0x10;
             unsigned int mask = 0xFFFF0000;
@@ -1244,16 +1251,28 @@ void map_destrip_mesh_part_group(MAP_Geometry_Buffer &buffer, int &indices_index
 
                 currentIndex = (mesh.indices[indices_index++]);
 
-                buffer.indices.push(base_of_this_section + (uint32_t)(memory >> 0x10));
-                buffer.indices.push(base_of_this_section + (uint32_t)(memory & 0xffff));
-                buffer.indices.push(base_of_this_section + (uint32_t)(currentIndex));
+                uint32_t a = memory >> 0x10;
+                uint32_t b = memory & 0xffff;
+                uint32_t c = currentIndex;
 
-                num_vertices_written += 3;
+                bool degenerate = (a == b) || (b == c) || (a == c);
+
+                if (!degenerate)
+                {
+                    buffer.indices.push(base_of_this_section + a);
+                    buffer.indices.push(base_of_this_section + b);
+                    buffer.indices.push(base_of_this_section + c);
+
+                    num_vertices_written += 3;
+                }
+
             }
         }
 
-        assert(num_vertices_written == (inner_max - 2) * 3 * outer_max);
+        assert(num_vertices_written_in_this_strip <= (inner_max - 2) * 3 * outer_max);
+        num_vertices_written += num_vertices_written_in_this_strip;
     }
+    buffer.faces_per_mesh_part_group.push(num_vertices_written);
 }
 // We need 'misalignment' because some mesh groups are weirdly misaligned, and mesh alignment happens *with respect to that misalignment* (!!!!!!!!!!)
 static int map_load_mesh_group_or_decal_group(LinkedList<MAP_Mesh, The_Arena_Allocator> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
@@ -2484,6 +2503,10 @@ static void map_upload(G &g) {
                     map_buffer.indices.reserve(indices_reserve);
                 }
 
+                {
+                    map_buffer.faces_per_mesh_part_group.clear();
+                }
+
                 int indices_index = 0;
                 for (MAP_Mesh_Part_Group &mesh_part_group : mesh.mesh_part_groups) {
                     map_destrip_mesh_part_group(map_buffer, indices_index, mesh, mesh_part_group);
@@ -2910,10 +2933,16 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
         d.index_type = SG_INDEXTYPE_UINT32;
 
         { // Make the pipelines
+            d.wireframe = false;
             d.cull_mode = SG_CULLMODE_BACK;
             g.map_pipeline = sg_make_pipeline(d);
             d.cull_mode = SG_CULLMODE_NONE;
             g.map_pipeline_no_cull = sg_make_pipeline(d);
+            d.wireframe = true;
+            d.cull_mode = SG_CULLMODE_BACK;
+            g.map_pipeline_wireframe = sg_make_pipeline(d);
+            d.cull_mode = SG_CULLMODE_NONE;
+            g.map_pipeline_no_cull_wireframe = sg_make_pipeline(d);
         }
 
 
@@ -2924,10 +2953,16 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
         d.colors[0].blend.dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
 
         { // Make the pipelines
+            d.wireframe = false;
             d.cull_mode = SG_CULLMODE_BACK;
             g.decal_pipeline = sg_make_pipeline(d);
             d.cull_mode = SG_CULLMODE_NONE;
             g.decal_pipeline_no_cull = sg_make_pipeline(d);
+            d.wireframe = true;
+            d.cull_mode = SG_CULLMODE_BACK;
+            g.decal_pipeline_wireframe = sg_make_pipeline(d);
+            d.cull_mode = SG_CULLMODE_NONE;
+            g.decal_pipeline_no_cull_wireframe = sg_make_pipeline(d);
         }
 
     }
@@ -4280,7 +4315,7 @@ static void frame(void *userdata) {
                     auto &mesh = *buf.mesh_ptr;
                     int mesh_part_group_index = 0; // @Lazy
                     for (auto &mesh_part_group : mesh.mesh_part_groups) {
-                        char b[256]; snprintf(b, sizeof(b), "Mesh Part Group #%d", mesh_part_group_index);
+                        char b[256]; snprintf(b, sizeof(b), "Mesh Part Group #%d - %d Mesh Parts", mesh_part_group_index, (int)mesh_part_group.mesh_parts.count);
                         defer { mesh_part_group_index++; };
                         if (!ImGui::TreeNodeEx(b, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_DefaultOpen)) {
                             continue;
@@ -5289,6 +5324,7 @@ static void frame(void *userdata) {
             ImGui::Columns(1);
             ImGui::Checkbox("MAP Textured", &g.textured); ImGui::SameLine(); ImGui::Checkbox("MAP Lit", &g.lit);
             ImGui::SameLine(); ImGui::Checkbox("MAP Cull Backfaces", &g.cull_backfaces);
+            ImGui::SameLine(); ImGui::Checkbox("MAP Wireframe", &g.wireframe);
             if (ImGui::BeginChild("###Viewport Rendering Region")) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
                 dl->AddCallback(viewport_callback, &g);
@@ -5533,10 +5569,16 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 if (!buf.shown) continue;
                 if (buf.source == MAP_Geometry_Buffer_Source::Opaque) {
                     fs_params.do_a2c_sharpening = true;
-                    sg_apply_pipeline(g.cull_backfaces ? g.map_pipeline : g.map_pipeline_no_cull);
+                    sg_apply_pipeline(
+                        g.wireframe ?
+                        (g.cull_backfaces ? g.map_pipeline_wireframe : g.map_pipeline_no_cull_wireframe) :
+                        (g.cull_backfaces ? g.map_pipeline           : g.map_pipeline_no_cull));
                 } else {
                     fs_params.do_a2c_sharpening = false;
-                    sg_apply_pipeline(g.cull_backfaces ? g.decal_pipeline : g.decal_pipeline_no_cull);
+                    sg_apply_pipeline(
+                        g.wireframe ?
+                        (g.cull_backfaces ? g.decal_pipeline_wireframe : g.decal_pipeline_no_cull_wireframe) :
+                        (g.cull_backfaces ? g.decal_pipeline           : g.decal_pipeline_no_cull));
                 }
                 {
                     vs_params.scaling_factor = { 1, 1, 1 };
@@ -5560,7 +5602,9 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                 sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
                 MAP_Mesh &mesh = *buf.mesh_ptr;
                 int indices_start = 0;
+                int mesh_part_group_index = 0;
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
+                    defer { mesh_part_group_index++; };
                     MAP_Texture_Buffer tex = g.missing_texture;
                     assert(mpg.material_index >= 0);
                     assert(mpg.material_index < 65536);
@@ -5574,11 +5618,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                             tex = *map_tex;
                         }
                     }
-                    int num_indices = 0;
-                    for (MAP_Mesh_Part &mesh_part : mpg.mesh_parts) {
-                        assert(mesh_part.strip_length >= 3);
-                        num_indices += mesh_part.strip_count * 3 * (mesh_part.strip_length - 2);
-                    }
+                    int num_indices = buf.faces_per_mesh_part_group[mesh_part_group_index];
                     {
                         sg_bindings b = {};
                         b.vertex_buffers[0] = buf.vertex_buffer;
