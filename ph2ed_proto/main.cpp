@@ -2906,6 +2906,7 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
         d.depth.compare = SG_COMPAREFUNC_GREATER;
         d.face_winding = SG_FACEWINDING_CCW;
         // d.primitive_type = SG_PRIMITIVETYPE_POINTS;
+        // d.primitive_type = SG_PRIMITIVETYPE_LINES;
         d.index_type = SG_INDEXTYPE_UINT32;
 
         { // Make the pipelines
@@ -3880,7 +3881,7 @@ static void frame(void *userdata) {
 
                     Array<unsigned int> strip_indices = {}; defer { strip_indices.release(); };
                     strip_indices.resize(meshopt_stripifyBound(index_count));
-                    unsigned int restart_index = 0; // ~0u;
+                    unsigned int restart_index = ~0u;
                     size_t strip_size = meshopt_stripify(&strip_indices[0], list_indices.data, index_count, vertex_count, restart_index);
 
                     strip_indices.resize(strip_size);
@@ -3897,20 +3898,39 @@ static void frame(void *userdata) {
                     assert(buf.data.data);
                     memcpy(buf.data.data, vertices.data, vertices.count * sizeof(vertices[0]));
 
-                    mesh.indices.resize(strip_indices.count);
-                    assert(mesh.indices.data);
-                    for (int i = 0; i < strip_indices.count; ++i) {
-                        assert(strip_indices.data[i] < 65536);
-                        mesh.indices.data[i] = (uint16_t)strip_indices.data[i];
-                    }
-
                     MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
                     group.material_index = 0;
                     group.section_index = 0;
 
-                    MAP_Mesh_Part &part = *group.mesh_parts.push();
-                    part.strip_count = 1;
-                    part.strip_length = (int)mesh.indices.count;
+                    {
+                        MAP_Mesh_Part *part = group.mesh_parts.push();
+                        part->strip_count = 1;
+                        part->strip_length = 0;
+
+                        for (int i = 0; i < strip_indices.count;) {
+                            if (strip_indices[i] == ~0u) {
+
+                                strip_indices.remove_ordered(i);
+
+                                part = group.mesh_parts.push();
+                                part->strip_count = 1;
+                                part->strip_length = 0;
+
+                            } else {
+                                assert(strip_indices.data[i] < 65536);
+                                ++part->strip_length;
+                                ++i;
+                            }
+                        }
+
+                    }
+
+                    mesh.indices.reserve(strip_indices.count);
+                    mesh.indices.count = strip_indices.count;
+                    assert(mesh.indices.data);
+                    for (int i = 0; i < strip_indices.count; ++i) {
+                        mesh.indices.data[i] = (uint16_t)strip_indices.data[i];
+                    }
 
                 }
 
