@@ -82,7 +82,8 @@ void main() {
 @fs map_fs
 uniform map_fs_params {
     float textured;
-    float lit;
+    float use_colours;
+    float shaded;
     float do_a2c_sharpening;
     float highlight_amount;
 };
@@ -95,7 +96,7 @@ out vec4 frag_color;
 uniform sampler2D tex;
 void main() {
     frag_color.rgba = vec4(1);
-    if (textured == 0 && lit == 0) {
+    if (textured == 0 && shaded != 0) {
         vec3 N = normal;
         if (length(N) == 0) {
             N = normalize(cross(dFdx(cam_relative_pos.xyz), dFdy(cam_relative_pos.xyz)));
@@ -117,7 +118,7 @@ void main() {
             frag_color.a = (frag_color.a - 0.5) / max(fwidth(frag_color.a), 0.0001) + 0.5;
         }
     }
-    if (lit != 0) {
+    if (use_colours != 0) {
         frag_color.rgb *= color.rgb;
     }
     // frag_color = vec4((uv + 1) / 3, 0, 1);
@@ -127,7 +128,7 @@ void main() {
 
     // frag_color *= vec4(fract(worldpos), 1);
     //frag_color = vec4(0.5, 1, 0.5, 0.1);
-    frag_color.rgb = mix(frag_color.rgb, vec3(0.97, 0.76, 0.30), highlight_amount * 0.5);
+    frag_color.rgb = mix(frag_color.rgb, vec3(0.93, 0.39, 0.008), highlight_amount);
     frag_color = clamp(frag_color, 0, 1);
 }
 @end

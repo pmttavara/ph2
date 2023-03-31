@@ -904,7 +904,7 @@ struct G : Map {
     bool subgroup_visible[16] = {true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true};
 
     bool textured = true;
-    bool lit = true;
+    bool use_colours = true;
     bool cull_backfaces = false;
     bool wireframe = false;
 
@@ -5322,7 +5322,7 @@ static void frame(void *userdata) {
             }
             ImGui::SameLine(); ImGui::Text("(%.0f, %.0f, %.0f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
             ImGui::Columns(1);
-            ImGui::Checkbox("MAP Textured", &g.textured); ImGui::SameLine(); ImGui::Checkbox("MAP Lit", &g.lit);
+            ImGui::Checkbox("MAP Textured", &g.textured); ImGui::SameLine(); ImGui::Checkbox("MAP Use Colours", &g.use_colours);
             ImGui::SameLine(); ImGui::Checkbox("MAP Cull Backfaces", &g.cull_backfaces);
             ImGui::SameLine(); ImGui::Checkbox("MAP Wireframe", &g.wireframe);
             if (ImGui::BeginChild("###Viewport Rendering Region")) {
@@ -5558,27 +5558,24 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
         {
             map_vs_params_t vs_params = {};
             map_fs_params_t fs_params = {};
-            fs_params.textured = g.textured;
-            fs_params.lit = g.lit;
             fs_params.do_a2c_sharpening = true;
             vs_params.cam_pos = g.cam_pos;
             vs_params.P = perspective;
             vs_params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
+
             for (int i = 0; i < g.map_buffers_count; i++) {
                 auto &buf = g.map_buffers[i];
                 if (!buf.shown) continue;
+                int num_times_to_render = buf.selected ? 2 : 1;
+                sg_pipeline pipelines[2] = {};
                 if (buf.source == MAP_Geometry_Buffer_Source::Opaque) {
                     fs_params.do_a2c_sharpening = true;
-                    sg_apply_pipeline(
-                        g.wireframe ?
-                        (g.cull_backfaces ? g.map_pipeline_wireframe : g.map_pipeline_no_cull_wireframe) :
-                        (g.cull_backfaces ? g.map_pipeline           : g.map_pipeline_no_cull));
+                    pipelines[0] = (g.cull_backfaces ? g.map_pipeline           : g.map_pipeline_no_cull);
+                    pipelines[1] = (g.cull_backfaces ? g.map_pipeline_wireframe : g.map_pipeline_no_cull_wireframe);
                 } else {
                     fs_params.do_a2c_sharpening = false;
-                    sg_apply_pipeline(
-                        g.wireframe ?
-                        (g.cull_backfaces ? g.decal_pipeline_wireframe : g.decal_pipeline_no_cull_wireframe) :
-                        (g.cull_backfaces ? g.decal_pipeline           : g.decal_pipeline_no_cull));
+                    pipelines[0] = (g.cull_backfaces ? g.decal_pipeline           : g.decal_pipeline_no_cull);
+                    pipelines[1] = (g.cull_backfaces ? g.decal_pipeline_wireframe : g.decal_pipeline_no_cull_wireframe);
                 }
                 {
                     vs_params.scaling_factor = { 1, 1, 1 };
@@ -5592,42 +5589,52 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                     // I should also ask the community what the coordinate system is :)
                     vs_params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate({});
                 }
-                {
+                for (int render_time = 0; render_time < num_times_to_render; ++render_time) {
+                    int is_wireframe = buf.selected ? render_time : (int)g.wireframe;
+                    sg_apply_pipeline(pipelines[is_wireframe]);
+                    fs_params.textured = g.textured;
+                    fs_params.use_colours = g.use_colours;
+                    fs_params.shaded = !g.use_colours;
                     fs_params.highlight_amount = 0;
-                    if (buf.selected) {
-                        fs_params.highlight_amount = (float)sin(g.t * TAU * 1.5f) * 0.5f + 0.5f;
-                    }
-                }
-                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
-                sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
-                MAP_Mesh &mesh = *buf.mesh_ptr;
-                int indices_start = 0;
-                int mesh_part_group_index = 0;
-                for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
-                    defer { mesh_part_group_index++; };
-                    MAP_Texture_Buffer tex = g.missing_texture;
-                    assert(mpg.material_index >= 0);
-                    assert(mpg.material_index < 65536);
-                    MAP_Material *material = g.materials.at_index(mpg.material_index);
-                    if (material) {
-                        assert(material->texture_id >= 0);
-                        assert(material->texture_id < 65536);
-                        auto map_tex = map_get_texture_by_id(g, material->texture_id);
-                        if (map_tex) {
-                            assert(map_tex->tex.id);
-                            tex = *map_tex;
+                    if (is_wireframe) {
+                        fs_params.textured = false;
+                        fs_params.use_colours = false;
+                        fs_params.shaded = false;
+                        if (buf.selected) {
+                            fs_params.highlight_amount = (float)sin(g.t * TAU * 1.0f) * 0.5f + 0.5f;
                         }
                     }
-                    int num_indices = buf.faces_per_mesh_part_group[mesh_part_group_index];
-                    {
-                        sg_bindings b = {};
-                        b.vertex_buffers[0] = buf.vertex_buffer;
-                        b.index_buffer = buf.index_buffer;
-                        b.fs_images[0] = tex.tex;
-                        sg_apply_bindings(b);
-                        sg_draw(indices_start, (int)num_indices, 1);
+                    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
+                    sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
+                    MAP_Mesh &mesh = *buf.mesh_ptr;
+                    int indices_start = 0;
+                    int mesh_part_group_index = 0;
+                    for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
+                        defer { mesh_part_group_index++; };
+                        MAP_Texture_Buffer tex = g.missing_texture;
+                        assert(mpg.material_index >= 0);
+                        assert(mpg.material_index < 65536);
+                        MAP_Material *material = g.materials.at_index(mpg.material_index);
+                        if (material) {
+                            assert(material->texture_id >= 0);
+                            assert(material->texture_id < 65536);
+                            auto map_tex = map_get_texture_by_id(g, material->texture_id);
+                            if (map_tex) {
+                                assert(map_tex->tex.id);
+                                tex = *map_tex;
+                            }
+                        }
+                        int num_indices = buf.faces_per_mesh_part_group[mesh_part_group_index];
+                        {
+                            sg_bindings b = {};
+                            b.vertex_buffers[0] = buf.vertex_buffer;
+                            b.index_buffer = buf.index_buffer;
+                            b.fs_images[0] = tex.tex;
+                            sg_apply_bindings(b);
+                            sg_draw(indices_start, (int)num_indices, 1);
+                        }
+                        indices_start += num_indices;
                     }
-                    indices_start += num_indices;
                 }
             }
         }
@@ -5744,7 +5751,7 @@ sapp_desc sokol_main(int, char **) {
     d.event_userdata_cb = event;
     d.frame_userdata_cb = frame;
     d.cleanup_userdata_cb = cleanup;
-    d.sample_count = 4;
+    d.sample_count = 8;
     d.swap_interval = 0;
     d.high_dpi = true;
 #ifndef NDEBUG
