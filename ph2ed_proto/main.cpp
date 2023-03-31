@@ -3545,6 +3545,40 @@ bool dds_import(char *filename, MAP_Texture &result) {
     return true;
 }
 
+bool export_dds(MAP_Texture tex, char *filename) {
+    FILE *f = PH2CLD__fopen(filename, "wb");
+    if (!f) {
+        MsgErr("DDS Export Error", "Couldn't open file \"%s\"!!", filename);
+        return false;
+    }
+    defer {
+        fclose(f);
+    };
+
+    assert(fwrite("DDS\x20", 4, 1, f) == 1);
+    my_dds_header header = {};
+    header.size = 0x7c;
+    header.flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_LINEARSIZE;
+    header.height = tex.height;
+    header.width = tex.width;
+    header.pitch_or_linear_size = (uint32_t)tex.blob.count;
+    header.pixelformat_size = 32;
+    header.pixelformat_flags = 4;
+    // @Note: *PRETTY* sure this is fine??
+    switch (tex.format) {
+        case MAP_Texture_Format_BC1: { header.pixelformat_four_cc = FOURCC_DXT1; } break;
+        case MAP_Texture_Format_BC2: { header.pixelformat_four_cc = FOURCC_DXT3; } break;
+        case MAP_Texture_Format_BC3: { header.pixelformat_four_cc = FOURCC_DXT5; } break;
+        default: { assert(false); } break;
+    }
+    header.caps = DDSCAPS_TEXTURE;
+    assert(fwrite(&header, sizeof(header), 1, f) == 1);
+    assert(fwrite(tex.blob.data, tex.blob.count, 1, f) == 1);
+    MsgInfo("DDS Export", "Exported!");
+
+    return true;
+}
+
 #if _MSC_VER && !defined(__clang__)
 #define NO_SANITIZE __declspec(no_sanitize_address)
 #else
@@ -4000,28 +4034,10 @@ static void frame(void *userdata) {
             }
         }
     auto export_to_obj = [&] {
-        char *mtl_export_name = strdup(obj_export_name);
+        char *mtl_export_name = mprintf("%s.mtl", obj_export_name);
         if (!mtl_export_name) {
             MsgErr("OBJ Export Error", "Couldn't build MTL filename for \"%s\".", obj_export_name);
             return;
-        }
-        {
-            size_t n = strlen(mtl_export_name);
-            char *slash = max(strrchr(mtl_export_name, '/'), strrchr(mtl_export_name, '\\'));
-            char *dot = strrchr(mtl_export_name, '.');
-            if (dot <= slash || strcmp(dot, ".obj") != 0) {
-                // File doesn't end with ".obj" extension -- just append .mtl instead.
-                mtl_export_name = (char *)realloc(mtl_export_name, n + 4);
-                if (!mtl_export_name) {
-                    MsgErr("OBJ Export Error", "Couldn't build MTL filename for \"%s\".", obj_export_name);
-                    return;
-                }
-                dot = mtl_export_name + n;
-            }
-            dot[0] = '.';
-            dot[1] = 'm';
-            dot[2] = 't';
-            dot[3] = 'l';
         }
         FILE *obj = PH2CLD__fopen(obj_export_name, "w");
         if (!obj) {
@@ -4030,6 +4046,14 @@ static void frame(void *userdata) {
         }
         defer {
             fclose(obj);
+        };
+        FILE *mtl = PH2CLD__fopen(mtl_export_name, "w");
+        if (!mtl) {
+            MsgErr("OBJ Export Error", "Couldn't open file \"%s\"!!", mtl_export_name);
+            return;
+        }
+        defer {
+            fclose(mtl);
         };
         Array<hmm_vec3> vertices = {};
         defer {
@@ -4063,8 +4087,17 @@ static void frame(void *userdata) {
         }
 
         fprintf(obj, "# .MAP mesh export from Psilent pHill 2 Editor (" URL ")\n");
+        fprintf(obj, "# Exported from filename: %s\n", g.opened_map_filename);
+        char time_buf[sizeof("YYYY-MM-DD HH:MM:SS UTC")];
+        {
+            time_t t = time(nullptr);
+            auto result = strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S UTC", gmtime(&t));
+            assert(result);
+        }
+        fprintf(obj, "# Exported at %s\n", time_buf);
+
         fprintf(obj, "\n");
-        fprintf(obj, "usemtl %s\n", mtl_export_name);
+        fprintf(obj, "mtllib %s\n", mtl_export_name);
         fprintf(obj, "\n");
         for (auto &v : vertices) {
             fprintf(obj, "v %f %f %f\n", v.X, v.Y, v.Z);
@@ -4101,7 +4134,7 @@ static void frame(void *userdata) {
                         int a = index_base + buf.indices[indices_start + i] + 1;
                         int b = index_base + buf.indices[indices_start + i + 1] + 1;
                         int c = index_base + buf.indices[indices_start + i + 2] + 1;
-                        fprintf(obj, "f %d/%d/%d %d/%d/%d %d/%d/%d\n", a,a,a, b,b,b, c,c,c);
+                        fprintf(obj, "f %d/%d/%d %d/%d/%d %d/%d/%d\n", a, a, a, b, b, b, c, c, c);
                     }
                     indices_start += num_indices;
                 }
@@ -4906,7 +4939,7 @@ static void frame(void *userdata) {
                 char buf[sizeof("YYYY-MM-DD_HH-MM-SS")];
                 char *bak_filename = nullptr;
                 // @Hack ughhhhhh @@@ @@@ @@@ I just don't want to add a new scope here (IMO these should be returns from a func, not nested ifs)
-                if (strftime(buf, sizeof(buf), "%Y-%m-%d_%H-%M-%S", localtime(&backup_time))) {
+                if (strftime(buf, sizeof(buf), "%Y-%m-%d_%H-%M-%S", gmtime(&backup_time))) {
                     bak_filename = mprintf("%s.%s.map.bak.zip", requested_save_filename, buf);
                 }
                 if (bak_filename) {
@@ -5189,38 +5222,8 @@ static void frame(void *userdata) {
                                                                   "All Files\0" "*.*\0",
                                                                   L"Save DDS", false);
                 }
-                auto write = [&] {
-                    FILE *f = PH2CLD__fopen(dds_export_path, "wb");
-                    if (f) {
-                        defer {
-                            fclose(f);
-                        };
-                        assert(fwrite("DDS\x20", 4, 1, f) == 1);
-                        my_dds_header header = {};
-                        header.size = 0x7c;
-                        header.flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_LINEARSIZE;
-                        header.height = tex.height;
-                        header.width = tex.width;
-                        header.pitch_or_linear_size = (uint32_t)tex.blob.count;
-                        header.pixelformat_size = 32;
-                        header.pixelformat_flags = 4;
-                        // @Note: *PRETTY* sure this is fine??
-                        switch (tex.format) {
-                            case MAP_Texture_Format_BC1: { header.pixelformat_four_cc = FOURCC_DXT1; } break;
-                            case MAP_Texture_Format_BC2: { header.pixelformat_four_cc = FOURCC_DXT3; } break;
-                            case MAP_Texture_Format_BC3: { header.pixelformat_four_cc = FOURCC_DXT5; } break;
-                            default: { assert(false); } break;
-                        }
-                        header.caps = DDSCAPS_TEXTURE;
-                        assert(fwrite(&header, sizeof(header), 1, f) == 1);
-                        assert(fwrite(tex.blob.data, tex.blob.count, 1, f) == 1);
-                        MsgInfo("DDS Export", "Exported!");
-                    } else {
-                        MsgErr("DDS Export Error", "Couldn't open file \"%s\"!!", dds_export_path);
-                    }
-                };
                 if (dds_export_path) {
-                    write();
+                    bool success = export_dds(tex, dds_export_path);
                 }
 
                 char *dds_import_buf = nullptr;

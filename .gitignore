@@ -16,3 +16,6 @@ ph2*.exe
 *.glsl.h
 remedybg.exe
 *.spall
+ph2ed_proto/map/*.obj
+ph2ed_proto/map/*.obj.mtl
+ph2ed_proto/map/*.dds
