@@ -3574,7 +3574,6 @@ bool export_dds(MAP_Texture tex, char *filename) {
     header.caps = DDSCAPS_TEXTURE;
     assert(fwrite(&header, sizeof(header), 1, f) == 1);
     assert(fwrite(tex.blob.data, tex.blob.count, 1, f) == 1);
-    MsgInfo("DDS Export", "Exported!");
 
     return true;
 }
@@ -3830,7 +3829,7 @@ static void frame(void *userdata) {
                         // Log("UV: (%s, %s)", args[0], args[1]);
                         auto &uv = *obj_uvs.push();
                         uv.X = (float)atof(args[0]);
-                        uv.Y = (float)atof(args[1]);
+                        uv.Y = 1 - (float)atof(args[1]); // @Note: gotta flip from OpenGL convention to D3D convention so importing from e.g. Blender works. (@Todo: Is this actually true?)
                     } else if (strcmp("vn", directive) == 0) {
                         // Normal
                         assert(matches == 4);
@@ -4080,14 +4079,16 @@ static void frame(void *userdata) {
                 vertices_per_selected_buffer.push((int)buf.vertices.count);
                 for (auto &vert : buf.vertices) {
                     vertices.push( { vert.position[0], vert.position[1], vert.position[2] });
-                    uvs.push( { vert.uv[0], vert.uv[1] });
+                    uvs.push( { vert.uv[0], 1 - vert.uv[1] }); // @Note: gotta flip from D3D convention to OpenGL convention so Blender import works. (@Todo: Is this actually true?)
                     normals.push( { vert.normal[0], vert.normal[1], vert.normal[2] });
                 }
             }
         }
 
         fprintf(obj, "# .MAP mesh export from Psilent pHill 2 Editor (" URL ")\n");
+        fprintf(mtl, "# .MAP mesh export from Psilent pHill 2 Editor (" URL ")\n");
         fprintf(obj, "# Exported from filename: %s\n", g.opened_map_filename);
+        fprintf(mtl, "# Exported from filename: %s\n", g.opened_map_filename);
         char time_buf[sizeof("YYYY-MM-DD HH:MM:SS UTC")];
         {
             time_t t = time(nullptr);
@@ -4095,10 +4096,15 @@ static void frame(void *userdata) {
             assert(result);
         }
         fprintf(obj, "# Exported at %s\n", time_buf);
+        fprintf(mtl, "# Exported at %s\n", time_buf);
+        fprintf(mtl, "# Used with file: %s\n", obj_export_name);
 
         fprintf(obj, "\n");
         fprintf(obj, "mtllib %s\n", mtl_export_name);
         fprintf(obj, "\n");
+
+        fprintf(mtl, "\n");
+
         for (auto &v : vertices) {
             fprintf(obj, "v %f %f %f\n", v.X, v.Y, v.Z);
         }
@@ -4111,9 +4117,6 @@ static void frame(void *userdata) {
             fprintf(obj, "vn %f %f %f\n", vn.X, vn.Y, vn.Z);
         }
         fprintf(obj, "\n");
-        fprintf(obj, "o hello_object\n");
-        fprintf(obj, "g hello_group\n");
-        fprintf(obj, "\n");
 
         int index_base = 0;
         int selected_buffer_index = 0;
@@ -4123,10 +4126,90 @@ static void frame(void *userdata) {
             }
             if (buf.selected) {
                 defer { selected_buffer_index++; };
+                int geo_index = 0;
+                int mesh_index = 0;
+                // @Lazy @Hack @@@
+                for (auto &geo : g.geometries) {
+                    mesh_index = 0;
+                    for (auto &mesh : geo.opaque_meshes) {
+                        if (&mesh == buf.mesh_ptr) {
+                            goto double_break;
+                        }
+                        mesh_index++;
+                    }
+                    mesh_index = 0;
+                    for (auto &mesh : geo.transparent_meshes) {
+                        if (&mesh == buf.mesh_ptr) {
+                            goto double_break;
+                        }
+                        mesh_index++;
+                    }
+                    mesh_index = 0;
+                    for (auto &mesh : geo.decal_meshes) {
+                        if (&mesh == buf.mesh_ptr) {
+                            goto double_break;
+                        }
+                        mesh_index++;
+                    }
+                    geo_index++;
+                }
+                double_break:;
                 MAP_Mesh &mesh = *buf.mesh_ptr;
+
+                const char *source = "";
+                if (buf.source == MAP_Geometry_Buffer_Source::Opaque) { source = "Opaque"; }
+                else if (buf.source == MAP_Geometry_Buffer_Source::Transparent) { source = "Transparent"; }
+                else if (buf.source == MAP_Geometry_Buffer_Source::Decal) { source = "Decal"; }
+
+                fprintf(obj, "o Geometry_%d_%s_Mesh_%d\n", geo_index, source, mesh_index);
                 int indices_start = 0;
                 int mesh_part_group_index = 0;
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
+                    fprintf(obj, "  g Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
+                    fprintf(obj, "  usemtl MTL_Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
+                    fprintf(mtl,   "newmtl MTL_Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
+                    fprintf(mtl, "  Ka 0.0 0.0 0.0\n");
+                    fprintf(mtl, "  Kd 1.0 1.0 1.0\n");
+                    fprintf(mtl, "  Ks 0.0 0.0 0.0\n");
+                    fprintf(mtl, "  d 1.0\n");
+                    fprintf(mtl, "  illum 0\n");
+
+                    int mat_index = mpg.material_index;
+
+                    if (mat_index >= 0 && mat_index < 65536) {
+                        MAP_Material *material = g.materials.at_index(mat_index);
+                        if (material) {
+                            assert(material->texture_id >= 0);
+                            assert(material->texture_id < 65536);
+                            auto map_tex = map_get_texture_by_id(g, material->texture_id);
+                            if (map_tex) {
+                                assert(map_tex->tex.id);
+                                MAP_Texture *tex = map_tex->texture_ptr;
+                                assert(tex);
+                                char *tex_export_name = mprintf("%s.tex_%d.dds", obj_export_name, tex->id);
+                                if (!tex_export_name) {
+                                    MsgErr("OBJ Export Error", "Couldn't build texture export string for texture ID #%d!", tex->id);
+                                    return;
+                                }
+                                defer { free(tex_export_name); };
+                                bool export_success = export_dds(*tex, tex_export_name);
+                                if (!export_success) {
+                                    return;
+                                }
+
+                                fprintf(mtl, "  map_Kd %s\n", tex_export_name);
+                                if (tex->format != MAP_Texture_Format_BC1) {
+                                    fprintf(mtl, "  map_d -imfchan m %s\n", tex_export_name);
+                                }
+                            } else {
+                                fprintf(mtl, "  # This mesh part group referenced a material that references a texture that couldn't be found in the file's texture list at the time (Texture ID was %d).\n", material->texture_id);
+                            }
+                        } else {
+                            fprintf(mtl, "  # This mesh part group referenced a material that couldn't be found in the file's material list at the time (index was %d, but there were only %d materials).\n", mat_index, (int)g.materials.count());
+                        }
+                    } else {
+                        fprintf(mtl, "  # This mesh part group tried to reference a material that is out of bounds (index was %d, minimum is 0, maximum is 65535).\n", mat_index);
+                    }
                     defer { mesh_part_group_index++; };
                     int num_indices = buf.vertices_per_mesh_part_group[mesh_part_group_index];
                     assert(num_indices % 3 == 0);
@@ -4134,14 +4217,19 @@ static void frame(void *userdata) {
                         int a = index_base + buf.indices[indices_start + i] + 1;
                         int b = index_base + buf.indices[indices_start + i + 1] + 1;
                         int c = index_base + buf.indices[indices_start + i + 2] + 1;
-                        fprintf(obj, "f %d/%d/%d %d/%d/%d %d/%d/%d\n", a, a, a, b, b, b, c, c, c);
+                        fprintf(obj, "    f %d/%d/%d %d/%d/%d %d/%d/%d\n", a, a, a, b, b, b, c, c, c);
                     }
                     indices_start += num_indices;
+                    fprintf(obj, "\n");
+                    fprintf(mtl, "\n");
                 }
+                fprintf(obj, "\n");
 
                 index_base += vertices_per_selected_buffer[selected_buffer_index];
             }
         }
+
+        MsgInfo("OBJ Export", "Exported!");
     };
     if (obj_export_name) {
         export_to_obj();
@@ -5224,6 +5312,9 @@ static void frame(void *userdata) {
                 }
                 if (dds_export_path) {
                     bool success = export_dds(tex, dds_export_path);
+                    if (success) {
+                        MsgInfo("DDS Export", "Exported!");
+                    }
                 }
 
                 char *dds_import_buf = nullptr;
@@ -5244,6 +5335,12 @@ static void frame(void *userdata) {
                         tex = new_tex;
                     }
                 }
+
+                ImGui::SameLine();
+                if (tex.format == MAP_Texture_Format_BC1) ImGui::Text("Format: BC1 (RGB - Opaque)");
+                if (tex.format == MAP_Texture_Format_BC2) ImGui::Text("Format: BC2 (RGBA - Transparent/Decal)");
+                if (tex.format == MAP_Texture_Format_BC3) ImGui::Text("Format: BC3 (RGBA - Transparent/Decal)");
+
                 {
                     {
                         int x = tex.id;
