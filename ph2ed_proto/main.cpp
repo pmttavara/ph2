@@ -391,7 +391,7 @@ struct MAP_Geometry_Buffer {
     MAP_Geometry_Buffer_Source source = MAP_Geometry_Buffer_Source::Opaque;
     Array<MAP_Geometry_Vertex> vertices = {}; // @Todo: convert to local variable that gets released once uploaded
     Array<uint32_t> indices = {};
-    Array<int> faces_per_mesh_part_group = {}; // parallel with mesh part groups; indicates how many triangles in each group.
+    Array<int> vertices_per_mesh_part_group = {}; // parallel with mesh part groups; indicates how many triangles in each group.
     uint32_t id = 0;
     uint32_t subfile_index = 0;
     struct MAP_Geometry *geometry_ptr = nullptr;
@@ -905,7 +905,7 @@ struct G : Map {
 
     bool textured = true;
     bool use_colours = true;
-    bool cull_backfaces = false;
+    bool cull_backfaces = true;
     bool wireframe = false;
 
     char *opened_map_filename = nullptr;
@@ -1272,7 +1272,7 @@ void map_destrip_mesh_part_group(MAP_Geometry_Buffer &buffer, int &indices_index
         assert(num_vertices_written_in_this_strip <= (inner_max - 2) * 3 * outer_max);
         num_vertices_written += num_vertices_written_in_this_strip;
     }
-    buffer.faces_per_mesh_part_group.push(num_vertices_written);
+    buffer.vertices_per_mesh_part_group.push(num_vertices_written);
 }
 // We need 'misalignment' because some mesh groups are weirdly misaligned, and mesh alignment happens *with respect to that misalignment* (!!!!!!!!!!)
 static int map_load_mesh_group_or_decal_group(LinkedList<MAP_Mesh, The_Arena_Allocator> *meshes, uint32_t misalignment, const char *group_header, const char *end, bool is_decal) {
@@ -2137,6 +2137,23 @@ static void map_unload(G &g, bool release_only_geometry = false) {
 static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false, bool round_trip_test = false) {
     ProfileFunction();
 
+    {
+        auto filename16 = utf8_to_utf16(filename);
+        if (!filename16) {
+            LogC(IM_COL32(255, 127, 127, 255), "Couldn't convert filename! Memory error? Sorry!");
+        }
+        defer { free(filename16); };
+
+        uint16_t buffer[65536];
+
+        auto result = GetFullPathNameW((LPCWSTR)filename16, (DWORD)countof(buffer), (LPWSTR)buffer, nullptr);
+        assert(result > 2 && result < countof(buffer));
+
+        auto absolute_filename = utf16_to_utf8(buffer);
+        assert(absolute_filename);
+        filename = absolute_filename; // Sometimes @Leak of old filename? Don't care tbh
+    }
+
     map_unload(g, is_non_numbered_dependency);
 
     { // Semi-garbage code.
@@ -2504,7 +2521,7 @@ static void map_upload(G &g) {
                 }
 
                 {
-                    map_buffer.faces_per_mesh_part_group.clear();
+                    map_buffer.vertices_per_mesh_part_group.clear();
                 }
 
                 int indices_index = 0;
@@ -4026,11 +4043,17 @@ static void frame(void *userdata) {
         defer {
             normals.release();
         };
+
+        Array<int> vertices_per_selected_buffer = {};
+        defer {
+            vertices_per_selected_buffer.release();
+        };
         for (auto &buf : g.map_buffers) {
             if (&buf - g.map_buffers >= g.map_buffers_count) {
                 break;
             }
             if (buf.selected) {
+                vertices_per_selected_buffer.push((int)buf.vertices.count);
                 for (auto &vert : buf.vertices) {
                     vertices.push( { vert.position[0], vert.position[1], vert.position[2] });
                     uvs.push( { vert.uv[0], vert.uv[1] });
@@ -4038,7 +4061,7 @@ static void frame(void *userdata) {
                 }
             }
         }
-        assert(vertices.count % 3 == 0);
+
         fprintf(obj, "# .MAP mesh export from Psilent pHill 2 Editor (" URL ")\n");
         fprintf(obj, "\n");
         fprintf(obj, "usemtl %s\n", mtl_export_name);
@@ -4058,8 +4081,33 @@ static void frame(void *userdata) {
         fprintf(obj, "o hello_object\n");
         fprintf(obj, "g hello_group\n");
         fprintf(obj, "\n");
-        for (int64_t i = 0; i < vertices.count; i += 3) {
-            fprintf(obj, "f %lld/%lld/%lld %lld/%lld/%lld %lld/%lld/%lld\n", i + 1, i + 1, i + 1, i + 2, i + 2, i + 2, i + 3, i + 3, i + 3);
+
+        int index_base = 0;
+        int selected_buffer_index = 0;
+        for (MAP_Geometry_Buffer &buf : g.map_buffers) {
+            if (&buf - g.map_buffers >= g.map_buffers_count) {
+                break;
+            }
+            if (buf.selected) {
+                defer { selected_buffer_index++; };
+                MAP_Mesh &mesh = *buf.mesh_ptr;
+                int indices_start = 0;
+                int mesh_part_group_index = 0;
+                for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
+                    defer { mesh_part_group_index++; };
+                    int num_indices = buf.vertices_per_mesh_part_group[mesh_part_group_index];
+                    assert(num_indices % 3 == 0);
+                    for (int i = 0; i < num_indices; i += 3) {
+                        int a = index_base + buf.indices[indices_start + i] + 1;
+                        int b = index_base + buf.indices[indices_start + i + 1] + 1;
+                        int c = index_base + buf.indices[indices_start + i + 2] + 1;
+                        fprintf(obj, "f %d/%d/%d %d/%d/%d %d/%d/%d\n", a,a,a, b,b,b, c,c,c);
+                    }
+                    indices_start += num_indices;
+                }
+
+                index_base += vertices_per_selected_buffer[selected_buffer_index];
+            }
         }
     };
     if (obj_export_name) {
@@ -4942,7 +4990,11 @@ static void frame(void *userdata) {
                             if ((uint64_t)zip_entry_noallocread(zip, bufb, n) != n) return false;
                             bool equal = (memcmp(bufa, bufb, n) == 0);
                             if (!equal) return false;
-                            Log("Relying on existing backup \"%s\".", newest_valid_backup_name8);
+                            // Transfer ownership of the backup name string
+                            free(bak_filename);
+                            bak_filename = newest_valid_backup_name8;
+                            newest_valid_backup_name8 = nullptr;
+                            Log("Relying on existing backup \"%s\".", bak_filename);
                             return true;
                         };
                         if (check_latest_backup()) {
@@ -4950,6 +5002,10 @@ static void frame(void *userdata) {
                         }
                         uint16_t *bak_filename16 = utf8_to_utf16(bak_filename);
                         if (bak_filename16) {
+                            // If the original file existed, we'll try to backup, and backup_succeded will reflect success.
+                            // If the file didn't exist, we can't back anything up, so backup_succeeded will be 'true' in
+                            // order to drive the editor to save the file without complaining about lacking a backup.
+                            // @Todo: Copy the initial saved level so it can always be written out as a backup.
                             bool backup_succeeded = true;
                             auto try_backup = [&] {
                                 struct zip_t *zip = zip_open(bak_filename, ZIP_DEFAULT_COMPRESSION_LEVEL, 'w');
@@ -5322,9 +5378,9 @@ static void frame(void *userdata) {
             }
             ImGui::SameLine(); ImGui::Text("(%.0f, %.0f, %.0f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
             ImGui::Columns(1);
-            ImGui::Checkbox("MAP Textured", &g.textured); ImGui::SameLine(); ImGui::Checkbox("MAP Use Colours", &g.use_colours);
-            ImGui::SameLine(); ImGui::Checkbox("MAP Cull Backfaces", &g.cull_backfaces);
-            ImGui::SameLine(); ImGui::Checkbox("MAP Wireframe", &g.wireframe);
+            ImGui::Checkbox("Textures", &g.textured); ImGui::SameLine(); ImGui::Checkbox("Lighting Colours", &g.use_colours);
+            ImGui::SameLine(); ImGui::Checkbox("Front Sides Only", &g.cull_backfaces);
+            ImGui::SameLine(); ImGui::Checkbox("Wireframe", &g.wireframe);
             if (ImGui::BeginChild("###Viewport Rendering Region")) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
                 dl->AddCallback(viewport_callback, &g);
@@ -5564,7 +5620,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
             vs_params.V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
 
             for (int i = 0; i < g.map_buffers_count; i++) {
-                auto &buf = g.map_buffers[i];
+                MAP_Geometry_Buffer &buf = g.map_buffers[i];
                 if (!buf.shown) continue;
                 int num_times_to_render = buf.selected ? 2 : 1;
                 sg_pipeline pipelines[2] = {};
@@ -5624,7 +5680,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                                 tex = *map_tex;
                             }
                         }
-                        int num_indices = buf.faces_per_mesh_part_group[mesh_part_group_index];
+                        int num_indices = buf.vertices_per_mesh_part_group[mesh_part_group_index];
                         {
                             sg_bindings b = {};
                             b.vertex_buffers[0] = buf.vertex_buffer;
