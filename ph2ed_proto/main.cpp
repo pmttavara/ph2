@@ -4345,6 +4345,7 @@ static void frame(void *userdata) {
                 int num_untouched = 0;
                 int num_untouched_per_buf[4] = {};
 
+                // @Todo: Do we still need this if we are only selecting on mesh granularity now?
                 static bool (vertices_touched[4])[65536];
                 static int (vertex_remap[4])[65536];
 
@@ -4383,7 +4384,7 @@ static void frame(void *userdata) {
                     return;
                 }
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Text, 0xe00d3bff);
+                    ImGui::PushStyleColor(ImGuiCol_Text, 0xff0d3be0);
                     ImGui::Text("%s #%d has %d unreferenced vertices", str, i, num_untouched);
                     ImGui::PopStyleColor();
                 }
@@ -5510,14 +5511,14 @@ static void frame(void *userdata) {
                 {
                     auto bgra = PH2MAP_u32_to_bgra(mat.material_color);
                     ImVec4 rgba = { bgra.Z, bgra.Y, bgra.X, bgra.W };
-                    ImGui::ColorEdit4("Color", &rgba.x);
+                    ImGui::ColorEdit4("Color (Note: not gamma-corrected!)", &rgba.x);
                     bgra = { rgba.z, rgba.y, rgba.x, rgba.w };
                     mat.material_color = PH2MAP_bgra_to_u32(bgra);
                 }
                 {
                     auto bgra = PH2MAP_u32_to_bgra(mat.overlay_color);
                     ImVec4 rgba = { bgra.Z, bgra.Y, bgra.X, bgra.W };
-                    ImGui::ColorEdit4("Overlay Color", &rgba.x);
+                    ImGui::ColorEdit4("Overlay Color (Note: not gamma-corrected!)", &rgba.x);
                     bgra = { rgba.z, rgba.y, rgba.x, rgba.w };
                     mat.overlay_color = PH2MAP_bgra_to_u32(bgra);
                 }
@@ -5567,6 +5568,9 @@ static void frame(void *userdata) {
             ImGui::Checkbox("Textures", &g.textured); ImGui::SameLine(); ImGui::Checkbox("Lighting Colours", &g.use_colours);
             ImGui::SameLine(); ImGui::Checkbox("Front Sides Only", &g.cull_backfaces);
             ImGui::SameLine(); ImGui::Checkbox("Wireframe", &g.wireframe);
+            ImGui::PushStyleColor(ImGuiCol_Text, 0xff10bcb6);
+            ImGui::SameLine(); ImGui::Text(" Note: Map in viewport may be brighter or darker than in-game");
+            ImGui::PopStyleColor();
             if (ImGui::BeginChild("###Viewport Rendering Region")) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
                 dl->AddCallback(viewport_callback, &g);
