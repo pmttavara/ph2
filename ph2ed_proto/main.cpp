@@ -2842,6 +2842,12 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
     {
         ImGuiIO &io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        io.ConfigFlags |= ImGuiConfigFlags_NavNoCaptureKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleViewports;
+        io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
         io.ConfigWindowsMoveFromTitleBarOnly = false; // only really needed because the resize widget is in the bottom right corner and we can't resize from edges for some reason...
         io.ConfigWindowsResizeFromEdges = true; // Why doesn't this work???
 
@@ -3590,6 +3596,23 @@ static void NO_SANITIZE no_asan_memcpy(void *destination, void *source, size_t c
     }
 }
 
+static hmm_v4 PH2MAP_u32_to_bgra(uint32_t u) {
+    hmm_v4 bgra = {
+        ((u >> 0) & 0xff) * (1.0f / 255),
+        ((u >> 8) & 0xff) * (1.0f / 255),
+        ((u >> 16) & 0xff) * (1.0f / 255),
+        ((u >> 24) & 0xff) * (1.0f / 255),
+    };
+    return bgra;
+}
+static uint32_t PH2MAP_bgra_to_u32(hmm_v4 bgra) {
+    uint32_t u = (uint32_t)(clamp(bgra.X, 0.0f, 1.0f) * 255) << 0 |
+                 (uint32_t)(clamp(bgra.Y, 0.0f, 1.0f) * 255) << 8 |
+                 (uint32_t)(clamp(bgra.Z, 0.0f, 1.0f) * 255) << 16 |
+                 (uint32_t)(clamp(bgra.W, 0.0f, 1.0f) * 255) << 24;
+    return u;
+}
+
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd);
 static void frame(void *userdata) {
     ProfileFunction();
@@ -4097,13 +4120,10 @@ static void frame(void *userdata) {
         }
         fprintf(obj, "# Exported at %s\n", time_buf);
         fprintf(mtl, "# Exported at %s\n", time_buf);
-        fprintf(mtl, "# Used with file: %s\n", obj_export_name);
 
         fprintf(obj, "\n");
         fprintf(obj, "mtllib %s\n", mtl_export_name);
         fprintf(obj, "\n");
-
-        fprintf(mtl, "\n");
 
         for (auto &v : vertices) {
             fprintf(obj, "v %f %f %f\n", v.X, v.Y, v.Z);
@@ -4117,6 +4137,21 @@ static void frame(void *userdata) {
             fprintf(obj, "vn %f %f %f\n", vn.X, vn.Y, vn.Z);
         }
         fprintf(obj, "\n");
+
+        static bool material_touched[65536];
+        memset(material_touched, 0, sizeof(material_touched));
+
+        int materials_count = (int)g.materials.count();
+        assert(materials_count >= 0 && materials_count < 65536);
+
+        int materials_referenced = 0;
+        int unique_materials_referenced = 0;
+
+        static bool texture_id_touched[65536];
+        memset(texture_id_touched, 0, sizeof(texture_id_touched));
+
+        int textures_referenced = 0;
+        int unique_textures_referenced = 0;
 
         int index_base = 0;
         int selected_buffer_index = 0;
@@ -4166,49 +4201,22 @@ static void frame(void *userdata) {
                 int mesh_part_group_index = 0;
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
                     fprintf(obj, "  g Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
-                    fprintf(obj, "  usemtl MTL_Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
-                    fprintf(mtl,   "newmtl MTL_Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
-                    fprintf(mtl, "  Ka 0.0 0.0 0.0\n");
-                    fprintf(mtl, "  Kd 1.0 1.0 1.0\n");
-                    fprintf(mtl, "  Ks 0.0 0.0 0.0\n");
-                    fprintf(mtl, "  d 1.0\n");
-                    fprintf(mtl, "  illum 0\n");
 
                     int mat_index = mpg.material_index;
 
                     if (mat_index >= 0 && mat_index < 65536) {
-                        MAP_Material *material = g.materials.at_index(mat_index);
-                        if (material) {
-                            assert(material->texture_id >= 0);
-                            assert(material->texture_id < 65536);
-                            auto map_tex = map_get_texture_by_id(g, material->texture_id);
-                            if (map_tex) {
-                                assert(map_tex->tex.id);
-                                MAP_Texture *tex = map_tex->texture_ptr;
-                                assert(tex);
-                                char *tex_export_name = mprintf("%s.tex_%d.dds", obj_export_name, tex->id);
-                                if (!tex_export_name) {
-                                    MsgErr("OBJ Export Error", "Couldn't build texture export string for texture ID #%d!", tex->id);
-                                    return;
-                                }
-                                defer { free(tex_export_name); };
-                                bool export_success = export_dds(*tex, tex_export_name);
-                                if (!export_success) {
-                                    return;
-                                }
-
-                                fprintf(mtl, "  map_Kd %s\n", tex_export_name);
-                                if (tex->format != MAP_Texture_Format_BC1) {
-                                    fprintf(mtl, "  map_d -imfchan m %s\n", tex_export_name);
-                                }
-                            } else {
-                                fprintf(mtl, "  # This mesh part group referenced a material that references a texture that couldn't be found in the file's texture list at the time (Texture ID was %d).\n", material->texture_id);
+                        if (mat_index < materials_count) {
+                            materials_referenced++;
+                            if (!material_touched[mat_index]) {
+                                material_touched[mat_index] = true;
+                                unique_materials_referenced++;
                             }
+                            fprintf(obj, "    usemtl PH2MAP_Material_%d\n", mat_index);
                         } else {
-                            fprintf(mtl, "  # This mesh part group referenced a material that couldn't be found in the file's material list at the time (index was %d, but there were only %d materials).\n", mat_index, (int)g.materials.count());
+                            fprintf(obj, "    # Note: This mesh part group referenced a material that couldn't be found in the file's material list at the time (index was %d, but there were only %d materials).\n", mat_index, materials_count);
                         }
                     } else {
-                        fprintf(mtl, "  # This mesh part group tried to reference a material that is out of bounds (index was %d, minimum is 0, maximum is 65535).\n", mat_index);
+                        fprintf(obj, "    # Note: This mesh part group tried to reference a material that is out of bounds (index was %d, minimum is 0, maximum is 65535).\n", mat_index);
                     }
                     defer { mesh_part_group_index++; };
                     int num_indices = buf.vertices_per_mesh_part_group[mesh_part_group_index];
@@ -4221,7 +4229,6 @@ static void frame(void *userdata) {
                     }
                     indices_start += num_indices;
                     fprintf(obj, "\n");
-                    fprintf(mtl, "\n");
                 }
                 fprintf(obj, "\n");
 
@@ -4229,22 +4236,118 @@ static void frame(void *userdata) {
             }
         }
 
+        fprintf(mtl, "# Used with file: %s\n", obj_export_name);
+        fprintf(mtl, "\n");
+
+        int material_index = 0;
+        for (MAP_Material &material : g.materials) {
+            defer { material_index++; };
+            if (!material_touched[material_index]) continue;
+
+            fprintf(mtl, "newmtl PH2MAP_Material_%d\n", material_index);
+            fprintf(mtl, "  Ka 0.0 0.0 0.0\n");
+            fprintf(mtl, "  Kd 1.0 1.0 1.0\n");
+            fprintf(mtl, "  Ks 0.0 0.0 0.0\n");
+            fprintf(mtl, "  d 1.0\n");
+            fprintf(mtl, "  illum 0\n");
+
+            assert(material.texture_id >= 0);
+            assert(material.texture_id < 65536);
+            auto map_tex = map_get_texture_by_id(g, material.texture_id);
+            if (map_tex) {
+                assert(map_tex->tex.id);
+                MAP_Texture *tex = map_tex->texture_ptr;
+                assert(tex);
+                char *tex_export_name = mprintf("%s.tex_%d.dds", obj_export_name, tex->id);
+                if (!tex_export_name) {
+                    MsgErr("OBJ Export Error", "Couldn't build texture export string for texture ID #%d!", tex->id);
+                    return;
+                }
+                defer { free(tex_export_name); };
+
+                assert(tex->id >= 0); // Probably redundant but whatever!
+                assert(tex->id < 65536);
+                textures_referenced++;
+                if (!texture_id_touched[tex->id]) {
+                    texture_id_touched[tex->id] = true;
+                    unique_textures_referenced++;
+
+                    bool export_success = export_dds(*tex, tex_export_name);
+                    if (!export_success) {
+                        return;
+                    }
+
+                }
+
+                fprintf(mtl, "  map_Kd %s\n", tex_export_name);
+                if (tex->format != MAP_Texture_Format_BC1) {
+                    fprintf(mtl, "  map_d -imfchan m %s\n", tex_export_name);
+                }
+            } else {
+                fprintf(mtl, "  # Note: This material references a texture that couldn't be found in the file's texture list at the time (Texture ID was %d).\n", material.texture_id);
+            }
+
+            fprintf(mtl, "\n");
+        }
+
+        assert(material_index == materials_count); // Ensure we checked all materials.
+
+        Log("Material deduplicator: %d unique materials referenced out of %d total.", unique_materials_referenced, materials_referenced);
+        Log("Texture deduplicator: %d unique textures referenced out of %d total.", unique_textures_referenced, textures_referenced);
+
         MsgInfo("OBJ Export", "Exported!");
     };
     if (obj_export_name) {
         export_to_obj();
     }
+
+    auto texture_preview_tooltip = [&g] (int tex_id) {
+        ImGui::BeginTooltip();
+
+        auto tex = map_get_texture_by_id(g, tex_id);
+        if (tex) {
+
+            const int DIM = 256;
+
+            assert(tex);
+            assert(tex->tex.id);
+            float w = (float)tex->width;
+            float h = (float)tex->height;
+            float aspect = w / h;
+            if (w > DIM) {
+                w = DIM;
+                h = w / aspect;
+            }
+            if (h > DIM) {
+                h = DIM;
+                w = h * aspect;
+            }
+
+            if (w > 0 && h > 0) {
+                ImGui::Image((ImTextureID)(uintptr_t)tex->tex.id, ImVec2(w, h));
+            }
+
+        } else {
+            ImGui::SameLine(0, 0);
+            ImGui::Text("(No such texture)");
+        }
+
+        ImGui::EndTooltip();
+    };
+
     if (g.show_editor) {
         ImGui::Begin("Editor", &g.show_editor, ImGuiWindowFlags_NoCollapse);
         defer {
             ImGui::End();
         };
         {
-            static bool (vertices_touched[4])[65536] = {};
-            static int (vertex_remap[4])[65536] = {};
             auto iterate_mesh = [&] (const char *str, int i, MAP_Mesh &mesh) {
                 int num_untouched = 0;
                 int num_untouched_per_buf[4] = {};
+
+                static bool (vertices_touched[4])[65536];
+                static int (vertex_remap[4])[65536];
+
                 for (auto &buf : mesh.vertex_buffers) {
                     int buf_index = (int)(&buf - mesh.vertex_buffers.data);
                     assert(buf_index >= 0);
@@ -4500,60 +4603,36 @@ static void frame(void *userdata) {
                         int mat_index = mesh_part_group.material_index;
                         ImGui::Text("Material Index:");
                         if (ImGui::InputInt("###Material Index", &mat_index)) {
-                            int mat_count = (int)g.materials.count() + (int)!!g.materials.empty();
-                            mat_index = (mat_index % mat_count + mat_count) % mat_count;
+                            // int mat_count = (int)g.materials.count() + (int)!!g.materials.empty();
+                            // mat_index = (mat_index % mat_count + mat_count) % mat_count;
                             mesh_part_group.material_index = (uint16_t)mat_index;
                         }
-                        {
-                            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-                                ImGui::BeginTooltip();
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                            ImGui::BeginTooltip();
 
-                                MAP_Texture_Buffer *tex = &g.missing_texture;
-                                MAP_Material *material = nullptr;
+                            MAP_Material *material = nullptr;
 
-                                int attempted_tex_id = 0;
+                            int tex_id = 0;
 
-                                if (mat_index >= 0 && mat_index < 65536) {
-                                    material = g.materials.at_index(mat_index);
-                                    if (material) {
-                                        assert(material->texture_id >= 0);
-                                        assert(material->texture_id < 65536);
-                                        attempted_tex_id = material->texture_id;
-                                        auto map_tex = map_get_texture_by_id(g, material->texture_id);
-                                        if (map_tex) {
-                                            assert(map_tex->tex.id);
-                                            tex = map_tex;
-                                        }
-                                    }
+                            if (mat_index >= 0 && mat_index < 65536) {
+                                material = g.materials.at_index(mat_index);
+                                if (material) {
+                                    assert(material->texture_id >= 0);
+                                    assert(material->texture_id < 65536);
+                                    tex_id = material->texture_id;
                                 }
+                            }
 
-                                if (!material) {
-                                    ImGui::Text("Material #%u => (No such material)", mat_index);
-                                } else if (tex == &g.missing_texture) {
-                                    ImGui::Text("Material #%u => (No such texture ID #%u)", mat_index, attempted_tex_id);
-                                } else {
-                                    ImGui::Text("Material #%u => Texture ID #%u", mat_index, attempted_tex_id);
-                                }
+                            if (material) {
+                                ImGui::Text("Material #%d => Texture ID #%d ", mat_index, tex_id);
+                            } else {
+                                ImGui::Text("Material #%d (No such material)", mat_index);
+                            }
 
-                                assert(tex);
-                                assert(tex->tex.id);
-                                float w = (float)tex->width;
-                                float h = (float)tex->height;
-                                float aspect = w / h;
-                                if (w > 128) {
-                                    w = 128;
-                                    h = w / aspect;
-                                }
-                                if (h > 128) {
-                                    h = 128;
-                                    w = h * aspect;
-                                }
+                            ImGui::EndTooltip();
 
-                                if (w > 0 && h > 0) {
-                                    ImGui::Image((ImTextureID)(uintptr_t)tex->tex.id, ImVec2(w, h));
-                                }
-
-                                ImGui::EndTooltip();
+                            if (material) {
+                                texture_preview_tooltip(tex_id);
                             }
                         }
                     }
@@ -5423,17 +5502,24 @@ static void frame(void *userdata) {
                     ImGui::InputInt("TexID", &x);
                     x = clamp(x, 0, 65535);
                     mat.texture_id = (uint16_t)x;
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                        texture_preview_tooltip(mat.texture_id);
+                    }
                 }
                 ImGui::Columns(1);
                 {
-                    auto c = ImGui::ColorConvertU32ToFloat4(mat.material_color);
-                    ImGui::ColorEdit4("Color", &c.x);
-                    mat.material_color = ImGui::ColorConvertFloat4ToU32(c);
+                    auto bgra = PH2MAP_u32_to_bgra(mat.material_color);
+                    ImVec4 rgba = { bgra.Z, bgra.Y, bgra.X, bgra.W };
+                    ImGui::ColorEdit4("Color", &rgba.x);
+                    bgra = { rgba.z, rgba.y, rgba.x, rgba.w };
+                    mat.material_color = PH2MAP_bgra_to_u32(bgra);
                 }
                 {
-                    auto c = ImGui::ColorConvertU32ToFloat4(mat.overlay_color);
-                    ImGui::ColorEdit4("Overlay Color", &c.x);
-                    mat.overlay_color = ImGui::ColorConvertFloat4ToU32(c);
+                    auto bgra = PH2MAP_u32_to_bgra(mat.overlay_color);
+                    ImVec4 rgba = { bgra.Z, bgra.Y, bgra.X, bgra.W };
+                    ImGui::ColorEdit4("Overlay Color", &rgba.x);
+                    bgra = { rgba.z, rgba.y, rgba.x, rgba.w };
+                    mat.overlay_color = PH2MAP_bgra_to_u32(bgra);
                 }
                 ImGui::DragFloat("Specularity", &mat.specularity);
             }
@@ -5752,6 +5838,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                     fs_params.use_colours = g.use_colours;
                     fs_params.shaded = !g.use_colours;
                     fs_params.highlight_amount = 0;
+                    fs_params.material_diffuse_color_bgra = HMM_Vec4(1, 1, 1, 1);
                     if (is_wireframe) {
                         fs_params.textured = false;
                         fs_params.use_colours = false;
@@ -5760,8 +5847,6 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                             fs_params.highlight_amount = (float)sin(g.t * TAU * 1.0f) * 0.5f + 0.5f;
                         }
                     }
-                    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
-                    sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
                     MAP_Mesh &mesh = *buf.mesh_ptr;
                     int indices_start = 0;
                     int mesh_part_group_index = 0;
@@ -5779,6 +5864,9 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                                 assert(map_tex->tex.id);
                                 tex = *map_tex;
                             }
+                            if (material->mode != 0) { // @Todo: which modes use diffuse colours/etc.?????
+                                fs_params.material_diffuse_color_bgra = PH2MAP_u32_to_bgra(material->material_color);
+                            }
                         }
                         int num_indices = buf.vertices_per_mesh_part_group[mesh_part_group_index];
                         {
@@ -5786,6 +5874,8 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                             b.vertex_buffers[0] = buf.vertex_buffer;
                             b.index_buffer = buf.index_buffer;
                             b.fs_images[0] = tex.tex;
+                            sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_map_vs_params, SG_RANGE(vs_params));
+                            sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_map_fs_params, SG_RANGE(fs_params));
                             sg_apply_bindings(b);
                             sg_draw(indices_start, (int)num_indices, 1);
                         }
