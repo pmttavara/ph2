@@ -4258,7 +4258,16 @@ static void frame(void *userdata) {
                                 material_touched[mat_index] = true;
                                 unique_materials_referenced++;
                             }
-                            fprintf(obj, "    usemtl PH2MAP_Material_%d\n", mat_index);
+                            MAP_Material *mat_ = g.materials.at_index(mat_index);
+                            assert(mat_);
+                            MAP_Material &mat = *mat_;
+                            fprintf(obj,
+                                    "    usemtl PH2Mat_%02x_Mode_%d_%08x_%08x_%08x\n",
+                                    mat_index,
+                                    mat.mode,
+                                    mat.diffuse_color,
+                                    mat.specular_color,
+                                    *(uint32_t *)&mat.specularity);
                         } else {
                             fprintf(obj, "    # Note: This mesh part group referenced a material that couldn't be found in the file's material list at the time (index was %d, but there were only %d materials).\n", mat_index, materials_count);
                         }
@@ -4291,12 +4300,25 @@ static void frame(void *userdata) {
             defer { material_index++; };
             if (!material_touched[material_index]) continue;
 
-            fprintf(mtl, "newmtl PH2MAP_Material_%d\n", material_index);
+            fprintf(mtl,
+                    "newmtl PH2Mat_%02x_Mode_%d_%08x_%08x_%08x\n",
+                    material_index,
+                    material.mode,
+                    material.diffuse_color,
+                    material.specular_color,
+                    *(uint32_t *)&material.specularity);
             fprintf(mtl, "  Ka 0.0 0.0 0.0\n");
-            fprintf(mtl, "  Kd 1.0 1.0 1.0\n");
-            fprintf(mtl, "  Ks 0.0 0.0 0.0\n");
-            fprintf(mtl, "  d 1.0\n");
-            fprintf(mtl, "  illum 0\n");
+            {
+                auto c = PH2MAP_u32_to_bgra(material.diffuse_color);
+                fprintf(mtl, "  Kd %f %f %f\n", c.Z, c.Y, c.X);
+            }
+            {
+                auto c = PH2MAP_u32_to_bgra(material.specular_color);
+                float spec_intensity = material.specularity / 50.0f; // @Todo: ????????????
+                c *= spec_intensity;
+                fprintf(mtl, "  Ks %f %f %f\n", c.Z, c.Y, c.X);
+            }
+            // fprintf(mtl, "  d 1.0\n");
 
             assert(material.texture_id >= 0);
             assert(material.texture_id < 65536);
