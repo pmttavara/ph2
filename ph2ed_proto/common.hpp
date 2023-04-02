@@ -90,10 +90,11 @@ static inline int assert_(const char *s) {
 #define assert_STR(LINE) assert_STR_(LINE)
 #undef assert
 #ifdef NDEBUG
-#define assert(ignore) ((void)0)
+#define PH2_assert(ignore) ((void)0)
 #else
-#define assert(e) ((e) || assert_("At " __FILE__ ":" assert_STR(__LINE__) ":\n\n" #e "\n\nPress Retry to debug.") && (__debugbreak(), 0))
+#define PH2_assert(e) ((e) || assert_("At " __FILE__ ":" assert_STR(__LINE__) ":\n\n" #e "\n\nPress Retry to debug.") && (__debugbreak(), 0))
 #endif
+#define assert PH2_assert
 #ifdef __cplusplus
 }
 #endif
@@ -101,8 +102,8 @@ static inline int assert_(const char *s) {
 #include <assert.h>
 #endif // _WIN32
 
-#define IM_ASSERT assert
-#define SOKOL_ASSERT assert
+#define IM_ASSERT PH2_assert
+#define SOKOL_ASSERT PH2_assert
 
 #include <stdint.h>
 

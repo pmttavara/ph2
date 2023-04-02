@@ -139,6 +139,8 @@ void MsgBox_(const char *title, int flag, const char *msg, ...) {
 #include "HandmadeMath.h"
 
 #include "meshoptimizer.h"
+#undef assert
+#define assert PH2_assert
 
 #define PH2CLD_IMPLEMENTATION
 #include "../cld/ph2_cld.h"
@@ -347,6 +349,7 @@ struct Ray {
 const float FOV_MIN = 10 * (TAU32 / 360);
 const float FOV_MAX = 179 * (TAU32 / 360);
 const float FOV_DEFAULT = 90 * (TAU32 / 360);
+const hmm_v3 BG_COL_DEFAULT = { 0.125f, 0.125f, 0.125f };
 const float MOVE_SPEED_DEFAULT = -2;
 const float MOVE_SPEED_MAX = 6;
 struct CLD_Face_Buffer {
@@ -635,12 +638,16 @@ struct MAP_Geometry : Node {
 
 struct MAP_Material : Node {
     uint32_t subfile_index = 0;
-    int16_t mode;
+    uint16_t mode;
     uint16_t texture_id;
-    uint32_t material_color;
-    uint32_t overlay_color;
+    uint32_t diffuse_color;
+    uint32_t specular_color;
     float specularity;
 };
+
+static bool PH2MAP_material_mode_is_valid(int mode) {
+    return mode == 0 || mode == 1 || mode == 2 || mode == 3 || mode == 4 || mode == 6;
+}
 
 struct MAP_Sprite_Metadata {
     uint16_t id;
@@ -812,6 +819,7 @@ struct G : Map {
 
     ControlState control_state = {};
     float fov = FOV_DEFAULT;
+    hmm_v3 bg_col = BG_COL_DEFAULT;
 
     hmm_vec3 displacement = {};
     hmm_vec3 scaling_factor = {1, 1, 1};
@@ -887,6 +895,8 @@ struct G : Map {
     MAP_Texture_Subfile *ui_selected_texture_subfile = nullptr;
     MAP_Texture *ui_selected_texture = nullptr;
 
+    int solo_material = -1; // @Hack, but whatever.
+
     bool cld_must_update = false;
     bool map_must_update = false;
 
@@ -904,7 +914,8 @@ struct G : Map {
     bool subgroup_visible[16] = {true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true};
 
     bool textured = true;
-    bool use_colours = true;
+    bool use_lighting_colours = true;
+    bool use_material_colours = true;
     bool cull_backfaces = true;
     bool wireframe = false;
 
@@ -1152,10 +1163,10 @@ struct PH2MAP__Vertex_Section_Header {
     int32_t section_length;
 };
 struct PH2MAP__Material {
-    int16_t mode;
+    uint16_t mode;
     uint16_t texture_id;
-    uint32_t material_color;
-    uint32_t overlay_color;
+    uint32_t diffuse_color;
+    uint32_t specular_color;
     float specularity;
 };
 
@@ -2079,8 +2090,8 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
             PH2MAP__Material material = {};
             material.mode = mat.mode;
             material.texture_id = mat.texture_id;
-            material.material_color = mat.material_color;
-            material.overlay_color = mat.overlay_color;
+            material.diffuse_color = mat.diffuse_color;
+            material.specular_color = mat.specular_color;
             material.specularity = mat.specularity;
             Write(material);
         }
@@ -2332,6 +2343,40 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         PH2MAP__Material material = {};
                         Read(ptr2, material);
                         assert(PH2CLD__sanity_check_float(material.specularity));
+                        assert(PH2MAP_material_mode_is_valid(material.mode));
+                        assert((material.diffuse_color & 0xff000000) == 0xff000000);
+                        assert(material.specular_color == 0 || (material.specular_color & 0xff000000) == 0xff000000);
+                        assert(material.specularity >= 0);
+                        assert(material.specularity <= 300);
+                        static bool specularities[301];
+                        if (!specularities[(int)material.specularity]) {
+                            specularities[(int)material.specularity] = true;
+                            Log("Specularity %f", material.specularity);
+                        }
+
+                        if (material.mode == 0) { // 0 - Emissive
+                            assert((material.specular_color & 0x00ffffff) == 0);
+                            assert(material.specularity == 0);
+                        } else if (material.mode == 1) { // 1 - Coloured Diffuse
+                            assert((material.specular_color & 0x00ffffff) == 0);
+                            assert(material.specularity == 0);
+                        } else if (material.mode == 2) { // 2 - Coloured Diffuse + Coloured Specular
+                            assert((material.diffuse_color & 0x00ffffff) > 0);
+                            assert((material.specular_color & 0x00ffffff) > 0);
+                            assert(material.specularity > 0);
+                        } else if (material.mode == 3) { // 3 - VantaBlack (totally black) // @Todo: how does the texture format work here?
+                            assert((material.diffuse_color & 0x00ffffff) == 0);
+                            assert((material.specular_color & 0x00ffffff) == 0);
+                            assert(material.specularity == 0);
+                        } else if (material.mode == 4) { // 4 - Just Diffuse (material diffuse colour overridden to white)
+                            assert((material.diffuse_color & 0x00ffffff) == 0);
+                            assert((material.specular_color & 0x00ffffff) == 0);
+                            assert(material.specularity == 0);
+                        } else if (material.mode == 6) { // 6 - Unknown - also Coloured Diffuse?
+                            assert((material.diffuse_color & 0x00ffffff) > 0);
+                            assert((material.specular_color & 0x00ffffff) == 0);
+                            assert(material.specularity == 0);
+                        }
 
                         MAP_Material mat = {};
                         defer {
@@ -2340,8 +2385,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         mat.subfile_index = subfile_index;
                         mat.mode = material.mode;
                         mat.texture_id = material.texture_id;
-                        mat.material_color = material.material_color;
-                        mat.overlay_color = material.overlay_color;
+                        mat.diffuse_color = material.diffuse_color;
+                        mat.specular_color = material.specular_color;
                         mat.specularity = material.specularity;
                     }
                     assert(ptr2 == ptr);
@@ -2477,6 +2522,8 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
 
     g.opened_map_filename = strdup(filename);
     assert(g.opened_map_filename);
+
+    g.solo_material = -1;
 }
 static void map_upload(G &g) {
     ProfileFunction();
@@ -2858,7 +2905,7 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
         fontCfg.RasterizerMultiply = 1.5f;
         // io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/consola.ttf", 14, &fontCfg);
         io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/arial.ttf", 14, &fontCfg);
-        
+
         // create font texture for the custom font
         unsigned char* font_pixels;
         int font_width, font_height;
@@ -4530,6 +4577,7 @@ static void frame(void *userdata) {
                 }
             }
             if (all_buffers_shown ? ImGui::Button("Hide All") : ImGui::Button("Show All")) {
+                g.solo_material = -1;
                 for (int i = 0; i < g.map_buffers_count; i++) {
                     g.map_buffers[i].shown = !all_buffers_shown;
                 }
@@ -4538,6 +4586,7 @@ static void frame(void *userdata) {
                 }
             }
             ImGui::SameLine(); if (all_buffers_selected ? ImGui::Button("Select None") : ImGui::Button("Select All")) {
+                g.solo_material = -1;
                 for (int i = 0; i < g.map_buffers_count; i++) {
                     g.map_buffers[i].selected = !all_buffers_selected;
                 }
@@ -4608,7 +4657,7 @@ static void frame(void *userdata) {
                             // mat_index = (mat_index % mat_count + mat_count) % mat_count;
                             mesh_part_group.material_index = (uint16_t)mat_index;
                         }
-                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                        if (ImGui::IsItemHovered()) {
                             ImGui::BeginTooltip();
 
                             MAP_Material *material = nullptr;
@@ -4681,6 +4730,7 @@ static void frame(void *userdata) {
                     pressed = ImGui::Checkbox("###Geometry All Visible", &all_on);
                 }
                 if (pressed) {
+                    g.solo_material = -1;
                     for (auto &meshes : the_mesh_arrays) {
                         for (auto &mesh : *meshes) {
                             visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
@@ -4782,6 +4832,7 @@ static void frame(void *userdata) {
                             pressed = ImGui::Checkbox("###Mesh All Part Groups Visible", &all_on);
                         }
                         if (pressed) {
+                            g.solo_material = -1;
                             visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
                                 assert(b.geometry_ptr == &geo);
                                 b.shown = all_on;
@@ -5327,8 +5378,6 @@ static void frame(void *userdata) {
             free(s);
         }
     }
-    // @Hack: the map updates after Imgui gets an Image() call, but before Imgui renders,
-    //        so we just make it never call Image() on a frame that reuploads textures
     if (g.map_must_update) {
         g.ui_selected_texture_subfile = nullptr;
         g.ui_selected_texture = nullptr;
@@ -5467,6 +5516,11 @@ static void frame(void *userdata) {
             }
         }
     }
+
+    if (g.solo_material > g.materials.count()) {
+        g.solo_material = -1;
+    }
+
     if (g.show_materials) {
         ImGui::SetNextWindowPos(ImVec2 { 60 + 256 + 20, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(512, 256), ImGuiCond_FirstUseEver);
@@ -5479,22 +5533,101 @@ static void frame(void *userdata) {
         for (auto &mat : g.materials) {
             ImGui::PushID("Material iteration");
             ImGui::PushID(&mat);
-            ImGui::Text("Material #%d", i); {
-                ImGui::SameLine();
-                if (ImGui::Button("Delete###Delete material")) {
-                    delete_mat = &mat;
+            bool soloed = (g.solo_material == i);
+            if (ImGui::Checkbox("Solo", &soloed)) {
+                if (soloed) {
+                    g.solo_material = i;
+                } else {
+                    g.solo_material = -1;
                 }
-
-                ImGui::Indent();
-                defer {
-                    ImGui::Unindent();
-                };
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Delete###Delete material")) {
+                delete_mat = &mat;
+            }
+            ImGui::SameLine();
+            char buf[256];
+            {
+                int n = 0;
+                if (n < sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, "#%03d: Mode %d", i, mat.mode);
+                if (PH2MAP_material_mode_is_valid(mat.mode)) {
+                    if (n < sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, ", TexID %05d", mat.texture_id);
+                } else {
+                    if (n < sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, " (Invalid mode; valid is 0-4 and 6)");
+                }
+                if (mat.mode == 0 || mat.mode == 1 || mat.mode == 2 || mat.mode == 6) {
+                    uint32_t u = mat.diffuse_color;
+                    int b = ((u >> 0) & 0xff), g = ((u >> 8) & 0xff), r = ((u >> 16) & 0xff), a = ((u >> 24) & 0xff);
+                    if (n < sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, ", Diffuse (%03d,%03d,%03d)", r, g, b);
+                }
+                if (mat.mode == 2) {
+                    uint32_t u = mat.specular_color;
+                    int b = ((u >> 0) & 0xff), g = ((u >> 8) & 0xff), r = ((u >> 16) & 0xff), a = ((u >> 24) & 0xff);
+                    if (n < sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, ", Specular (%03d,%03d,%03d), Specularity %f", r, g, b, mat.specularity);
+                }
+            }
+            bool res = ImGui::TreeNodeEx(&mat, 0, buf);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::BeginTooltip();
+                ImGui::Text("Texture ID #%d ", mat.texture_id);
+                ImGui::EndTooltip();
+                texture_preview_tooltip(mat.texture_id);
+            }
+            if (res) {
+                defer { ImGui::TreePop(); };
 
                 ImGui::Columns(2);
-                {
+                if (PH2MAP_material_mode_is_valid(mat.mode)) {
+                    int x = mat.mode - (mat.mode == 6); // 6 => 5
+                    bool changed = ImGui::Combo("Mode##Dropdown between valid states", &x,
+                                 "0 - Emissive?\0"
+                                 "1 - Coloured Diffuse\0"
+                                 "2 - Coloured Diffuse + Coloured Specular\0"
+                                 "3 - Unknown - Vantablack?\0"
+                                 "4 - Unknown - Ignore Material Colours?\0"
+                                 "6 - Unknown - also Coloured Diffuse?\0"
+                                 "\0");
+                    if (changed && x >= 0 && x <= 5) {
+                        x += (x == 5); // 5 => 6
+                        mat.mode = (int16_t)x;
+                        if (mat.mode == 0) {
+                            mat.specular_color = 0xff000000;
+                            mat.specularity = 0;
+                        } else if (mat.mode == 1) {
+                            mat.specular_color = 0xff000000;
+                            mat.specularity = 0;
+                        } else if (mat.mode == 2) {
+                            mat.diffuse_color |= 0xff000000;
+                            if ((mat.diffuse_color & 0x00ffffff) == 0) {
+                                mat.diffuse_color = 0xffffffff;
+                            }
+                            mat.specular_color |= 0xff000000;
+                            if ((mat.specular_color & 0x00ffffff) == 0) {
+                                mat.specular_color = 0xffffffff;
+                            }
+                            if (mat.specularity <= 0) {
+                                mat.specularity = 100;
+                            }
+                        } else if (mat.mode == 3) { // @Todo: how does the texture format work here?
+                            mat.diffuse_color = 0xff000000;
+                            mat.specular_color = 0xff000000;
+                            mat.specularity = 0;
+                        } else if (mat.mode == 4) {
+                            mat.diffuse_color = 0xff000000;
+                            mat.specular_color = 0xff000000;
+                            mat.specularity = 0;
+                        } else if (mat.mode == 6) {
+                            mat.diffuse_color |= 0xff000000;
+                            if ((mat.diffuse_color & 0x00ffffff) == 0) {
+                                mat.diffuse_color = 0xffffffff;
+                            }
+                            mat.specular_color = 0xff000000;
+                            mat.specularity = 0;
+                        }
+                    }
+                } else {
                     int x = mat.mode;
-                    ImGui::InputInt("Mode", &x);
-                    x = clamp(x, -32768, 32767);
+                    ImGui::InputInt("Mode##Int because invalid", &x);
                     mat.mode = (int16_t)x;
                 }
                 ImGui::NextColumn();
@@ -5503,26 +5636,60 @@ static void frame(void *userdata) {
                     ImGui::InputInt("TexID", &x);
                     x = clamp(x, 0, 65535);
                     mat.texture_id = (uint16_t)x;
-                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                    if (ImGui::IsItemHovered()) {
                         texture_preview_tooltip(mat.texture_id);
                     }
                 }
                 ImGui::Columns(1);
-                {
-                    auto bgra = PH2MAP_u32_to_bgra(mat.material_color);
+
+                if (!PH2MAP_material_mode_is_valid(mat.mode) ||
+                    mat.mode == 0 || mat.mode == 1 || mat.mode == 2 || mat.mode == 6) {
+                    auto bgra = PH2MAP_u32_to_bgra(mat.diffuse_color);
                     ImVec4 rgba = { bgra.Z, bgra.Y, bgra.X, bgra.W };
-                    ImGui::ColorEdit4("Color (Note: not gamma-corrected!)", &rgba.x);
+                    bool changed = ImGui::ColorEdit3("Diffuse Color (before gamma)", &rgba.x);
                     bgra = { rgba.z, rgba.y, rgba.x, rgba.w };
-                    mat.material_color = PH2MAP_bgra_to_u32(bgra);
+                    mat.diffuse_color = PH2MAP_bgra_to_u32(bgra);
+                    if (mat.mode == 2 || mat.mode == 6) {
+                        if (changed) {
+                            mat.diffuse_color |= 0xff000000;
+                            if ((mat.diffuse_color & 0x00ffffff) == 0) {
+                                mat.diffuse_color |= 1;
+                            }
+                        }
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                            ImGui::SetTooltip("Note: Mode %d materials can't be fully black. Sorry! :(", mat.mode);
+                        }
+                    }
                 }
-                {
-                    auto bgra = PH2MAP_u32_to_bgra(mat.overlay_color);
+
+                if (!PH2MAP_material_mode_is_valid(mat.mode) || mat.mode == 2) {
+                    auto bgra = PH2MAP_u32_to_bgra(mat.specular_color);
                     ImVec4 rgba = { bgra.Z, bgra.Y, bgra.X, bgra.W };
-                    ImGui::ColorEdit4("Overlay Color (Note: not gamma-corrected!)", &rgba.x);
+                    bool changed = ImGui::ColorEdit3("Specular Color (before gamma)", &rgba.x);
                     bgra = { rgba.z, rgba.y, rgba.x, rgba.w };
-                    mat.overlay_color = PH2MAP_bgra_to_u32(bgra);
+                    mat.specular_color = PH2MAP_bgra_to_u32(bgra);
+                    if (mat.mode == 2) {
+                        if (changed) {
+                            mat.specular_color |= 0xff000000;
+                            if ((mat.specular_color & 0x00ffffff) == 0) {
+                                mat.specular_color |= 1;
+                            }
+                        }
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                            ImGui::SetTooltip("Note: Mode %d materials can't be fully black. Sorry! :(", mat.mode);
+                        }
+                    }
                 }
-                ImGui::DragFloat("Specularity", &mat.specularity);
+
+                if (!PH2MAP_material_mode_is_valid(mat.mode) || mat.mode == 2) {
+                    bool changed = ImGui::SliderFloat("Specularity", &mat.specularity, 0, 300.0f, "%.3f");
+                    if (changed && mat.specularity <= 0) {
+                        mat.specularity = 0.001f;
+                    }
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                        ImGui::SetTooltip("Note: Mode 2 materials can't have 0 specularity. Sorry! :(");
+                    }
+                }
             }
             ImGui::PopID();
             ImGui::PopID();
@@ -5538,8 +5705,8 @@ static void frame(void *userdata) {
             mat.subfile_index = ((MAP_Material *)g.materials.sentinel->prev)->subfile_index;
             mat.mode = 1;
             mat.texture_id = 0;
-            mat.material_color = 0xffffffff;
-            mat.overlay_color = 0;
+            mat.diffuse_color = 0xffffffff;
+            mat.specular_color = 0xff000000;
             mat.specularity = 0;
             g.materials.push(mat);
         }
@@ -5555,22 +5722,42 @@ static void frame(void *userdata) {
             ImGui::PopStyleColor();
         };
         if (ImGui::Begin("Viewport", &g.show_viewport, ImGuiWindowFlags_NoCollapse)) {
-            ImGui::Columns(2);
+            ImGui::Columns(3);
             ImGui::SliderAngle("Camera FOV", &g.fov, FOV_MIN * (360 / TAU32), FOV_MAX * (360 / TAU32));
             ImGui::NextColumn();
             if (ImGui::Button("Reset Camera")) {
                 g.cam_pos = {};
                 g.pitch = 0;
                 g.yaw = 0;
+                g.fov = FOV_DEFAULT;
             }
             ImGui::SameLine(); ImGui::Text("(%.0f, %.0f, %.0f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
+            ImGui::NextColumn();
+            ImGui::ColorEdit3("BG Colour", &g.bg_col.X);
             ImGui::Columns(1);
-            ImGui::Checkbox("Textures", &g.textured); ImGui::SameLine(); ImGui::Checkbox("Lighting Colours", &g.use_colours);
+            ImGui::Checkbox("Textures", &g.textured);
+            ImGui::SameLine(); ImGui::Checkbox("Lighting Colours", &g.use_lighting_colours);
+            ImGui::SameLine(); ImGui::Checkbox("Material Colours", &g.use_material_colours);
             ImGui::SameLine(); ImGui::Checkbox("Front Sides Only", &g.cull_backfaces);
             ImGui::SameLine(); ImGui::Checkbox("Wireframe", &g.wireframe);
-            ImGui::PushStyleColor(ImGuiCol_Text, 0xff10bcb6);
+
+            static uint32_t text_col = 0xff12aef2;
+            ImGui::PushStyleColor(ImGuiCol_Text, text_col);
             ImGui::SameLine(); ImGui::Text(" Note: Map in viewport may be brighter or darker than in-game");
             ImGui::PopStyleColor();
+            // static bool editing = false;
+            // ImGui::Checkbox("edit", &editing);
+            // if (editing) {
+            //     auto c = ImGui::ColorConvertU32ToFloat4(text_col);
+            //     ImGui::ColorEdit4("asdf", &c.x);
+            //     text_col = ImGui::ColorConvertFloat4ToU32(c);
+            //     ImGui::Text("%08x", text_col);
+            // }
+
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, {g.bg_col.X, g.bg_col.Y, g.bg_col.Z, 1});
+            defer {
+                ImGui::PopStyleColor();
+            };
             if (ImGui::BeginChild("###Viewport Rendering Region")) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
                 dl->AddCallback(viewport_callback, &g);
@@ -5839,10 +6026,9 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                     int is_wireframe = buf.selected ? render_time : (int)g.wireframe;
                     sg_apply_pipeline(pipelines[is_wireframe]);
                     fs_params.textured = g.textured;
-                    fs_params.use_colours = g.use_colours;
-                    fs_params.shaded = !g.use_colours;
+                    fs_params.use_colours = g.use_lighting_colours;
+                    fs_params.shaded = !g.use_lighting_colours;
                     fs_params.highlight_amount = 0;
-                    fs_params.material_diffuse_color_bgra = HMM_Vec4(1, 1, 1, 1);
                     if (is_wireframe) {
                         fs_params.textured = false;
                         fs_params.use_colours = false;
@@ -5859,21 +6045,22 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                         MAP_Texture_Buffer tex = g.missing_texture;
                         assert(mpg.material_index >= 0);
                         assert(mpg.material_index < 65536);
-                        MAP_Material *material = g.materials.at_index(mpg.material_index);
-                        if (material) {
-                            assert(material->texture_id >= 0);
-                            assert(material->texture_id < 65536);
-                            auto map_tex = map_get_texture_by_id(g, material->texture_id);
-                            if (map_tex) {
-                                assert(map_tex->tex.id);
-                                tex = *map_tex;
-                            }
-                            if (material->mode != 0) { // @Todo: which modes use diffuse colours/etc.?????
-                                fs_params.material_diffuse_color_bgra = PH2MAP_u32_to_bgra(material->material_color);
-                            }
-                        }
                         int num_indices = buf.vertices_per_mesh_part_group[mesh_part_group_index];
-                        {
+                        if (g.solo_material < 0 || g.solo_material == (int)mpg.material_index) {
+                            fs_params.material_diffuse_color_bgra = HMM_Vec4(1, 1, 1, 1);
+                            MAP_Material *material = g.materials.at_index(mpg.material_index);
+                            if (material) {
+                                assert(material->texture_id >= 0);
+                                assert(material->texture_id < 65536);
+                                auto map_tex = map_get_texture_by_id(g, material->texture_id);
+                                if (map_tex) {
+                                    assert(map_tex->tex.id);
+                                    tex = *map_tex;
+                                }
+                                if (!is_wireframe && g.use_material_colours && material->mode != 0x4) { // @Todo: which modes use diffuse colours/etc.?????
+                                    fs_params.material_diffuse_color_bgra = PH2MAP_u32_to_bgra(material->diffuse_color);
+                                }
+                            }
                             sg_bindings b = {};
                             b.vertex_buffers[0] = buf.vertex_buffer;
                             b.index_buffer = buf.index_buffer;
