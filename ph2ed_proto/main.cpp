@@ -5465,7 +5465,7 @@ static void frame(void *userdata) {
         ImGui::BeginChild("texture_list", ImVec2(120, size.y - 50));
 
         const char *numbered_map_filename = g.opened_map_filename;
-        const char *non_numbered_filename = strdup(g.opened_map_filename);
+        const char *non_numbered_filename = g.opened_map_filename;
         defer { free((void *)non_numbered_filename); };
         if (numbered_map_filename) {
             int len = (int)strlen(numbered_map_filename);
@@ -5696,62 +5696,115 @@ static void frame(void *userdata) {
         };
         MAP_Material *delete_mat = nullptr;
         int i = 0;
+        {
+            ImGui::Columns(6, nullptr, false);
+            ImGui::NextColumn();
+            ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "Mode");
+            ImGui::NextColumn();
+            ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "Texture ID");
+            ImGui::NextColumn();
+            ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "Diffuse Colour");
+            ImGui::NextColumn();
+            ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "Specular Colour");
+            ImGui::NextColumn();
+            ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "Specularity");
+            ImGui::Columns(1);
+        }
         for (auto &mat : g.materials) {
             ImGui::PushID("Material iteration");
             ImGui::PushID(&mat);
-            bool soloed = (g.solo_material == i);
-            if (ImGui::Checkbox("Solo", &soloed)) {
-                if (soloed) {
-                    g.solo_material = i;
-                } else {
-                    g.solo_material = -1;
-                }
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Delete###Delete material")) {
-                delete_mat = &mat;
-            }
-            ImGui::SameLine();
-            char buf[256];
-            {
-                int n = 0;
-                if (n < sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, "#%03d: Mode %d", i, mat.mode);
-                if (PH2MAP_material_mode_is_valid(mat.mode)) {
-                    if (n < sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, ", TexID %05d", mat.texture_id);
-                } else {
-                    if (n < sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, " (Invalid mode; valid is 0-4 and 6)");
-                }
-                if (mat.mode == 0 || mat.mode == 1 || mat.mode == 2 || mat.mode == 6) {
-                    uint32_t u = mat.diffuse_color;
-                    int b = ((u >> 0) & 0xff), g = ((u >> 8) & 0xff), r = ((u >> 16) & 0xff), a = ((u >> 24) & 0xff);
-                    if (n < sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, ", Diffuse (%03d,%03d,%03d)", r, g, b);
-                }
-                if (mat.mode == 2) {
-                    uint32_t u = mat.specular_color;
-                    int b = ((u >> 0) & 0xff), g = ((u >> 8) & 0xff), r = ((u >> 16) & 0xff), a = ((u >> 24) & 0xff);
-                    if (n < sizeof(buf)) n += snprintf(buf + n, sizeof(buf) - n, ", Specular (%03d,%03d,%03d), Specularity %f", r, g, b, mat.specularity);
-                }
-            }
-            bool res = ImGui::TreeNodeEx(&mat, 0, buf);
+            ImGui::Columns(6, nullptr, false);
+            bool res = ImGui::TreeNodeEx("Material Tree Node", ImGuiTreeNodeFlags_AllowItemOverlap, "");
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
                 ImGui::BeginTooltip();
                 ImGui::Text("Texture ID #%d ", mat.texture_id);
                 ImGui::EndTooltip();
                 texture_preview_tooltip(mat.texture_id);
             }
+            ImGui::SameLine();
+            bool soloed = (g.solo_material == i);
+            if (ImGui::SmallButton(soloed ? "U" : "S")) {
+                soloed = !soloed;
+                if (soloed) {
+                    g.solo_material = i;
+                } else {
+                    g.solo_material = -1;
+                }
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip("%s", soloed ?
+                                  "Unsolo this material - show all faces in the level" :
+                                  "Solo this material - only show faces with this material");
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("D###Delete material")) {
+                delete_mat = &mat;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip("Delete this material (!)");
+            }
+            ImGui::SameLine();
+            {
+                ImGui::Text("#%d", i);
+                ImGui::NextColumn();
+                if (PH2MAP_material_mode_is_valid(mat.mode)) {
+                    const char *mode_names[7] = {
+                        "0: Emissive",
+                        "1: Diffuse",
+                        "2: Specular + Diffuse",
+                        "3: Vantablack",
+                        "4: Ignore Colors",
+                        "",
+                        "6: Unknown Diffuse",
+                    };
+                    ImGui::Text(mode_names[mat.mode]);
+                } else {
+                    ImGui::Text("%d (invalid)", mat.mode);
+                }
+                ImGui::NextColumn();
+                if (PH2MAP_material_mode_is_valid(mat.mode)) {
+                    char b[64]; snprintf(b, sizeof b, "%d###Texture ID", mat.texture_id);
+                    auto c = ImVec4{0.2f, 0.2f, 0.2f, 1.0f};
+                    ImGui::PushStyleColor(ImGuiCol_Button, c);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, c);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, c);
+                    ImGui::SmallButton(b);
+                    ImGui::PopStyleColor(3);
+                    if (ImGui::IsItemHovered()) {
+                        texture_preview_tooltip(mat.texture_id);
+                    }
+                }
+                if (mat.mode == 0 || mat.mode == 1 || mat.mode == 2 || mat.mode == 6) {
+                    uint32_t u = mat.diffuse_color;
+                    int b = ((u >> 0) & 0xff), g = ((u >> 8) & 0xff), r = ((u >> 16) & 0xff), a = ((u >> 24) & 0xff);
+
+                    ImGui::NextColumn();
+                    ImGui::Text("(%d,%d,%d)", r, g, b);
+                }
+                if (mat.mode == 2) {
+                    uint32_t u = mat.specular_color;
+                    int b = ((u >> 0) & 0xff), g = ((u >> 8) & 0xff), r = ((u >> 16) & 0xff), a = ((u >> 24) & 0xff);
+
+                    ImGui::NextColumn();
+                    ImGui::Text("(%d,%d,%d)", r, g, b);
+                    ImGui::NextColumn();
+                    ImGui::Text("%f", mat.specularity);
+                }
+            }
+            ImGui::Columns(1);
             if (res) {
                 defer { ImGui::TreePop(); };
 
-                ImGui::Columns(2);
+                ImGui::Columns(2, nullptr, false);
                 if (PH2MAP_material_mode_is_valid(mat.mode)) {
                     int x = mat.mode - (mat.mode == 6); // 6 => 5
                     bool changed = ImGui::Combo("Mode##Dropdown between valid states", &x,
-                                 "0 - Emissive?\0"
-                                 "1 - Coloured Diffuse\0"
-                                 "2 - Coloured Diffuse + Coloured Specular\0"
-                                 "3 - Unknown - Vantablack?\0"
-                                 "4 - Unknown - Ignore Material Colours?\0"
-                                 "6 - Unknown - also Coloured Diffuse?\0"
+                                 "0: Emissive?\0"
+                                 "1: Colored Diffuse\0"
+                                 "2: Colored Diffuse + Colored Specular\0"
+                                 "3: Unknown - Vantablack?\0"
+                                 "4: Unknown - Ignore Material Colors?\0"
+                                 "6: Unknown - also Colored Diffuse?\0"
                                  "\0");
                     if (changed && x >= 0 && x <= 5) {
                         x += (x == 5); // 5 => 6
@@ -5856,7 +5909,11 @@ static void frame(void *userdata) {
                         ImGui::SetTooltip("Note: Mode 2 materials can't have 0 specularity. Sorry! :(");
                     }
                 }
+
+                ImGui::NewLine();
             }
+
+            ImGui::Separator();
             ImGui::PopID();
             ImGui::PopID();
             i++;
