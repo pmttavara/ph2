@@ -121,8 +121,11 @@ void LogC_(uint32_t c, const char *fmt, ...) {
 }
 #define LogC(c, ...) LogC_(c, "" __VA_ARGS__)
 #define Log(...) LogC(IM_COL32(127,127,127,255), "" __VA_ARGS__)
+#define LogErr(...) LogC(IM_COL32(255, 127, 127, 255), "" __VA_ARGS__)
 
 void MsgBox_(const char *title, int flag, const char *msg, ...) {
+    ProfileFunction();
+
     va_list arg;
     va_start(arg, msg);
     defer {
@@ -363,12 +366,16 @@ struct Node {
     Node *prev = nullptr;
 };
 static void node_insert_after(Node *dest, Node *node) {
+    ProfileFunction();
+
     node->next = dest->next;
     node->prev = dest;
     dest->next->prev = node;
     dest->next = node;
 }
 static void node_insert_before(Node *dest, Node *node) {
+    ProfileFunction();
+
     node->next = dest;
     node->prev = dest->prev;
     dest->prev->next = node;
@@ -419,6 +426,8 @@ struct MAP_Texture_Buffer {
     struct MAP_Texture *texture_ptr = nullptr;
 
     void release() {
+        ProfileFunction();
+
         if (tex.id) {
             sg_destroy_image(tex);
         }
@@ -482,6 +491,8 @@ struct LinkedList {
         sentinel->prev = sentinel;
     }
     void release() {
+        ProfileFunction();
+
         if (sentinel) {
             for (Node *node = sentinel->prev; node != sentinel;) {
                 Node *prev = node->prev;
@@ -620,6 +631,8 @@ struct MAP_Geometry : Node {
     bool has_weird_2_byte_misalignment_before_decals = false;
 
     void release() {
+        ProfileFunction();
+
         for (auto &mesh : decal_meshes) {
             mesh.release();
         }
@@ -926,6 +939,8 @@ struct G : Map {
     char *opened_map_filename = nullptr;
 
     void clear_undo_redo_stacks() {
+        ProfileFunction();
+
         for (auto &entry : redo_stack) {
             entry.release();
         }
@@ -1031,11 +1046,13 @@ static void cld_upload(G &g) {
     }
 }
 static void cld_load(G &g, const char *filename) {
+    ProfileFunction();
+
     Log("CLD filename is \"%s\"", filename);
     PH2CLD_free_collision_data(g.cld);
     g.cld = PH2CLD_get_collision_data_from_file(filename);
     if (!g.cld.valid) {
-        LogC(IM_COL32(255, 127, 127, 255), "Failed loading CLD file \"%s\"!", filename);
+        LogErr("Failed loading CLD file \"%s\"!", filename);
     }
     cld_upload(g);
     g.staleify_cld();
@@ -2124,6 +2141,7 @@ static MAP_Texture_Buffer *map_get_texture_by_id(G &g, uint32_t id) {
     return nullptr;
 }
 static void map_unload(G &g, bool release_only_geometry = false) {
+    ProfileFunction();
 
     if (release_only_geometry) {
         g.release_geometry();
@@ -2155,7 +2173,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     {
         auto filename16 = utf8_to_utf16(filename);
         if (!filename16) {
-            LogC(IM_COL32(255, 127, 127, 255), "Couldn't convert filename! Memory error? Sorry!");
+            LogErr("Couldn't convert filename! Memory error? Sorry!");
         }
         defer { free(filename16); };
 
@@ -2221,7 +2239,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         {
             FILE *f = PH2CLD__fopen(filename, "rb");
             if (!f) {
-                LogC(IM_COL32(255, 127, 127, 255), "Failed loading MAP file \"%s\"!", filename);
+                LogErr("Failed loading MAP file \"%s\"!", filename);
                 return;
             }
             assert(f);
@@ -3605,6 +3623,8 @@ bool dds_import(char *filename, MAP_Texture &result) {
 }
 
 bool export_dds(MAP_Texture tex, char *filename) {
+    ProfileFunction();
+
     FILE *f = PH2CLD__fopen(filename, "wb");
     if (!f) {
         MsgErr("DDS Export Error", "Couldn't open file \"%s\"!!", filename);
@@ -3644,12 +3664,16 @@ bool export_dds(MAP_Texture tex, char *filename) {
 #endif
 
 static void NO_SANITIZE no_asan_memcpy(void *destination, void *source, size_t count) {
+    ProfileFunction();
+
     for (size_t i = 0; i < count; i++) {
         ((char *)destination)[i] = ((char *)source)[i];
     }
 }
 
 static hmm_v4 PH2MAP_u32_to_bgra(uint32_t u) {
+    ProfileFunction();
+
     hmm_v4 bgra = {
         ((u >> 0) & 0xff) * (1.0f / 255),
         ((u >> 8) & 0xff) * (1.0f / 255),
@@ -3659,6 +3683,8 @@ static hmm_v4 PH2MAP_u32_to_bgra(uint32_t u) {
     return bgra;
 }
 static uint32_t PH2MAP_bgra_to_u32(hmm_v4 bgra) {
+    ProfileFunction();
+
     uint32_t u = (uint32_t)(clamp(bgra.X, 0.0f, 1.0f) * 255) << 0 |
                  (uint32_t)(clamp(bgra.Y, 0.0f, 1.0f) * 255) << 8 |
                  (uint32_t)(clamp(bgra.Z, 0.0f, 1.0f) * 255) << 16 |
