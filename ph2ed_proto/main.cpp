@@ -659,6 +659,22 @@ struct MAP_Material : Node {
     float specularity;
 };
 
+struct MAP_OBJ_Import_Material {
+    uint16_t index_in_materials_array = 0;
+    uint8_t mode = 0;
+    uint32_t diffuse_color = 0;
+    uint32_t specular_color = 0;
+    union {
+        uint32_t specularity_u32 = 0;
+        float specularity_f32;
+    };
+    uint16_t texture_id = 0;
+    bool texture_was_found = false;
+    uint8_t texture_unknown = 0;
+
+    // Array<PH2MAP__Vertex24> unstripped_vertices = {};
+};
+
 static bool PH2MAP_material_mode_is_valid(int mode) {
     return mode == 0 || mode == 1 || mode == 2 || mode == 3 || mode == 4 || mode == 6;
 }
@@ -2294,6 +2310,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                     Read(ptr2, geometry_subfile_header);
                     assert(geometry_subfile_header.magic == 0x20010730);
                     assert(geometry_subfile_header.geometry_count >= 1);
+                    assert(geometry_subfile_header.material_count < 65536);
                     assert(geometry_subfile_header.geometry_size == subfile_header.length - geometry_subfile_header.material_count * sizeof(PH2MAP__Material));
                     // g.geometries.reserve(g.geometries.count + geometry_subfile_header.geometry_count);
                     for (uint32_t geometry_index = 0; geometry_index < geometry_subfile_header.geometry_count; geometry_index++) {
@@ -3919,6 +3936,7 @@ static void frame(void *userdata) {
                 Array<uint32_t> obj_colours = {}; defer { obj_colours.release(); };
 
                 Array<PH2MAP__Vertex20> unstripped_verts = {}; defer { unstripped_verts.release(); };
+                // Array<MAP_OBJ_Import_Material> materials = {};
 
                 char b[1024];
                 hmm_vec3 center = {};
@@ -4167,36 +4185,6 @@ static void frame(void *userdata) {
         defer {
             fclose(mtl);
         };
-        Array<hmm_vec3> vertices = {};
-        defer {
-            vertices.release();
-        };
-        Array<hmm_vec2> uvs = {};
-        defer {
-            uvs.release();
-        };
-        Array<hmm_vec3> normals = {};
-        defer {
-            normals.release();
-        };
-
-        Array<int> vertices_per_selected_buffer = {};
-        defer {
-            vertices_per_selected_buffer.release();
-        };
-        for (auto &buf : g.map_buffers) {
-            if (&buf - g.map_buffers >= g.map_buffers_count) {
-                break;
-            }
-            if (buf.selected) {
-                vertices_per_selected_buffer.push((int)buf.vertices.count);
-                for (auto &vert : buf.vertices) {
-                    vertices.push( { vert.position[0], vert.position[1], vert.position[2] });
-                    uvs.push( { vert.uv[0], 1 - vert.uv[1] }); // @Note: gotta flip from D3D convention to OpenGL convention so Blender import works. (@Todo: Is this actually true?)
-                    normals.push( { vert.normal[0], vert.normal[1], vert.normal[2] });
-                }
-            }
-        }
 
         fprintf(obj, "# .MAP mesh export from Psilent pHill 2 Editor (" URL ")\n");
         fprintf(mtl, "# .MAP mesh export from Psilent pHill 2 Editor (" URL ")\n");
@@ -4215,18 +4203,24 @@ static void frame(void *userdata) {
         fprintf(obj, "mtllib %s\n", mtl_export_name);
         fprintf(obj, "\n");
 
-        for (auto &v : vertices) {
-            fprintf(obj, "v %f %f %f\n", v.X, v.Y, v.Z);
+        Array<int> vertices_per_selected_buffer = {};
+        defer {
+            vertices_per_selected_buffer.release();
+        };
+
+        for (auto &buf : g.map_buffers) {
+            if (!buf.selected || &buf - g.map_buffers >= g.map_buffers_count) continue;
+            vertices_per_selected_buffer.push((int)buf.vertices.count);
+            for (auto &v : buf.vertices) {
+                auto c = PH2MAP_u32_to_bgra(v.color);
+                fprintf(obj, "v %f %f %f %f %f %f\n", v.position[0], v.position[1], v.position[2], c.Z, c.Y, c.X);
+                fprintf(obj, "vt %f %f\n", v.uv[0], 1 - v.uv[1]); // @Note: gotta flip from D3D convention to OpenGL convention so Blender import works. (@Todo: Is this actually true?)
+                fprintf(obj, "vn %f %f %f\n", v.normal[0], v.normal[1], v.normal[2]);
+            }
         }
-        fprintf(obj, "\n");
-        for (auto &vt : uvs) {
-            fprintf(obj, "vt %f %f\n", vt.X, vt.Y);
-        }
-        fprintf(obj, "\n");
-        for (auto &vn : normals) {
-            fprintf(obj, "vn %f %f %f\n", vn.X, vn.Y, vn.Z);
-        }
-        fprintf(obj, "\n");
+        fprintf(obj,
+                "\n"
+                "\n");
 
         static bool material_touched[65536];
         memset(material_touched, 0, sizeof(material_touched));
@@ -4290,7 +4284,7 @@ static void frame(void *userdata) {
                 int indices_start = 0;
                 int mesh_part_group_index = 0;
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
-                    fprintf(obj, "  g Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
+                    fprintf(obj, " g Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
 
                     int mat_index = mpg.material_index;
 
@@ -4310,21 +4304,20 @@ static void frame(void *userdata) {
                                 assert(map_tex->texture_ptr);
                             }
 
-                            fprintf(obj,
-                                    "    usemtl MAT_%02x_%01x_%08x_%08x_%08x_%04x_%01x_%02x\n",
-                                    mat_index,
-                                    mat.mode,
-                                    mat.diffuse_color,
-                                    mat.specular_color,
-                                    *(uint32_t *)&mat.specularity,
-                                    (uint16_t)mat.texture_id,
-                                    !!(map_tex && map_tex->texture_ptr),
-                                    map_tex ? map_tex->texture_ptr->material : 0);
+                            fprintf(obj, "  usemtl PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2\n",
+                                    (((uint16_t)mat_index) & 0xFFFF),
+                                    (((uint8_t)mat.mode) & 0xF),
+                                    (((uint32_t)mat.diffuse_color) & 0xFFFFFFFF),
+                                    (((uint32_t)mat.specular_color) & 0xFFFFFFFF),
+                                    ((*(uint32_t *)&mat.specularity) & 0xFFFFFFFF),
+                                    (((uint16_t)mat.texture_id) & 0xFFFF),
+                                    (((uint8_t)!!(map_tex && map_tex->texture_ptr)) & 0xF),
+                                    (((uint8_t)(map_tex ? map_tex->texture_ptr->material : 0)) & 0xF));
                         } else {
-                            fprintf(obj, "    # Note: This mesh part group referenced a material that couldn't be found in the file's material list at the time (index was %d, but there were only %d materials).\n", mat_index, materials_count);
+                            fprintf(obj, "  # Note: This mesh part group referenced a material that couldn't be found in the file's material list at the time (index was %d, but there were only %d materials).\n", mat_index, materials_count);
                         }
                     } else {
-                        fprintf(obj, "    # Note: This mesh part group tried to reference a material that is out of bounds (index was %d, minimum is 0, maximum is 65535).\n", mat_index);
+                        fprintf(obj, "  # Note: This mesh part group tried to reference a material that is out of bounds (index was %d, minimum is 0, maximum is 65535).\n", mat_index);
                     }
                     defer { mesh_part_group_index++; };
                     int num_indices = buf.vertices_per_mesh_part_group[mesh_part_group_index];
@@ -4333,7 +4326,7 @@ static void frame(void *userdata) {
                         int a = index_base + buf.indices[indices_start + i] + 1;
                         int b = index_base + buf.indices[indices_start + i + 1] + 1;
                         int c = index_base + buf.indices[indices_start + i + 2] + 1;
-                        fprintf(obj, "    f %d/%d/%d %d/%d/%d %d/%d/%d\n", a, a, a, b, b, b, c, c, c);
+                        fprintf(obj, "  f %d/%d/%d %d/%d/%d %d/%d/%d\n", a, a, a, b, b, b, c, c, c);
                     }
                     indices_start += num_indices;
                     fprintf(obj, "\n");
@@ -4347,21 +4340,21 @@ static void frame(void *userdata) {
         fprintf(mtl, "# Used with file: %s\n", obj_export_name);
         fprintf(mtl, "\n");
 
-        int material_index = 0;
-        for (MAP_Material &material : g.materials) {
-            defer { material_index++; };
-            if (!material_touched[material_index]) continue;
+        int mat_index = 0;
+        for (MAP_Material &mat : g.materials) {
+            defer { mat_index++; };
+            if (!material_touched[mat_index]) continue;
 
-            char *tex_export_name = mprintf("%s.tex_%d.dds", obj_export_name, material.texture_id);
+            char *tex_export_name = mprintf("%s.tex_%d.dds", obj_export_name, mat.texture_id);
             if (!tex_export_name) {
-                MsgErr("OBJ Export Error", "Couldn't build texture export string for texture ID #%d!", material.texture_id);
+                MsgErr("OBJ Export Error", "Couldn't build texture export string for texture ID #%d!", mat.texture_id);
                 return;
             }
             defer { free(tex_export_name); };
 
-            assert(material.texture_id >= 0);
-            assert(material.texture_id < 65536);
-            auto map_tex = map_get_texture_by_id(g, material.texture_id);
+            assert(mat.texture_id >= 0);
+            assert(mat.texture_id < 65536);
+            auto map_tex = map_get_texture_by_id(g, mat.texture_id);
             if (map_tex) {
                 assert(map_tex->tex.id);
                 MAP_Texture *tex = map_tex->texture_ptr;
@@ -4381,24 +4374,23 @@ static void frame(void *userdata) {
                 }
             }
 
-            fprintf(mtl,
-                    "newmtl MAT_%02x_%01x_%08x_%08x_%08x_%04x_%01x_%02x\n",
-                    material_index,
-                    material.mode,
-                    material.diffuse_color,
-                    material.specular_color,
-                    *(uint32_t *)&material.specularity,
-                    (uint16_t)material.texture_id,
-                    !!(map_tex && map_tex->texture_ptr),
-                    map_tex ? map_tex->texture_ptr->material : 0);
+            fprintf(mtl, "newmtl PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2\n",
+                    (((uint16_t)mat_index) & 0xFFFF),
+                    (((uint8_t)mat.mode) & 0xF),
+                    (((uint32_t)mat.diffuse_color) & 0xFFFFFFFF),
+                    (((uint32_t)mat.specular_color) & 0xFFFFFFFF),
+                    ((*(uint32_t *)&mat.specularity) & 0xFFFFFFFF),
+                    (((uint16_t)mat.texture_id) & 0xFFFF),
+                    (((uint8_t)!!(map_tex && map_tex->texture_ptr)) & 0xF),
+                    (((uint8_t)(map_tex ? map_tex->texture_ptr->material : 0)) & 0xF));
             fprintf(mtl, "  Ka 0.0 0.0 0.0\n");
             {
-                auto c = PH2MAP_u32_to_bgra(material.diffuse_color);
+                auto c = PH2MAP_u32_to_bgra(mat.diffuse_color);
                 fprintf(mtl, "  Kd %f %f %f\n", c.Z, c.Y, c.X);
             }
             {
-                auto c = PH2MAP_u32_to_bgra(material.specular_color);
-                float spec_intensity = material.specularity / 50.0f; // @Todo: ????????????
+                auto c = PH2MAP_u32_to_bgra(mat.specular_color);
+                float spec_intensity = mat.specularity / 50.0f; // @Todo: ????????????
                 c *= spec_intensity;
                 fprintf(mtl, "  Ks %f %f %f\n", c.Z, c.Y, c.X);
             }
@@ -4411,13 +4403,13 @@ static void frame(void *userdata) {
                     fprintf(mtl, "  map_d -imfchan m %s\n", tex_export_name);
                 }
             } else {
-                fprintf(mtl, "  # Note: This material references a texture that couldn't be found in the file's texture list at the time (Texture ID was %d).\n", material.texture_id);
+                fprintf(mtl, "  # Note: This material references a texture that couldn't be found in the file's texture list at the time (Texture ID was %d).\n", mat.texture_id);
             }
 
             fprintf(mtl, "\n");
         }
 
-        assert(material_index == materials_count); // Ensure we checked all materials.
+        assert(mat_index == materials_count); // Ensure we checked all materials.
 
         Log("Material deduplicator: %d unique materials referenced out of %d total.", unique_materials_referenced, materials_referenced);
         Log("Texture deduplicator: %d unique textures referenced out of %d total.", unique_textures_referenced, textures_referenced);
