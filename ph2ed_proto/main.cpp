@@ -2167,6 +2167,41 @@ static void map_unload(G &g, bool release_only_geometry = false) {
     }
 
 }
+
+static const char *get_non_numbered_dependency_filename(const char *filename) {
+    ProfileFunction();
+
+    int len = (int)strlen(filename);
+    int cap = len + 1 + 3; // "folder/aa0" -> "folder/aa.map" expands string by 3 chars max
+    char *non_numbered = (char *) malloc(cap);
+    if (non_numbered) {
+        strncpy(non_numbered, filename, len + 1);
+        non_numbered[len] = '\0';
+        int i = len - 1;
+        for (; i >= 0; i--) {
+            if (non_numbered[i] == '/' || non_numbered[i] == '\\') {
+                break;
+            }
+        }
+        if (i + 3 < len) {
+            i += 3;
+            if (non_numbered[i] >= '0' && non_numbered[i] <= '9') {
+                non_numbered[i] = '.';
+                ++i; assert(i < cap);
+                non_numbered[i] = 'm';
+                ++i; assert(i < cap);
+                non_numbered[i] = 'a';
+                ++i; assert(i < cap);
+                non_numbered[i] = 'p';
+                ++i; assert(i < cap);
+                non_numbered[i] = '\0';
+                ++i; assert(i <= cap);
+            }
+        }
+    }
+    return non_numbered;
+}
+
 static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false, bool round_trip_test = false) {
     ProfileFunction();
 
@@ -2190,41 +2225,17 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     map_unload(g, is_non_numbered_dependency);
 
     if (!is_non_numbered_dependency) { // Semi-garbage code.
-        int len = (int)strlen(filename);
-        char *non_numbered = (char *) malloc(len + 1);
+        auto non_numbered = get_non_numbered_dependency_filename(filename);
         assert(non_numbered);
         if (non_numbered) {
-            defer {
-                free(non_numbered);
-            };
-            
-            strncpy(non_numbered, filename, len);
-            non_numbered[len] = '\0';
-            int i = len - 1;
-            for (; i >= 0; i--) {
-                if (non_numbered[i] == '/' || non_numbered[i] == '\\') {
-                    break;
-                }
+            defer { free((void *)non_numbered); };
+            if (strcmp(filename, non_numbered) != 0) {
+                // Log("Loading \"%s\" for base textures", mem);
+                map_load(g, non_numbered, true, round_trip_test);
             }
-            if (i + 3 < len) {
-                i += 3;
-                if (non_numbered[i] >= '0' && non_numbered[i] <= '9') {
-                    non_numbered[i] = 0;
-                    int n = snprintf(nullptr, 0, "%s.map", non_numbered) + 1;
-                    char *mem = (char *)malloc(n);
-                    assert(mem);
-                    if (mem) {
-                        defer {
-                            free(mem);
-                        };
-                        snprintf(mem, n, "%s.map", non_numbered);
-                        if (strcmp(filename, mem) != 0) {
-                            // Log("Loading \"%s\" for base textures", mem);
-                            map_load(g, mem, true, round_trip_test);
-                        }
-                    }
-                }
-            }
+        } else {
+            LogErr("MAP Load Error: Couldn't generate non-numbered dependency filename.");
+            LogErr("MAP Load Error: Couldn't open non-numbered dependency file.");
         }
     }
     int prev_num_array_resizes = num_array_resizes;
@@ -5446,7 +5457,9 @@ static void frame(void *userdata) {
         auto size = ImGui::GetWindowSize();
         ImGui::BeginChild("texture_list", ImVec2(120, size.y - 50));
 
-        char *numbered_map_filename = g.opened_map_filename;
+        const char *numbered_map_filename = g.opened_map_filename;
+        const char *non_numbered_filename = strdup(g.opened_map_filename);
+        defer { free((void *)non_numbered_filename); };
         if (numbered_map_filename) {
             int len = (int)strlen(numbered_map_filename);
             int i = len - 1;
@@ -5457,6 +5470,8 @@ static void frame(void *userdata) {
                 }
             }
             numbered_map_filename += i;
+
+            non_numbered_filename = get_non_numbered_dependency_filename(numbered_map_filename);
         }
 
         bool has_ever_seen_a_subfile_from_the_non_numbered_dependency = false;
@@ -5475,8 +5490,7 @@ static void frame(void *userdata) {
                     has_ever_seen_a_subfile_from_the_non_numbered_dependency = true;
                     subfile_number = 0;
 
-                    // @Todo @@@
-                    ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "ob.map");
+                    ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "%s", non_numbered_filename);
                     ImGui::Separator();
                 }
             } else {
@@ -5484,6 +5498,9 @@ static void frame(void *userdata) {
                     has_ever_seen_a_subfile_from_the_main_numbered_map = true;
                     subfile_number = 0;
 
+                    if (has_ever_seen_a_subfile_from_the_non_numbered_dependency) {
+                        ImGui::NewLine();
+                    }
                     ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "%s", numbered_map_filename);
                     ImGui::Separator();
                 }
@@ -5526,18 +5543,22 @@ static void frame(void *userdata) {
 
             ImGui::PushID(g.ui_selected_texture_subfile);
             ImGui::PushID(g.ui_selected_texture);
+
             defer {
                 ImGui::PopID();
                 ImGui::PopID();
                 ImGui::EndChild();
             };
 
-            bool non_numbered = (g.ui_selected_texture_subfile->came_from_non_numbered_dependency);
-            ImGui::BeginDisabled(non_numbered);
-
             assert(g.ui_selected_texture_subfile->textures.has_node(g.ui_selected_texture));
 
             bool show_image = false;
+
+            ImGui::SameLine(0, 0);
+            ImGui::BeginChild("Editable stuff in the texture panel", ImVec2{0, 45});
+
+            bool non_numbered = (g.ui_selected_texture_subfile->came_from_non_numbered_dependency);
+            ImGui::BeginDisabled(non_numbered);
 
             ImGui::SameLine();
             if (ImGui::Button("Delete")) {
@@ -5608,6 +5629,12 @@ static void frame(void *userdata) {
                 }
             }
             ImGui::EndDisabled();
+
+            ImGui::EndChild();
+            if (non_numbered && ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Open \"%s\" to edit this texture.", non_numbered_filename);
+            }
+
             if (show_image) {
                 auto &tex = *g.ui_selected_texture;
                 float w = (float)tex.width;
