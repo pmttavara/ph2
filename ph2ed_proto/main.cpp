@@ -4304,13 +4304,22 @@ static void frame(void *userdata) {
                             MAP_Material *mat_ = g.materials.at_index(mat_index);
                             assert(mat_);
                             MAP_Material &mat = *mat_;
+
+                            auto map_tex = map_get_texture_by_id(g, mat.texture_id);
+                            if (map_tex) {
+                                assert(map_tex->texture_ptr);
+                            }
+
                             fprintf(obj,
-                                    "    usemtl PH2Mat_%02x_Mode_%d_%08x_%08x_%08x\n",
+                                    "    usemtl MAT_%02x_%01x_%08x_%08x_%08x_%04x_%01x_%02x\n",
                                     mat_index,
                                     mat.mode,
                                     mat.diffuse_color,
                                     mat.specular_color,
-                                    *(uint32_t *)&mat.specularity);
+                                    *(uint32_t *)&mat.specularity,
+                                    (uint16_t)mat.texture_id,
+                                    !!(map_tex && map_tex->texture_ptr),
+                                    map_tex ? map_tex->texture_ptr->material : 0);
                         } else {
                             fprintf(obj, "    # Note: This mesh part group referenced a material that couldn't be found in the file's material list at the time (index was %d, but there were only %d materials).\n", mat_index, materials_count);
                         }
@@ -4343,13 +4352,45 @@ static void frame(void *userdata) {
             defer { material_index++; };
             if (!material_touched[material_index]) continue;
 
+            char *tex_export_name = mprintf("%s.tex_%d.dds", obj_export_name, material.texture_id);
+            if (!tex_export_name) {
+                MsgErr("OBJ Export Error", "Couldn't build texture export string for texture ID #%d!", material.texture_id);
+                return;
+            }
+            defer { free(tex_export_name); };
+
+            assert(material.texture_id >= 0);
+            assert(material.texture_id < 65536);
+            auto map_tex = map_get_texture_by_id(g, material.texture_id);
+            if (map_tex) {
+                assert(map_tex->tex.id);
+                MAP_Texture *tex = map_tex->texture_ptr;
+                assert(tex);
+
+                assert(tex->id >= 0); // Probably redundant but whatever!
+                assert(tex->id < 65536);
+                textures_referenced++;
+                if (!texture_id_touched[tex->id]) {
+                    texture_id_touched[tex->id] = true;
+                    unique_textures_referenced++;
+
+                    bool export_success = export_dds(*tex, tex_export_name);
+                    if (!export_success) {
+                        return;
+                    }
+                }
+            }
+
             fprintf(mtl,
-                    "newmtl PH2Mat_%02x_Mode_%d_%08x_%08x_%08x\n",
+                    "newmtl MAT_%02x_%01x_%08x_%08x_%08x_%04x_%01x_%02x\n",
                     material_index,
                     material.mode,
                     material.diffuse_color,
                     material.specular_color,
-                    *(uint32_t *)&material.specularity);
+                    *(uint32_t *)&material.specularity,
+                    (uint16_t)material.texture_id,
+                    !!(map_tex && map_tex->texture_ptr),
+                    map_tex ? map_tex->texture_ptr->material : 0);
             fprintf(mtl, "  Ka 0.0 0.0 0.0\n");
             {
                 auto c = PH2MAP_u32_to_bgra(material.diffuse_color);
@@ -4363,36 +4404,10 @@ static void frame(void *userdata) {
             }
             // fprintf(mtl, "  d 1.0\n");
 
-            assert(material.texture_id >= 0);
-            assert(material.texture_id < 65536);
-            auto map_tex = map_get_texture_by_id(g, material.texture_id);
             if (map_tex) {
-                assert(map_tex->tex.id);
-                MAP_Texture *tex = map_tex->texture_ptr;
-                assert(tex);
-                char *tex_export_name = mprintf("%s.tex_%d.dds", obj_export_name, tex->id);
-                if (!tex_export_name) {
-                    MsgErr("OBJ Export Error", "Couldn't build texture export string for texture ID #%d!", tex->id);
-                    return;
-                }
-                defer { free(tex_export_name); };
-
-                assert(tex->id >= 0); // Probably redundant but whatever!
-                assert(tex->id < 65536);
-                textures_referenced++;
-                if (!texture_id_touched[tex->id]) {
-                    texture_id_touched[tex->id] = true;
-                    unique_textures_referenced++;
-
-                    bool export_success = export_dds(*tex, tex_export_name);
-                    if (!export_success) {
-                        return;
-                    }
-
-                }
-
                 fprintf(mtl, "  map_Kd %s\n", tex_export_name);
-                if (tex->format != MAP_Texture_Format_BC1) {
+                assert(map_tex->texture_ptr);
+                if (map_tex->texture_ptr->format != MAP_Texture_Format_BC1) {
                     fprintf(mtl, "  map_d -imfchan m %s\n", tex_export_name);
                 }
             } else {
