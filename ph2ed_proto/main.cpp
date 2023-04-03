@@ -13,17 +13,18 @@
 int num_array_resizes = 0;
 
 // Path to MVP:
-// - OBJ export
-// - Undo/redo
 // - MAP mesh vertex snapping
 
 // FINISHED on Path to MVP:
 // - Multimesh movement/deleting/editing
 // - Better move UX
-
-// PUNTED to post-MVP:
+// - OBJ export
+// - Undo/redo
 // - If I save and reload a map with a custom texture, it's moshed - OMG!!!
 //    -> Specific to when I edited and re-saved the DDS from Paint.NET. Punt!
+//    -> Fixed!
+//  - View any surface as a solid/shaded set of triangles with a wireframe overlaid
+//  - View any surface as only solid, only shaded, only wireframe, only vertex colours etc.
 
 // With editor widgets, you should probably be able to:
 //  - Box-select a group of vertices or edges
@@ -33,8 +34,8 @@ int num_array_resizes = 0;
 //      - Delete that selection and gracefully handle the results of that deletion (removing degenerate faces etc.)
 //      - (Remember: these all need to include cylinders somehow!)
 //      - Render the AABB of all selected things
-//  - View any surface as a solid/shaded set of triangles with a wireframe overlaid
-//  - View any surface as only solid, only shaded, only wireframe, only vertex colours etc.
+
+
 //  - Lesson learned from Happenlance editor: Definitely need a base "Transform" struct so that you aren't
 //    reimplementing the same logic for N different "widget kinds" (in happenlance editor this was
 //    a huge pain because objects, sprites, particle emitters etc. all had scattered transform data.
@@ -654,9 +655,10 @@ struct MAP_Sprite_Metadata {
     uint16_t format;
 };
 enum MAP_Texture_Format {
-    MAP_Texture_Format_BC1,
-    MAP_Texture_Format_BC2,
-    MAP_Texture_Format_BC3,
+    MAP_Texture_Format_BC1       = 0x100,
+    MAP_Texture_Format_BC2       = 0x102,
+    MAP_Texture_Format_BC3       = 0x103,
+    MAP_Texture_Format_BC3_Maybe = 0x104,
 };
 // @Note: Texture subfiles can be empty -- contain 0 textures.
 //        This means you can't just store tree nesting structure implicitly on the textures, you need
@@ -671,7 +673,7 @@ struct MAP_Texture : Node {
     // The max SH2 has is 41, so round that up to 64 in a fixed-size array to avoid dynamic allocations.
     uint8_t sprite_count = 0;
     MAP_Sprite_Metadata sprite_metadata[64] = {};
-    uint8_t format = MAP_Texture_Format_BC1;
+    uint16_t format = MAP_Texture_Format_BC1;
     Array<uint8_t, The_Arena_Allocator> blob = {};
     void release() {
         ProfileFunction();
@@ -894,6 +896,8 @@ struct G : Map {
 
     MAP_Texture_Subfile *ui_selected_texture_subfile = nullptr;
     MAP_Texture *ui_selected_texture = nullptr;
+
+    bool texture_actual_size = false;
 
     int solo_material = -1; // @Hack, but whatever.
 
@@ -2167,7 +2171,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
 
     map_unload(g, is_non_numbered_dependency);
 
-    { // Semi-garbage code.
+    if (!is_non_numbered_dependency) { // Semi-garbage code.
         int len = (int)strlen(filename);
         char *non_numbered = (char *) malloc(len + 1);
         assert(non_numbered);
@@ -2484,7 +2488,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                                 } else if (tex.sprite_metadata[sprite_index].format == 0x103) {
                                     tex.format = MAP_Texture_Format_BC3;
                                 } else if (tex.sprite_metadata[sprite_index].format == 0x104) {
-                                    tex.format = MAP_Texture_Format_BC3;
+                                    tex.format = MAP_Texture_Format_BC3_Maybe;
                                 } else {
                                     assert(false);
                                 }
@@ -2585,9 +2589,10 @@ static void map_upload(G &g) {
             d.width = tex.width;
             d.height = tex.height;
             switch (tex.format) {
-                case MAP_Texture_Format_BC1: d.pixel_format = SG_PIXELFORMAT_BC1_RGBA; break;
-                case MAP_Texture_Format_BC2: d.pixel_format = SG_PIXELFORMAT_BC2_RGBA; break;
-                case MAP_Texture_Format_BC3: d.pixel_format = SG_PIXELFORMAT_BC3_RGBA; break;
+                case MAP_Texture_Format_BC1:       d.pixel_format = SG_PIXELFORMAT_BC1_RGBA; break;
+                case MAP_Texture_Format_BC2:       d.pixel_format = SG_PIXELFORMAT_BC2_RGBA; break;
+                case MAP_Texture_Format_BC3:       d.pixel_format = SG_PIXELFORMAT_BC3_RGBA; break;
+                case MAP_Texture_Format_BC3_Maybe: d.pixel_format = SG_PIXELFORMAT_BC3_RGBA; break;
                 default: assert(false); break;
             };
             d.wrap_u = SG_WRAP_CLAMP_TO_EDGE;
@@ -2895,8 +2900,8 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
         io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
         io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleViewports;
         io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
-        io.ConfigWindowsMoveFromTitleBarOnly = false; // only really needed because the resize widget is in the bottom right corner and we can't resize from edges for some reason...
-        io.ConfigWindowsResizeFromEdges = true; // Why doesn't this work???
+        io.ConfigWindowsMoveFromTitleBarOnly = true;
+        io.ConfigWindowsResizeFromEdges = true;
 
         ImFontConfig fontCfg;
         fontCfg.FontDataOwnedByAtlas = false;
@@ -3571,18 +3576,19 @@ bool dds_import(char *filename, MAP_Texture &result) {
     tex.sprite_count = 1;
     tex.sprite_metadata[0].id = 1;
     switch (header.pixelformat_four_cc) {
-        case FOURCC_DXT1: { tex.format = (uint8_t)MAP_Texture_Format_BC1; } break;
-        case FOURCC_DXT2: { tex.format = (uint8_t)MAP_Texture_Format_BC2; } break;
-        case FOURCC_DXT3: { tex.format = (uint8_t)MAP_Texture_Format_BC2; } break;
-        case FOURCC_DXT4: { tex.format = (uint8_t)MAP_Texture_Format_BC3; } break;
-        case FOURCC_DXT5: { tex.format = (uint8_t)MAP_Texture_Format_BC3; } break;
+        case FOURCC_DXT1: { tex.format = MAP_Texture_Format_BC1; } break;
+        case FOURCC_DXT2: { tex.format = MAP_Texture_Format_BC2; } break;
+        case FOURCC_DXT3: { tex.format = MAP_Texture_Format_BC2; } break;
+        case FOURCC_DXT4: { tex.format = MAP_Texture_Format_BC3; } break;
+        case FOURCC_DXT5: { tex.format = MAP_Texture_Format_BC3; } break;
         default: { assert(false); } break;
     }
     // @Note: *PRETTY* sure this is fine??
     switch (tex.format) {
-        case MAP_Texture_Format_BC1: { tex.sprite_metadata[0].format = 0x100; } break;
-        case MAP_Texture_Format_BC2: { tex.sprite_metadata[0].format = 0x102; } break;
-        case MAP_Texture_Format_BC3: { tex.sprite_metadata[0].format = 0x103; } break;
+        case MAP_Texture_Format_BC1:       { tex.sprite_metadata[0].format = 0x100; } break;
+        case MAP_Texture_Format_BC2:       { tex.sprite_metadata[0].format = 0x102; } break;
+        case MAP_Texture_Format_BC3:       { tex.sprite_metadata[0].format = 0x103; } break;
+        case MAP_Texture_Format_BC3_Maybe: { tex.sprite_metadata[0].format = 0x104; } break;
         default: { assert(false); } break;
     }
 
@@ -5412,13 +5418,61 @@ static void frame(void *userdata) {
             ImGui::End();
         };
         auto size = ImGui::GetWindowSize();
-        ImGui::BeginChild("texture_list", ImVec2(80, size.y - 50));
+        ImGui::BeginChild("texture_list", ImVec2(120, size.y - 50));
+
+        char *numbered_map_filename = g.opened_map_filename;
+        if (numbered_map_filename) {
+            int len = (int)strlen(numbered_map_filename);
+            int i = len - 1;
+            for (; i >= 0; i--) {
+                if (numbered_map_filename[i] == '/' || numbered_map_filename[i] == '\\') {
+                    ++i;
+                    break;
+                }
+            }
+            numbered_map_filename += i;
+        }
+
+        bool has_ever_seen_a_subfile_from_the_non_numbered_dependency = false;
+        bool has_ever_seen_a_subfile_from_the_main_numbered_map = false;
+        int subfile_number = 0;
         for (auto &sub : g.texture_subfiles) {
             ImGui::PushID(&sub);
             defer {
                 ImGui::PopID();
             };
+
+            const float indent = ImGui::GetStyle().IndentSpacing / 2;
+
+            if (sub.came_from_non_numbered_dependency) {
+                if (!has_ever_seen_a_subfile_from_the_non_numbered_dependency) {
+                    has_ever_seen_a_subfile_from_the_non_numbered_dependency = true;
+                    subfile_number = 0;
+
+                    // @Todo @@@
+                    ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "ob.map");
+                    ImGui::Separator();
+                }
+            } else {
+                if (!has_ever_seen_a_subfile_from_the_main_numbered_map) {
+                    has_ever_seen_a_subfile_from_the_main_numbered_map = true;
+                    subfile_number = 0;
+
+                    ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "%s", numbered_map_filename);
+                    ImGui::Separator();
+                }
+            }
+
+            ImGui::Indent(indent);
+            defer { ImGui::Unindent(indent); };
+
+            ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "Subfile %d", subfile_number);
+            ImGui::Separator();
+
             for (auto &tex : sub.textures) {
+                ImGui::Indent(indent);
+                defer { ImGui::Unindent(indent); };
+
                 char b[16]; snprintf(b, sizeof b, "ID %d", tex.id);
                 bool selected = g.ui_selected_texture_subfile == &sub && g.ui_selected_texture == &tex;
                 if (ImGui::Selectable(b, selected)) {
@@ -5430,13 +5484,20 @@ static void frame(void *userdata) {
                         g.ui_selected_texture = &tex;
                     }
                 }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+                    texture_preview_tooltip(tex.id);
+                }
             }
+
+            subfile_number++;
         }
+
         ImGui::EndChild();
 
-        ImGui::SameLine(0, -1);
+        ImGui::SameLine(0, 0);
         if (g.ui_selected_texture_subfile && g.ui_selected_texture) {
             ImGui::BeginChild("texture_panel");
+
             ImGui::PushID(g.ui_selected_texture_subfile);
             ImGui::PushID(g.ui_selected_texture);
             defer {
@@ -5445,14 +5506,21 @@ static void frame(void *userdata) {
                 ImGui::EndChild();
             };
 
+            bool non_numbered = (g.ui_selected_texture_subfile->came_from_non_numbered_dependency);
+            ImGui::BeginDisabled(non_numbered);
+
             assert(g.ui_selected_texture_subfile->textures.has_node(g.ui_selected_texture));
 
+            bool show_image = false;
+
+            ImGui::SameLine();
             if (ImGui::Button("Delete")) {
                 g.ui_selected_texture_subfile->textures.remove_ordered(g.ui_selected_texture);
                 g.ui_selected_texture->release();
                 g.ui_selected_texture_subfile = nullptr;
                 g.ui_selected_texture = nullptr;
             } else {
+                show_image = true;
                 auto &sub = *g.ui_selected_texture_subfile;
                 auto &tex = *g.ui_selected_texture;
                 char *dds_export_path = nullptr;
@@ -5488,52 +5556,68 @@ static void frame(void *userdata) {
                 }
 
                 ImGui::SameLine();
-                if (tex.format == MAP_Texture_Format_BC1) ImGui::Text("Format: BC1 (RGB - Opaque)");
-                if (tex.format == MAP_Texture_Format_BC2) ImGui::Text("Format: BC2 (RGBA - Transparent/Decal)");
-                if (tex.format == MAP_Texture_Format_BC3) ImGui::Text("Format: BC3 (RGBA - Transparent/Decal)");
+                if (tex.format == MAP_Texture_Format_BC1)       ImGui::Text("%dx%d - Format 0x%03x: BC1 (RGB - Opaque)", tex.width, tex.height, tex.format);
+                if (tex.format == MAP_Texture_Format_BC2)       ImGui::Text("%dx%d - Format 0x%03x: BC2 (RGBA - Transparent/Decal)", tex.width, tex.height, tex.format);
+                if (tex.format == MAP_Texture_Format_BC3)       ImGui::Text("%dx%d - Format 0x%03x: BC3 (RGBA - Transparent/Decal)", tex.width, tex.height, tex.format);
+                if (tex.format == MAP_Texture_Format_BC3_Maybe) ImGui::Text("%dx%d - Format 0x%03x: BC3 (RGBA - Transparent/Decal)", tex.width, tex.height, tex.format);
 
+                ImGui::NewLine();
                 {
+                    ImGui::SameLine(0, 0);
+                    ImGui::Columns(2);
                     {
                         int x = tex.id;
                         ImGui::InputInt("ID", &x);
                         x = clamp(x, 0, 65535);
                         tex.id = (uint16_t)x;
                     }
+                    ImGui::NextColumn();
                     {
                         int x = tex.material;
                         ImGui::InputInt("\"Material\" (?)", &x);
                         x = clamp(x, 0, 255);
                         tex.material = (uint8_t)x;
                     }
-                    
-                    float w = (float)tex.width;
-                    float h = (float)tex.height;
-                    float aspect = w / h;
-                    w = size.x - 99; // yucky hack
-                    h = size.y - 49; // yucky hack
-                    if (w > size.x - 100) {
-                        w = size.x - 100;
+                    ImGui::Columns(1);
+                }
+            }
+            ImGui::EndDisabled();
+            if (show_image) {
+                auto &tex = *g.ui_selected_texture;
+                float w = (float)tex.width;
+                float h = (float)tex.height;
+                float aspect = w / h;
+                ImGui::NewLine();
+                ImGui::SameLine();
+                ImGui::Checkbox("Actual Size", &g.texture_actual_size);
+                if (!g.texture_actual_size) {
+                    w = size.x - 149; // yucky hack
+                    h = size.y - 109; // yucky hack
+                    if (w > size.x - 150) {
+                        w = size.x - 150;
                         h = w / aspect;
                     }
-                    if (h > size.y - 50) {
-                        h = size.y - 50;
+                    if (h > size.y - 110) {
+                        h = size.y - 110;
                         w = h * aspect;
                     }
-                    MAP_Texture_Buffer *map_texture = nullptr;
-                    for (auto &map_tex : g.map_textures) {
-                        assert(map_tex.subfile_ptr);
-                        assert(map_tex.texture_ptr);
-                        if (map_tex.subfile_ptr == g.ui_selected_texture_subfile &&
-                            map_tex.texture_ptr == g.ui_selected_texture) {
-                            map_texture = &map_tex;
-                            break;
-                        }
+                }
+                MAP_Texture_Buffer *map_texture = nullptr;
+                for (auto &map_tex : g.map_textures) {
+                    assert(map_tex.subfile_ptr);
+                    assert(map_tex.texture_ptr);
+                    if (map_tex.subfile_ptr == g.ui_selected_texture_subfile &&
+                        map_tex.texture_ptr == g.ui_selected_texture) {
+                        map_texture = &map_tex;
+                        break;
                     }
-                    assert(map_texture);
-                    assert(map_texture->tex.id);
-                    if (w > 0 && h > 0) {
-                        ImGui::Image((ImTextureID)(uintptr_t)map_texture->tex.id, ImVec2(w, h));
-                    }
+                }
+                assert(map_texture);
+                assert(map_texture->tex.id);
+                if (w > 0 && h > 0) {
+                    ImGui::NewLine();
+                    ImGui::SameLine();
+                    ImGui::Image((ImTextureID)(uintptr_t)map_texture->tex.id, ImVec2(w, h));
                 }
             }
         }
@@ -5752,6 +5836,8 @@ static void frame(void *userdata) {
                 g.pitch = 0;
                 g.yaw = 0;
                 g.fov = FOV_DEFAULT;
+                g.bg_col = BG_COL_DEFAULT;
+                g.solo_material = -1;
             }
             ImGui::SameLine(); ImGui::Text("(%.0f, %.0f, %.0f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
             ImGui::NextColumn();
