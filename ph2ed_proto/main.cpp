@@ -3935,7 +3935,7 @@ static void frame(void *userdata) {
                 Array<hmm_vec3> obj_normals = {}; defer { obj_normals.release(); };
                 Array<uint32_t> obj_colours = {}; defer { obj_colours.release(); };
 
-                Array<PH2MAP__Vertex20> unstripped_verts = {}; defer { unstripped_verts.release(); };
+                Array<PH2MAP__Vertex24> unstripped_verts = {}; defer { unstripped_verts.release(); };
                 // Array<MAP_OBJ_Import_Material> materials = {};
 
                 char b[1024];
@@ -3943,16 +3943,23 @@ static void frame(void *userdata) {
                 while (fgets(b, sizeof b, f)) {
                     if (char *lf = strrchr(b, '\n')) *lf = 0;
                     char directive[3] = {};
-                    char args[4][64] = {};
-                    int matches = sscanf(b, " %s %s %s %s %s ", directive, args[0], args[1], args[2], args[3]);
+                    char args[6][64] = {};
+                    int matches = sscanf(b, " %s %s %s %s %s %s %s ", directive, args[0], args[1], args[2], args[3], args[4], args[5]);
                     if (strcmp("v", directive) == 0) {
                         // Position
-                        assert(matches == 4);
+                        assert(matches == 4 || matches == 7);
                         // Log("Position: (%s, %s, %s)", args[0], args[1], args[2]);
                         auto &pos = *obj_positions.push();
                         pos.X = (float)atof(args[0]);
                         pos.Y = (float)atof(args[1]);
                         pos.Z = (float)atof(args[2]);
+                        hmm_vec4 colour = {1, 1, 1, 1};
+                        if (matches == 7) {
+                            colour.Z = (float)atof(args[3]);
+                            colour.Y = (float)atof(args[4]);
+                            colour.X = (float)atof(args[5]);
+                        }
+                        obj_colours.push(PH2MAP_bgra_to_u32(colour));
                         center += pos;
                     } else if (strcmp("vt", directive) == 0) {
                         // UV
@@ -3973,9 +3980,9 @@ static void frame(void *userdata) {
                         // Triangle/Quad
                         assert(matches == 4 || matches == 5);
                         // Log("Triangle/Quad: (%s, %s, %s%s%s)", args[0], args[1], args[2], matches == 5 ? ", " : "", matches == 5 ? args[3] : "");
-                        PH2MAP__Vertex20 verts_to_push[4] = {};
+                        PH2MAP__Vertex24 verts_to_push[4] = {};
                         for (int i = 0; i < matches - 1; i++) {
-                            PH2MAP__Vertex20 vert = {};
+                            PH2MAP__Vertex24 vert = {};
                             int index_pos = 0;
                             int index_uv = 0;
                             int index_normal = 0;
@@ -3985,6 +3992,7 @@ static void frame(void *userdata) {
                                 vert.position[0] = obj_positions[index_pos - 1].X;
                                 vert.position[1] = obj_positions[index_pos - 1].Y;
                                 vert.position[2] = obj_positions[index_pos - 1].Z;
+                                vert.color = obj_colours[index_pos - 1];
                             } else {
                                 assert(false); // @Lazy
                             }
@@ -4016,9 +4024,9 @@ static void frame(void *userdata) {
                             verts_to_push[i] = vert;
                         }
                         auto push_wound = [&] (int a, int b, int c) {
-                            PH2MAP__Vertex20 vert_a = verts_to_push[a];
-                            PH2MAP__Vertex20 vert_b = verts_to_push[b];
-                            PH2MAP__Vertex20 vert_c = verts_to_push[c];
+                            PH2MAP__Vertex24 vert_a = verts_to_push[a];
+                            PH2MAP__Vertex24 vert_b = verts_to_push[b];
+                            PH2MAP__Vertex24 vert_c = verts_to_push[c];
                             // Infer face winding by comparing cross product to normal
                             hmm_vec3 v0 = { vert_a.position[0], vert_a.position[1], vert_a.position[2] };
                             hmm_vec3 v1 = { vert_b.position[0], vert_b.position[1], vert_b.position[2] };
@@ -4033,17 +4041,16 @@ static void frame(void *userdata) {
 
                             float dot = HMM_Dot(wound_normal, given_normal);
 
-                            bool is_wound_right = (dot >= 0);
-
-                            if (is_wound_right) {
+                            // bool is_wound_right = (dot >= 0);
+                            // if (is_wound_right) {
                                 unstripped_verts.push(vert_a);
                                 unstripped_verts.push(vert_b);
                                 unstripped_verts.push(vert_c);
-                            } else {
-                                unstripped_verts.push(vert_b);
-                                unstripped_verts.push(vert_a);
-                                unstripped_verts.push(vert_c);
-                            }
+                            // } else {
+                            //     unstripped_verts.push(vert_b);
+                            //     unstripped_verts.push(vert_a);
+                            //     unstripped_verts.push(vert_c);
+                            // }
                         };
                         push_wound(0, 1, 2);
                         if (matches == 5) { // Quad - upload another triangle
@@ -4073,7 +4080,7 @@ static void frame(void *userdata) {
                     int input_vertex_start = (i * 65535);
                     int input_vertex_count = i < num_meshes_to_add - 1 ? 65535 : (unstripped_verts.count % 65535);
 
-                    const PH2MAP__Vertex20 *input_verts_data = &unstripped_verts[input_vertex_start];
+                    const PH2MAP__Vertex24 *input_verts_data = &unstripped_verts[input_vertex_start];
 
                     size_t index_count = input_vertex_count;
                     Array<unsigned int> remap = {}; defer { remap.release(); };
@@ -4081,7 +4088,7 @@ static void frame(void *userdata) {
                     size_t vertex_count = meshopt_generateVertexRemap(&remap[0], NULL, index_count, &input_verts_data[0], index_count, sizeof(input_verts_data[0]));
 
                     Array<unsigned int> list_indices = {}; defer { list_indices.release(); };
-                    Array<PH2MAP__Vertex20> vertices = {}; defer { vertices.release(); };
+                    Array<PH2MAP__Vertex24> vertices = {}; defer { vertices.release(); };
 
                     list_indices.resize(index_count);
                     vertices.resize(vertex_count);
@@ -4097,7 +4104,7 @@ static void frame(void *userdata) {
 
                     Array<unsigned int> strip_indices = {}; defer { strip_indices.release(); };
                     strip_indices.resize(meshopt_stripifyBound(index_count));
-                    unsigned int restart_index = ~0u;
+                    unsigned int restart_index = 0; // ~0u;
                     size_t strip_size = meshopt_stripify(&strip_indices[0], list_indices.data, index_count, vertex_count, restart_index);
 
                     strip_indices.resize(strip_size);
