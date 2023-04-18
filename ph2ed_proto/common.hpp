@@ -81,7 +81,7 @@ extern __declspec(dllimport) void __stdcall my_TerminateProcess(void *hProcess, 
 static bool in_assert = false;
 static inline int assert_(const char *s) {
     in_assert = true;
-    int x = my_MessageBoxA(0, s, "Assertion Failed", 0x1012);
+    int x = my_MessageBoxA(0, s, "Assertion Failed", 0x2012);
     if (x == 3) my_TerminateProcess(my_GetCurrentProcess(), 1);
     in_assert = false;
     return x == 4;
