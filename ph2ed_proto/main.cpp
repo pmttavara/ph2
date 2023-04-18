@@ -133,7 +133,7 @@ void MsgBox_(const char *title, int flag, const char *msg, ...) {
     };
     char buf[1024];
     if (vsnprintf(buf, sizeof buf, msg, arg) > 0) {
-        MessageBoxA((HWND)sapp_win32_get_hwnd(), buf, title, MB_OK | flag | MB_SYSTEMMODAL);
+        MessageBoxA(0, buf, title, MB_OK | flag | MB_TASKMODAL);
     }
 }
 #define MsgErr(title, ...) MsgBox_(title, MB_ICONERROR, "" __VA_ARGS__);
@@ -3826,10 +3826,10 @@ static void frame(void *userdata) {
 #define URL "https://github.com/pmttavara/ph2"
             if (ImGui::MenuItem(URL)) {
                 // Okay, we'll be nice people and ask for confirmation.
-                if (MessageBoxA((HWND)sapp_win32_get_hwnd(),
+                if (MessageBoxA(0,
                     "This will open your browser to " URL ". Go?",
                     "Open Site",
-                    MB_YESNO | MB_ICONINFORMATION | MB_SYSTEMMODAL) == IDYES) {
+                    MB_YESNO | MB_ICONINFORMATION | MB_TASKMODAL) == IDYES) {
                     ShellExecuteW(0, L"open", L"" URL, 0, 0, SW_SHOW);
                 }
             }
@@ -5363,10 +5363,10 @@ static void frame(void *userdata) {
                             if (backup_succeeded) {
                                 should_save = true;
                             } else {
-                                if (MessageBoxA((HWND)sapp_win32_get_hwnd(),
+                                if (MessageBoxA(0,
                                     "A backup of this file couldn't be written to disk.\n\nDo you want to save, and overwrite the file, without any backup?",
                                     "Save Backup Failed",
-                                    MB_YESNO | MB_ICONWARNING | MB_SYSTEMMODAL) == IDYES) {
+                                    MB_YESNO | MB_ICONWARNING | MB_TASKMODAL) == IDYES) {
                                     should_save = true;
                                 }
                             }
@@ -5402,18 +5402,18 @@ static void frame(void *userdata) {
                                     return true;
                                 };
                                 if (!success) {
-                                    if (MessageBoxA((HWND)sapp_win32_get_hwnd(),
+                                    if (MessageBoxA(0,
                                         "The file couldn't be written to disk.\n\nDo you want to attempt to restore from a backup?",
                                         "Save Failed",
-                                        MB_YESNO | MB_ICONERROR | MB_SYSTEMMODAL) == IDYES) {
+                                        MB_YESNO | MB_ICONERROR | MB_TASKMODAL) == IDYES) {
                                         // Attempt to recover file contents by overwriting with the backup.
                                         if (restore_from_backup()) {
                                             // If we had written a backup just now, prompt to delete it.
                                             if (backup_succeeded) {
-                                                if (MessageBoxA((HWND)sapp_win32_get_hwnd(),
+                                                if (MessageBoxA(0,
                                                     "The file was restored from a freshly made backup.\nDo you want to delete this redundant backup?",
                                                     "Restore Succeded",
-                                                    MB_YESNO | MB_ICONWARNING | MB_SYSTEMMODAL) == IDYES) {
+                                                    MB_YESNO | MB_ICONWARNING | MB_TASKMODAL) == IDYES) {
                                                     if (DeleteFileW((LPCWSTR)bak_filename16)) {
                                                         MsgInfo("Backup Deleted", "The backup was deleted.");
                                                     } else {
