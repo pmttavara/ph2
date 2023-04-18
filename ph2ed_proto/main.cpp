@@ -3935,6 +3935,14 @@ static void frame(void *userdata) {
                 Array<hmm_vec3> obj_normals = {}; defer { obj_normals.release(); };
                 Array<uint32_t> obj_colours = {}; defer { obj_colours.release(); };
 
+                bool should_import_colours = true;
+                {
+                    int result = MessageBoxA(0, "Import colours?\n(Colours may break or glitch some maps in the game.)", "OBJ Import", MB_YESNO | MB_ICONASTERISK | MB_TASKMODAL);
+                    if (result == IDNO) {
+                        should_import_colours = false;
+                    }
+                }
+
                 Array<PH2MAP__Vertex24> unstripped_verts = {}; defer { unstripped_verts.release(); };
                 // Array<MAP_OBJ_Import_Material> materials = {};
 
@@ -4116,10 +4124,27 @@ static void frame(void *userdata) {
 
                     MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
                     buf.num_vertices = (int)vertices.count;
-                    buf.bytes_per_vertex = sizeof(vertices[0]);
-                    buf.data.resize(vertices.count * sizeof(vertices[0]));
-                    assert(buf.data.data);
-                    memcpy(buf.data.data, vertices.data, vertices.count * sizeof(vertices[0]));
+                    if (should_import_colours) {
+                        buf.bytes_per_vertex = sizeof(vertices[0]);
+                        buf.data.resize(vertices.count * sizeof(vertices[0]));
+                        assert(buf.data.data);
+                        memcpy(buf.data.data, vertices.data, vertices.count * sizeof(vertices[0]));
+                    } else {
+                        static Array<PH2MAP__Vertex20> vertices20 = {};
+                        vertices20.clear();
+                        for (auto &vert24 : vertices) {
+                            vertices20.push({
+                                vert24.position[0], vert24.position[1], vert24.position[2],
+                                vert24.normal[0], vert24.normal[1], vert24.normal[2],
+                                vert24.uv[0], vert24.uv[1]
+                            });
+                        }
+
+                        buf.bytes_per_vertex = sizeof(vertices20[0]);
+                        buf.data.resize(vertices20.count * sizeof(vertices20[0]));
+                        assert(buf.data.data);
+                        memcpy(buf.data.data, vertices20.data, vertices20.count * sizeof(vertices20[0]));
+                    }
 
                     MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
                     group.material_index = 0;
@@ -4716,7 +4741,18 @@ static void frame(void *userdata) {
                     auto &mesh = *buf.mesh_ptr;
                     int mesh_part_group_index = 0; // @Lazy
                     for (auto &mesh_part_group : mesh.mesh_part_groups) {
-                        char b[256]; snprintf(b, sizeof(b), "Mesh Part Group #%d - %d Mesh Parts", mesh_part_group_index, (int)mesh_part_group.mesh_parts.count);
+                        const char *vertex_format = "(Unknown format)";
+                        auto &section = mesh.vertex_buffers[mesh_part_group.section_index];
+                        if (section.bytes_per_vertex == 0x14) {
+                            vertex_format = "(XU)";
+                        } else if (section.bytes_per_vertex == 0x18) {
+                            vertex_format = "(XCU)";
+                        } else if (section.bytes_per_vertex == 0x20) {
+                            vertex_format = "(XNU)";
+                        } else if (section.bytes_per_vertex == 0x24) {
+                            vertex_format = "(XNCU)";
+                        }
+                        char b[256]; snprintf(b, sizeof(b), "Mesh Part Group #%d - %d Mesh Parts %s", mesh_part_group_index, (int)mesh_part_group.mesh_parts.count, vertex_format);
                         defer { mesh_part_group_index++; };
                         if (!ImGui::TreeNodeEx(b, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_DefaultOpen)) {
                             continue;
