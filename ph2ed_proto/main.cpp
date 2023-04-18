@@ -4739,6 +4739,67 @@ static void frame(void *userdata) {
 
                 if (!g.map_must_update) { // @HACK !!!!!!!!!!!!!!!! @@@@@@ !!!!!!!!
                     auto &mesh = *buf.mesh_ptr;
+
+                    for (int i = 0; i < mesh.vertex_buffers.count; ++i) {
+                        auto &section = mesh.vertex_buffers[i];
+
+                        const char *vertex_format = "(Unknown format)";
+                        int vertex_format_combo = 4;
+                        if (section.bytes_per_vertex == 0x14) {
+                            vertex_format = "(XU)";
+                            vertex_format_combo = 0;
+                        } else if (section.bytes_per_vertex == 0x18) {
+                            vertex_format = "(XCU)";
+                            vertex_format_combo = 1;
+                        } else if (section.bytes_per_vertex == 0x20) {
+                            vertex_format = "(XNU)";
+                            vertex_format_combo = 2;
+                        } else if (section.bytes_per_vertex == 0x24) {
+                            vertex_format = "(XNCU)";
+                            vertex_format_combo = 3;
+                        }
+
+                        char b[256]; snprintf(b, sizeof(b), "Vertex Section #%d %s", i, vertex_format);
+                        if (!ImGui::TreeNodeEx(b, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_DefaultOpen)) continue;
+                        defer { ImGui::TreePop(); };
+
+                        int new_vertex_format_combo = vertex_format_combo;
+                        if (vertex_format_combo < 0 || vertex_format_combo > 3) {
+                            continue;
+                        }
+                        bool changed = ImGui::Combo("Mode##Dropdown between valid states", &new_vertex_format_combo,
+                                                    "XU (Pos, UV)\0"
+                                                    "XCU (Pos, Colour, UV)\0"
+                                                    "XNU (Pos, Normal, UV)\0"
+                                                    "XNCU (Pos, Normal, Colour, UV)\0"
+                                                    "\0");
+                        if (!changed) {
+                            continue;
+                        }
+
+                        if (vertex_format_combo == 2 && new_vertex_format_combo == 3) {
+                            Array<PH2MAP__Vertex20> original = {};
+                            defer {
+                                original.release();
+                            };
+                            original.resize(section.num_vertices);
+                            assert(sizeof(original[0]) == section.bytes_per_vertex);
+                            assert(original.count * sizeof(original[0]) == section.num_vertices * section.bytes_per_vertex);
+                            memcpy(original.data, section.data.data, section.num_vertices * section.bytes_per_vertex);
+
+                            section.bytes_per_vertex = 0x24;
+                            section.data.resize(section.num_vertices * section.bytes_per_vertex);
+                            for (int i = 0; i < section.num_vertices; ++i) {
+                                *(PH2MAP__Vertex24 *)&(section.data[i * section.bytes_per_vertex]) = {
+                                    original[i].position[0], original[i].position[1], original[i].position[2],
+                                    original[i].normal[0], original[i].normal[1], original[i].normal[2],
+                                    0xffffffff,
+                                    original[i].uv[0], original[i].uv[1]
+                                };
+                            }
+                        }
+                    }
+
                     int mesh_part_group_index = 0; // @Lazy
                     for (auto &mesh_part_group : mesh.mesh_part_groups) {
                         const char *vertex_format = "(Unknown format)";
