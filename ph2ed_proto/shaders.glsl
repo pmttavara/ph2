@@ -116,7 +116,7 @@ void main() {
     if (textured != 0) {
         frag_color.rgba = texture(tex, uv);
         if (do_a2c_sharpening != 0) {
-            frag_color.a = (frag_color.a - 0.5) / max(fwidth(frag_color.a), 0.0001) + 0.5;
+            frag_color.a = (frag_color.a - 0.05) / max(fwidth(frag_color.a), 0.0001) + 0.05;
         }
     }
     frag_color.rgba *= sqrt(material_diffuse_color_bgra.zyxw);
