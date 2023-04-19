@@ -2143,7 +2143,20 @@ static void map_write_to_memory(G &g, Array<uint8_t> *result) {
     WriteBackpatch(uint32_t, backpatch_subfile_count, subfile_count);
     assert(file_length == result->count);
 }
-static MAP_Texture_Buffer *map_get_texture_by_id(G &g, uint32_t id) {
+static MAP_Texture *map_get_texture_by_id(G &g, uint32_t id) {
+    ProfileFunction();
+
+    for (auto &subfile : g.texture_subfiles) {
+        for (auto &tex : subfile.textures) {
+            if (tex.id == id) {
+                return &tex;
+            }
+        }
+    }
+
+    return nullptr;
+}
+static MAP_Texture_Buffer *map_get_texture_buffer_by_id(G &g, uint32_t id) {
     ProfileFunction();
 
     for (auto &map_tex : g.map_textures) {
@@ -2217,6 +2230,11 @@ static const char *get_non_numbered_dependency_filename(const char *filename) {
     }
     return non_numbered;
 }
+
+static float (vertex_format_mode_histogram[4])[6] = {};
+static float (texture_format_mode_histogram[4])[6] = {};
+static float (mode_unknown_histogram[6])[17] = {};
+static float (texture_format_unknown_histogram[4])[17] = {};
 
 static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false, bool round_trip_test = false) {
     ProfileFunction();
@@ -2573,6 +2591,113 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     g.opened_map_filename = strdup(filename);
     assert(g.opened_map_filename);
 
+    {
+        for (MAP_Geometry &geo : g.geometries) {
+            LinkedList<MAP_Mesh, The_Arena_Allocator> *lists[3] = { &geo.opaque_meshes, &geo.transparent_meshes, &geo.decal_meshes };
+            // MAP_Geometry_Buffer_Source sources[countof(lists)] = { MAP_Geometry_Buffer_Source::Opaque, MAP_Geometry_Buffer_Source::Transparent, MAP_Geometry_Buffer_Source::Decal };
+            for (int i = 0; i < countof(lists); ++i) {
+                auto &meshes = *lists[i];
+                // auto source = sources[i];
+                for (MAP_Mesh &mesh : meshes) {
+                    for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
+                        int bytes_per_vertex = mesh.vertex_buffers[mpg.section_index].bytes_per_vertex;
+                        MAP_Material *material = g.materials.at_index(mpg.material_index); 
+                        if (!material) continue;
+
+                        int mode = material->mode;
+                        if (PH2MAP_material_mode_is_valid(mode)) {
+                            if (mode == 6) {
+                                mode = 5;
+                            }
+                        } else {
+                            assert(false);
+                        }
+                        if (bytes_per_vertex == 0x14) {
+                            bytes_per_vertex = 0;
+                        } else if (bytes_per_vertex == 0x18) {
+                            bytes_per_vertex = 1;
+                        } else if (bytes_per_vertex == 0x20) {
+                            bytes_per_vertex = 2;
+                        } else if (bytes_per_vertex == 0x24) {
+                            bytes_per_vertex = 3;
+                        } else {
+                            assert(false);
+                        }
+
+                        (vertex_format_mode_histogram[bytes_per_vertex])[mode] += 1;
+                    }
+                }
+            }
+        }
+
+        for (MAP_Material &mat : g.materials) {
+            MAP_Texture *tex = map_get_texture_by_id(g, mat.texture_id);
+            if (!tex) continue;
+
+            int mode = mat.mode;
+            int format = tex->format;
+
+            if (PH2MAP_material_mode_is_valid(mode)) {
+                if (mode == 6) {
+                    mode = 5;
+                }
+            } else {
+                assert(false);
+            }
+            if (format == MAP_Texture_Format_BC1) {
+                format = 0;
+            } else if (format == MAP_Texture_Format_BC2) {
+                format = 1;
+            } else if (format == MAP_Texture_Format_BC3) {
+                format = 2;
+            } else if (format == MAP_Texture_Format_BC3_Maybe) {
+                format = 3;
+            } else {
+                assert(false);
+            }
+
+            (texture_format_mode_histogram[format])[mode] += 1;
+
+            int unknown = tex->material;
+            if (unknown >= 1 && unknown <= 16) {
+                unknown -= 1;
+            } else if (unknown == 0x28) {
+                unknown = 16;
+            } else {
+                assert(false);
+            }
+
+            (mode_unknown_histogram[mode])[unknown] += 1;
+        }
+        for (MAP_Texture_Subfile &sub : g.texture_subfiles) {
+            for (MAP_Texture &tex : sub.textures) {
+                int unknown = tex.material;
+                int format = tex.format;
+
+                if (unknown >= 1 && unknown <= 16) {
+                    unknown -= 1;
+                } else if (unknown == 0x28) {
+                    unknown = 16;
+                } else {
+                    assert(false);
+                }
+                if (format == MAP_Texture_Format_BC1) {
+                    format = 0;
+                } else if (format == MAP_Texture_Format_BC2) {
+                    format = 1;
+                } else if (format == MAP_Texture_Format_BC3) {
+                    format = 2;
+                } else if (format == MAP_Texture_Format_BC3_Maybe) {
+                    format = 3;
+                } else {
+                    assert(false);
+                }
+
+                (texture_format_unknown_histogram[format])[unknown] += 1;
+            }
+        }
+    }
+
     g.solo_material = -1;
 }
 static void map_upload(G &g) {
@@ -2683,14 +2808,23 @@ static void test_all_maps(G &g) {
     assert(directory >= 0);
     int spinner = 0;
     int num_tested = 0;
+
+    memset(vertex_format_mode_histogram, 0, sizeof(vertex_format_mode_histogram));
+    memset(texture_format_mode_histogram, 0, sizeof(texture_format_mode_histogram));
+    memset(mode_unknown_histogram, 0, sizeof(mode_unknown_histogram));
+    memset(texture_format_unknown_histogram, 0, sizeof(texture_format_unknown_histogram));
+
     while (1) {
         char b[260 + sizeof("map/")];
         snprintf(b, sizeof(b), "map/%s", find_data.name);
-        // Log("Loading map \"%s\"", b);
-        // printf("%c\r", "|/-\\"[spinner++ % 4]);
-        sapp_set_window_title(b);
-        map_load(g, b, false, true);
-        ++num_tested;
+        if (find_data.time_write < 1100000000) { // 1100000000 is sometime after 2002...
+            // Log("Time write: %d", find_data.time_write);
+            // Log("Loading map \"%s\"", b);
+            // printf("%c\r", "|/-\\"[spinner++ % 4]);
+            sapp_set_window_title(b);
+            map_load(g, b, false, true);
+            ++num_tested;
+        }
         if (_findnext(directory, &find_data) < 0) {
             if (errno == ENOENT) break;
             else assert(0);
@@ -2698,6 +2832,10 @@ static void test_all_maps(G &g) {
     }
     _findclose(directory);
     Log("Tested %d maps.", num_tested);
+    for (auto &a : vertex_format_mode_histogram) for (auto &x : a) x /= num_tested;
+    for (auto &a : texture_format_mode_histogram) for (auto &x : a) x /= num_tested;
+    for (auto &a : mode_unknown_histogram) for (auto &x : a) x /= num_tested;
+    for (auto &a : texture_format_unknown_histogram) for (auto &x : a) x /= num_tested;
     map_unload(g);
 }
 
@@ -4331,7 +4469,7 @@ static void frame(void *userdata) {
                             assert(mat_);
                             MAP_Material &mat = *mat_;
 
-                            auto map_tex = map_get_texture_by_id(g, mat.texture_id);
+                            auto map_tex = map_get_texture_buffer_by_id(g, mat.texture_id);
                             if (map_tex) {
                                 assert(map_tex->texture_ptr);
                             }
@@ -4386,7 +4524,7 @@ static void frame(void *userdata) {
 
             assert(mat.texture_id >= 0);
             assert(mat.texture_id < 65536);
-            auto map_tex = map_get_texture_by_id(g, mat.texture_id);
+            auto map_tex = map_get_texture_buffer_by_id(g, mat.texture_id);
             if (map_tex) {
                 assert(map_tex->tex.id);
                 MAP_Texture *tex = map_tex->texture_ptr;
@@ -4455,7 +4593,7 @@ static void frame(void *userdata) {
     auto texture_preview_tooltip = [&g] (int tex_id) {
         ImGui::BeginTooltip();
 
-        auto tex = map_get_texture_by_id(g, tex_id);
+        auto tex = map_get_texture_buffer_by_id(g, tex_id);
         if (tex) {
 
             const int DIM = 256;
@@ -4797,6 +4935,43 @@ static void frame(void *userdata) {
                                     original[i].uv[0], original[i].uv[1]
                                 };
                             }
+                        } else if (vertex_format_combo == 3 && new_vertex_format_combo == 2) {
+                            Array<PH2MAP__Vertex24> original = {};
+                            defer {
+                                original.release();
+                            };
+                            original.resize(section.num_vertices);
+                            assert(sizeof(original[0]) == section.bytes_per_vertex);
+                            assert(original.count * sizeof(original[0]) == section.num_vertices * section.bytes_per_vertex);
+                            memcpy(original.data, section.data.data, section.num_vertices * section.bytes_per_vertex);
+
+                            section.bytes_per_vertex = 0x20;
+                            section.data.resize(section.num_vertices * section.bytes_per_vertex);
+                            for (int i = 0; i < section.num_vertices; ++i) {
+                                *(PH2MAP__Vertex20 *)&(section.data[i * section.bytes_per_vertex]) = {
+                                    original[i].position[0], original[i].position[1], original[i].position[2],
+                                    original[i].normal[0], original[i].normal[1], original[i].normal[2],
+                                    original[i].uv[0], original[i].uv[1]
+                                };
+                            }
+                        } else if (vertex_format_combo == 2 && new_vertex_format_combo == 0) {
+                            Array<PH2MAP__Vertex20> original = {};
+                            defer {
+                                original.release();
+                            };
+                            original.resize(section.num_vertices);
+                            assert(sizeof(original[0]) == section.bytes_per_vertex);
+                            assert(original.count * sizeof(original[0]) == section.num_vertices * section.bytes_per_vertex);
+                            memcpy(original.data, section.data.data, section.num_vertices * section.bytes_per_vertex);
+
+                            section.bytes_per_vertex = 0x14;
+                            section.data.resize(section.num_vertices * section.bytes_per_vertex);
+                            for (int i = 0; i < section.num_vertices; ++i) {
+                                *(PH2MAP__Vertex14 *)&(section.data[i * section.bytes_per_vertex]) = {
+                                    original[i].position[0], original[i].position[1], original[i].position[2],
+                                    original[i].uv[0], original[i].uv[1]
+                                };
+                            }
                         }
                     }
 
@@ -5057,6 +5232,23 @@ static void frame(void *userdata) {
 
                             map_buffer_ui(b);
                         });
+
+                        if (meshes == &geo.opaque_meshes && ImGui::Button("opaque -> transparent")) {
+                            geo.opaque_meshes.remove_ordered(&mesh);
+                            if (!geo.transparent_meshes.sentinel) {
+                                geo.transparent_meshes.init();
+                            }
+                            node_insert_before(geo.transparent_meshes.sentinel, &mesh);
+                            break;
+                        }
+                        if (meshes == &geo.transparent_meshes && ImGui::Button("transparent -> decal")) {
+                            geo.transparent_meshes.remove_ordered(&mesh);
+                            if (!geo.decal_meshes.sentinel) {
+                                geo.decal_meshes.init();
+                            }
+                            node_insert_before(geo.decal_meshes.sentinel, &mesh);
+                            break;
+                        }
                     }
                 }
             }
@@ -6381,7 +6573,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                             if (material) {
                                 assert(material->texture_id >= 0);
                                 assert(material->texture_id < 65536);
-                                auto map_tex = map_get_texture_by_id(g, material->texture_id);
+                                auto map_tex = map_get_texture_buffer_by_id(g, material->texture_id);
                                 if (map_tex) {
                                     assert(map_tex->tex.id);
                                     tex = *map_tex;
