@@ -5196,6 +5196,7 @@ static void frame(void *userdata) {
                         else if (meshes == &geo.decal_meshes) source = "Decal";
                         char b[512]; snprintf(b, sizeof b, "%s Mesh #%d", source, mesh_index);
                         auto flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                            ImGuiTreeNodeFlags_AllowItemOverlap |
                             ImGuiTreeNodeFlags_OpenOnDoubleClick |
                             (any_selected * ImGuiTreeNodeFlags_Selected);
                         ImGui::SameLine(); bool ret = ImGui::TreeNodeEx(b, flags);
@@ -5220,6 +5221,50 @@ static void frame(void *userdata) {
                             // @Note: Bleh.
                             g.overall_center_needs_recalc = true;
                         }
+
+                        auto add_to = [] (LinkedList<MAP_Mesh, The_Arena_Allocator> *meshes, MAP_Mesh *mesh) {
+                            if (!meshes->sentinel) {
+                                meshes->init();
+                            }
+                            node_insert_before(meshes->sentinel, mesh);
+                        };
+                        if (meshes == &geo.opaque_meshes) {
+                            ImGui::SameLine(); if (ImGui::SmallButton("-> Transparent")) {
+                                meshes->remove_ordered(&mesh);
+                                add_to(&geo.transparent_meshes, &mesh);
+                                break;
+                            }
+                            ImGui::SameLine(); if (ImGui::SmallButton("-> Decal")) {
+                                meshes->remove_ordered(&mesh);
+                                add_to(&geo.decal_meshes, &mesh);
+                                break;
+                            }
+                        }
+                        if (meshes == &geo.transparent_meshes) {
+                            ImGui::SameLine(); if (ImGui::SmallButton("-> Opaque")) {
+                                meshes->remove_ordered(&mesh);
+                                add_to(&geo.opaque_meshes, &mesh);
+                                break;
+                            }
+                            ImGui::SameLine(); if (ImGui::SmallButton("-> Decal")) {
+                                meshes->remove_ordered(&mesh);
+                                add_to(&geo.decal_meshes, &mesh);
+                                break;
+                            }
+                        }
+                        if (meshes == &geo.decal_meshes) {
+                            ImGui::SameLine(); if (ImGui::SmallButton("-> Opaque")) {
+                                meshes->remove_ordered(&mesh);
+                                add_to(&geo.opaque_meshes, &mesh);
+                                break;
+                            }
+                            ImGui::SameLine(); if (ImGui::SmallButton("-> Transparent")) {
+                                meshes->remove_ordered(&mesh);
+                                add_to(&geo.transparent_meshes, &mesh);
+                                break;
+                            }
+                        }
+
                         if (!ret) { continue; }
                         defer { ImGui::TreePop(); };
 
@@ -5232,23 +5277,6 @@ static void frame(void *userdata) {
 
                             map_buffer_ui(b);
                         });
-
-                        if (meshes == &geo.opaque_meshes && ImGui::Button("opaque -> transparent")) {
-                            geo.opaque_meshes.remove_ordered(&mesh);
-                            if (!geo.transparent_meshes.sentinel) {
-                                geo.transparent_meshes.init();
-                            }
-                            node_insert_before(geo.transparent_meshes.sentinel, &mesh);
-                            break;
-                        }
-                        if (meshes == &geo.transparent_meshes && ImGui::Button("transparent -> decal")) {
-                            geo.transparent_meshes.remove_ordered(&mesh);
-                            if (!geo.decal_meshes.sentinel) {
-                                geo.decal_meshes.init();
-                            }
-                            node_insert_before(geo.decal_meshes.sentinel, &mesh);
-                            break;
-                        }
                     }
                 }
             }
