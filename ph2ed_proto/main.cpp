@@ -6077,7 +6077,7 @@ static void frame(void *userdata) {
                         "1: Diffuse",
                         "2: Specular + Diffuse",
                         "3: Vantablack",
-                        "4: Ignore Colors",
+                        "4: Vertex Colour",
                         "",
                         "6: Unknown Diffuse",
                     };
@@ -6124,10 +6124,10 @@ static void frame(void *userdata) {
                     int x = mat.mode - (mat.mode == 6); // 6 => 5
                     bool changed = ImGui::Combo("Mode##Dropdown between valid states", &x,
                                  "0: Emissive?\0"
-                                 "1: Colored Diffuse\0"
-                                 "2: Colored Diffuse + Colored Specular\0"
+                                 "1: Diffuse: Vertex Normals\0"
+                                 "2: Specular + Diffuse\0"
                                  "3: Unknown - Vantablack?\0"
-                                 "4: Unknown - Ignore Material Colors?\0"
+                                 "4: Diffuse: Vertex Colours + Normals\0"
                                  "6: Unknown - also Colored Diffuse?\0"
                                  "\0");
                     if (changed && x >= 0 && x <= 5) {
