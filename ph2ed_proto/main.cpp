@@ -659,22 +659,6 @@ struct MAP_Material : Node {
     float specularity;
 };
 
-struct MAP_OBJ_Import_Material {
-    uint16_t index_in_materials_array = 0;
-    uint8_t mode = 0;
-    uint32_t diffuse_color = 0;
-    uint32_t specular_color = 0;
-    union {
-        uint32_t specularity_u32 = 0;
-        float specularity_f32;
-    };
-    uint16_t texture_id = 0;
-    bool texture_was_found = false;
-    uint8_t texture_unknown = 0;
-
-    // Array<PH2MAP__Vertex24> unstripped_vertices = {};
-};
-
 static bool PH2MAP_material_mode_is_valid(int mode) {
     return mode == 0 || mode == 1 || mode == 2 || mode == 3 || mode == 4 || mode == 6;
 }
@@ -3163,6 +3147,7 @@ DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Sel
 #ifndef NDEBUG
     {
         map_load(g, "map/ob01 (2).map");
+        // map_load(g, "map/ap64.map");
         // test_all_maps(g);
         // sapp_request_quit();
     }
@@ -3783,8 +3768,6 @@ bool dds_import(char *filename, MAP_Texture &result) {
     result = tex;
     tex = {};
 
-    MsgInfo("DDS Import", "Imported!");
-
     return true;
 }
 
@@ -3858,6 +3841,159 @@ static uint32_t PH2MAP_bgra_to_u32(hmm_v4 bgra) {
     return u;
 }
 
+struct MAP_OBJ_Import_Material {
+    uint16_t index_in_materials_array = 0;
+    uint8_t mode = 0;
+    uint32_t diffuse_color = 0;
+    uint32_t specular_color = 0;
+    union {
+        uint32_t specularity_u32 = 0;
+        float specularity_f32;
+    };
+    uint16_t texture_id = 0;
+    bool texture_was_found = false;
+    uint8_t texture_unknown = 0;
+
+    char dds_filename_buf[1024] = {};
+
+    Array<PH2MAP__Vertex24> unstripped_verts = {};
+
+    void release() {
+        ProfileFunction();
+
+        unstripped_verts.release();
+    }
+};
+
+static bool map_obj_import_materials_equivalent(const MAP_OBJ_Import_Material &a, const MAP_OBJ_Import_Material &b) {
+    if (a.index_in_materials_array != b.index_in_materials_array) return false;
+    if (a.mode != b.mode) return false;
+    if (a.diffuse_color != b.diffuse_color) return false;
+    if (a.specular_color != b.specular_color) return false;
+    if (a.specularity_u32 != b.specularity_u32) return false;
+    if (a.texture_id != b.texture_id) return false;
+    if (a.texture_was_found != b.texture_was_found) return false;
+    if (a.texture_unknown != b.texture_unknown) return false;
+
+    return true;
+}
+
+static bool parse_material_name(char *s, MAP_OBJ_Import_Material &result) {
+    ProfileFunction();
+
+    result = {};
+
+    char *start = strstr(s, "PH2_");
+    char *end = strstr(s, "_PH2");
+
+    if (!start) {
+        return false;
+    }
+
+    if (!end) {
+        return false;
+    }
+
+    if (end - start != 47) {
+        return false;
+    }
+
+    bool underscores_good = true;
+    for (int i = 0; i < 47; ++i) {
+        const char *p = "PH2_0000_0_00000000_00000000_00000000_0000_0_00_PH2" + i;
+        if (*p == '_') {
+            if (start[i] != '_') {
+                underscores_good = false;
+            }
+        }
+    }
+    if (!underscores_good) {
+        return false;
+    }
+
+    unsigned int mat_index = 0;
+    unsigned int mat_mode = 0;
+    unsigned int mat_diffuse_color = 0;
+    unsigned int mat_specular_color = 0;
+    unsigned int mat_specularity = 0;
+
+    unsigned int tex_id = 0;
+    unsigned int tex_found = 0;
+    unsigned int tex_unknown = 0;
+
+    int matches = sscanf(start,
+                         "PH2_%x_%x_%x_%x_%x_%x_%x_%x_PH2",
+                         &mat_index,
+                         &mat_mode,
+                         &mat_diffuse_color,
+                         &mat_specular_color,
+                         &mat_specularity,
+                         &tex_id,
+                         &tex_found,
+                         &tex_unknown);
+    if (matches != 8) {
+        return false;
+    }
+
+    result.index_in_materials_array = (uint16_t)mat_index;
+    result.mode = (uint8_t)mat_mode;
+    result.diffuse_color = mat_diffuse_color;
+    result.specular_color = mat_specular_color;
+    result.specularity_u32 = mat_specularity;
+    result.texture_id = (uint16_t)tex_id;
+    result.texture_was_found = tex_found;
+    result.texture_unknown = (uint8_t)tex_unknown;
+
+    return true;
+}
+
+static void parse_mtl(FILE *mtl, Array<MAP_OBJ_Import_Material> &materials) {
+    ProfileFunction();
+
+    char b[1024] = {};
+    while (fgets(b, sizeof(b) - 1, mtl)) {
+        if (char *lf = strrchr(b, '\n')) *lf = 0;
+
+        {
+            char *end = b + strlen(b) - 1;
+            while (end >= b && isspace(end[0])) {
+                --end;
+            }
+            end[1] = '\0';
+        }
+
+        char *s = b;
+        while (isspace(s[0])) {
+            ++s;
+        }
+
+        if (materials.count > 0) {
+            if (memcmp(s, "map_Kd ", 7) == 0) {
+                s += 7;
+                while (isspace(s[0])) {
+                    ++s;
+                }
+
+                auto &arr = materials[materials.count - 1].dds_filename_buf;
+                strncpy(arr, s, sizeof(arr));
+
+                continue;
+            }
+        }
+
+        if (memcmp(s, "newmtl ", 7) != 0) {
+            continue;
+        }
+
+        MAP_OBJ_Import_Material mat = {};
+        if (!parse_material_name(s, mat)) {
+            continue;
+        }
+
+        materials.push(mat);
+    }
+}
+
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd);
 static void frame(void *userdata) {
     ProfileFunction();
@@ -3882,6 +4018,9 @@ static void frame(void *userdata) {
     defer {
         free(obj_file_buf);
     };
+
+    // static unsigned long long asdfasdf; if (!asdfasdf++) obj_file_buf = strdup("map/ap64.map.obj");
+
     char *dds_file_buf = nullptr;
     defer {
         free(dds_file_buf);
@@ -4081,14 +4220,72 @@ static void frame(void *userdata) {
                     }
                 }
 
-                Array<PH2MAP__Vertex24> unstripped_verts = {}; defer { unstripped_verts.release(); };
-                // Array<MAP_OBJ_Import_Material> materials = {};
+                Array<PH2MAP__Vertex24> materialless_unstripped_verts = {}; defer { materialless_unstripped_verts.release(); };
+                Array<MAP_OBJ_Import_Material> import_materials = {};
+                defer {
+                    for (MAP_OBJ_Import_Material &mat : import_materials) {
+                        mat.unstripped_verts.release();
+                    }
+                };
 
-                char b[1024];
+                Array<PH2MAP__Vertex24> *current_verts = &materialless_unstripped_verts;
+
+                char b[1024] = {};
                 hmm_vec3 center = {};
-                while (fgets(b, sizeof b, f)) {
+                while (fgets(b, sizeof(b) - 1, f)) {
                     if (char *lf = strrchr(b, '\n')) *lf = 0;
                     char directive[3] = {};
+
+                    char *s = b;
+                    while (isspace(s[0])) {
+                        ++s;
+                    }
+
+                    if (memcmp(s, "mtllib ", 7) == 0) {
+                        s += 7;
+
+                        while (isspace(s[0])) {
+                            ++s;
+                        }
+
+                        FILE *mtl = PH2CLD__fopen(s, "r");
+                        if (!mtl) {
+                            continue;
+                        }
+
+                        defer {
+                            fclose(mtl);
+                        };
+
+                        parse_mtl(mtl, import_materials);
+
+                        continue;
+
+                    }
+
+                    if (memcmp(s, "usemtl ", 7) == 0) {
+                        s += 7;
+
+                        while (isspace(s[0])) {
+                            ++s;
+                        }
+
+                        MAP_OBJ_Import_Material mat = {};
+                        if (!parse_material_name(s, mat)) {
+                            continue;
+                        }
+
+                        for (MAP_OBJ_Import_Material &import_material : import_materials) {
+                            if (map_obj_import_materials_equivalent(mat, import_material)) {
+                                current_verts = &import_material.unstripped_verts;
+                                break;
+                            }
+                        }
+
+                        continue;
+
+                    }
+
                     char args[6][64] = {};
                     int matches = sscanf(b, " %s %s %s %s %s %s %s ", directive, args[0], args[1], args[2], args[3], args[4], args[5]);
                     if (strcmp("v", directive) == 0) {
@@ -4189,13 +4386,13 @@ static void frame(void *userdata) {
 
                             // bool is_wound_right = (dot >= 0);
                             // if (is_wound_right) {
-                                unstripped_verts.push(vert_a);
-                                unstripped_verts.push(vert_b);
-                                unstripped_verts.push(vert_c);
+                                current_verts->push(vert_a);
+                                current_verts->push(vert_b);
+                                current_verts->push(vert_c);
                             // } else {
-                            //     unstripped_verts.push(vert_b);
-                            //     unstripped_verts.push(vert_a);
-                            //     unstripped_verts.push(vert_c);
+                            //     current_verts->push(vert_b);
+                            //     current_verts->push(vert_a);
+                            //     current_verts->push(vert_c);
                             // }
                         };
                         push_wound(0, 1, 2);
@@ -4216,108 +4413,206 @@ static void frame(void *userdata) {
                 }
 
                 Log("We got %lld positions, %lld uvs, %lld normals.", obj_positions.count, obj_uvs.count, obj_normals.count);
-                Log("We built %lld unstripped vertices.", unstripped_verts.count);
 
-                int num_meshes_to_add = ((int)unstripped_verts.count + 65534) / 65535;
-                assert(num_meshes_to_add >= 1);
+                {
+                    MAP_Geometry geo = {};
+                    if (!g.geometries.empty()) {
+                        geo.subfile_index = ((MAP_Geometry *)g.geometries.sentinel->prev)->subfile_index;
+                    }
+                    g.geometries.push(geo);
+                }
 
-                for (int i = 0; i < num_meshes_to_add; ++i) {
-
-                    int input_vertex_start = (i * 65535);
-                    int input_vertex_count = i < num_meshes_to_add - 1 ? 65535 : (unstripped_verts.count % 65535);
-
-                    const PH2MAP__Vertex24 *input_verts_data = &unstripped_verts[input_vertex_start];
-
-                    size_t index_count = input_vertex_count;
-                    Array<unsigned int> remap = {}; defer { remap.release(); };
-                    remap.resize(index_count); // allocate temporary memory for the remap table
-                    size_t vertex_count = meshopt_generateVertexRemap(&remap[0], NULL, index_count, &input_verts_data[0], index_count, sizeof(input_verts_data[0]));
-
-                    Array<unsigned int> list_indices = {}; defer { list_indices.release(); };
-                    Array<PH2MAP__Vertex24> vertices = {}; defer { vertices.release(); };
-
-                    list_indices.resize(index_count);
-                    vertices.resize(vertex_count);
-
-                    meshopt_remapIndexBuffer(list_indices.data, NULL, index_count, &remap[0]);
-                    meshopt_remapVertexBuffer(vertices.data, &input_verts_data[0], index_count, sizeof(input_verts_data[0]), &remap[0]);
-
-                    meshopt_optimizeVertexCacheStrip(list_indices.data, list_indices.data, index_count, vertex_count);
-
-                    meshopt_optimizeOverdraw(list_indices.data, list_indices.data, index_count, &vertices[0].position[0], vertex_count, sizeof(vertices[0]), 1.05f);
-
-                    meshopt_optimizeVertexFetch(vertices.data, list_indices.data, index_count, vertices.data, vertex_count, sizeof(vertices[0]));
-
-                    Array<unsigned int> strip_indices = {}; defer { strip_indices.release(); };
-                    strip_indices.resize(meshopt_stripifyBound(index_count));
-                    unsigned int restart_index = 0; // ~0u;
-                    size_t strip_size = meshopt_stripify(&strip_indices[0], list_indices.data, index_count, vertex_count, restart_index);
-
-                    strip_indices.resize(strip_size);
-
-                    assert(!g.geometries.empty());
-                    auto &geo = *(MAP_Geometry *)g.geometries.sentinel->prev;
-
-                    MAP_Mesh &mesh = *geo.opaque_meshes.push();
-
-                    MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
-                    buf.num_vertices = (int)vertices.count;
-                    if (should_import_colours) {
-                        buf.bytes_per_vertex = sizeof(vertices[0]);
-                        buf.data.resize(vertices.count * sizeof(vertices[0]));
-                        assert(buf.data.data);
-                        memcpy(buf.data.data, vertices.data, vertices.count * sizeof(vertices[0]));
+                for (int i = 0; i < 1 + import_materials.count; ++i) {
+                    Array<PH2MAP__Vertex24> *verts = &materialless_unstripped_verts;
+                    if (i > 0) {
+                        verts = &import_materials[i - 1].unstripped_verts;
+                        Log("Built %lld unstripped vertices for material %d.", verts->count, import_materials[i - 1].index_in_materials_array);
                     } else {
-                        static Array<PH2MAP__Vertex20> vertices20 = {};
-                        vertices20.clear();
-                        for (auto &vert24 : vertices) {
-                            vertices20.push({
-                                vert24.position[0], vert24.position[1], vert24.position[2],
-                                vert24.normal[0], vert24.normal[1], vert24.normal[2],
-                                vert24.uv[0], vert24.uv[1]
-                            });
-                        }
-
-                        buf.bytes_per_vertex = sizeof(vertices20[0]);
-                        buf.data.resize(vertices20.count * sizeof(vertices20[0]));
-                        assert(buf.data.data);
-                        memcpy(buf.data.data, vertices20.data, vertices20.count * sizeof(vertices20[0]));
+                        Log("Built %lld unstripped vertices for (no material).", verts->count);
                     }
 
-                    MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
-                    group.material_index = 0;
-                    group.section_index = 0;
+                    if (verts->count <= 0) {
+                        continue;
+                    }
 
-                    {
-                        MAP_Mesh_Part *part = group.mesh_parts.push();
-                        part->strip_count = 1;
-                        part->strip_length = 0;
+                    int num_meshes_to_add = ((int)verts->count + 65534) / 65535;
+                    assert(num_meshes_to_add >= 1);
 
-                        for (int i = 0; i < strip_indices.count;) {
-                            if (strip_indices[i] == ~0u) {
+                    unsigned int material_index = 0;
 
-                                strip_indices.remove_ordered(i);
+                    if (i > 0) {
 
-                                part = group.mesh_parts.push();
-                                part->strip_count = 1;
-                                part->strip_length = 0;
+                        // Deduplicate or insert material
+                        MAP_OBJ_Import_Material &import_material = import_materials[i - 1];
 
-                            } else {
-                                assert(strip_indices.data[i] < 65536);
-                                ++part->strip_length;
-                                ++i;
+                        bool material_deduplicated = false;
+
+                        if (MAP_Material *mat = g.materials.at_index(import_material.index_in_materials_array)) {
+                            if ((mat->mode == import_material.mode) &&
+                                (mat->diffuse_color == import_material.diffuse_color) &&
+                                (mat->specular_color == import_material.specular_color) &&
+                                (mat->specularity == import_material.specularity_f32) &&
+                                (mat->texture_id == import_material.texture_id)) {
+
+                                material_index = import_material.index_in_materials_array;
+                                material_deduplicated = true;
+                            }
+                        }
+                        
+                        if (!material_deduplicated) {
+                            int i = 0;
+                            for (MAP_Material &mat : g.materials) {
+                                defer { i++; };
+
+                                if ((mat.mode == import_material.mode) &&
+                                    (mat.diffuse_color == import_material.diffuse_color) &&
+                                    (mat.specular_color == import_material.specular_color) &&
+                                    (mat.specularity == import_material.specularity_f32) &&
+                                    (mat.texture_id == import_material.texture_id)) {
+
+                                    material_index = i;
+                                    material_deduplicated = true;
+
+                                    break;
+                                }
                             }
                         }
 
+                        if (!material_deduplicated) {
+                            MAP_Material mat = {};
+                            if (!g.materials.empty()) {
+                                mat.subfile_index = ((MAP_Material *)g.materials.sentinel->prev)->subfile_index;
+                            }
+                            mat.mode = import_material.mode;
+                            mat.diffuse_color = import_material.diffuse_color;
+                            mat.specular_color = import_material.specular_color;
+                            mat.specularity = import_material.specularity_f32;
+                            mat.texture_id = import_material.texture_id;
+                            material_index = (int)g.materials.count();
+                            g.materials.push(mat);
+                        }
+
+                        // Deduplicate or insert texture
+                        if (import_material.texture_was_found) {
+                            bool texture_deduplicated = false;
+
+                            if (MAP_Texture *tex = map_get_texture_by_id(g, import_material.texture_id)) {
+                                texture_deduplicated = true;
+                            }
+
+                            if (!texture_deduplicated) {
+                                MAP_Texture tex = {};
+                                bool success = dds_import(import_material.dds_filename_buf, tex);
+                                if (success) {
+                                    tex.id = import_material.texture_id;
+                                    tex.material = import_material.texture_unknown;
+
+                                    if (g.texture_subfiles.empty()) {
+                                        g.texture_subfiles.push();
+                                    }
+                                    ((MAP_Texture_Subfile *)g.texture_subfiles.sentinel->prev)->textures.push(tex);
+                                }
+                            }
+                        }
                     }
 
-                    mesh.indices.reserve(strip_indices.count);
-                    mesh.indices.count = strip_indices.count;
-                    assert(mesh.indices.data);
-                    for (int i = 0; i < strip_indices.count; ++i) {
-                        mesh.indices.data[i] = (uint16_t)strip_indices.data[i];
-                    }
+                    for (int i = 0; i < num_meshes_to_add; ++i) {
 
+                        int input_vertex_start = (i * 65535);
+                        int input_vertex_count = i < num_meshes_to_add - 1 ? 65535 : (verts->count % 65535);
+
+                        const PH2MAP__Vertex24 *input_verts_data = &(*verts)[input_vertex_start];
+
+                        size_t index_count = input_vertex_count;
+                        Array<unsigned int> remap = {}; defer { remap.release(); };
+                        remap.resize(index_count); // allocate temporary memory for the remap table
+                        size_t vertex_count = meshopt_generateVertexRemap(&remap[0], NULL, index_count, &input_verts_data[0], index_count, sizeof(input_verts_data[0]));
+
+                        Array<unsigned int> list_indices = {}; defer { list_indices.release(); };
+                        Array<PH2MAP__Vertex24> vertices = {}; defer { vertices.release(); };
+
+                        list_indices.resize(index_count);
+                        vertices.resize(vertex_count);
+
+                        meshopt_remapIndexBuffer(list_indices.data, NULL, index_count, &remap[0]);
+                        meshopt_remapVertexBuffer(vertices.data, &input_verts_data[0], index_count, sizeof(input_verts_data[0]), &remap[0]);
+
+                        meshopt_optimizeVertexCacheStrip(list_indices.data, list_indices.data, index_count, vertex_count);
+
+                        meshopt_optimizeOverdraw(list_indices.data, list_indices.data, index_count, &vertices[0].position[0], vertex_count, sizeof(vertices[0]), 1.05f);
+
+                        meshopt_optimizeVertexFetch(vertices.data, list_indices.data, index_count, vertices.data, vertex_count, sizeof(vertices[0]));
+
+                        Array<unsigned int> strip_indices = {}; defer { strip_indices.release(); };
+                        strip_indices.resize(meshopt_stripifyBound(index_count));
+                        unsigned int restart_index = ~0u;
+                        size_t strip_size = meshopt_stripify(&strip_indices[0], list_indices.data, index_count, vertex_count, restart_index);
+
+                        strip_indices.resize(strip_size);
+
+                        auto &geo = *(MAP_Geometry *)g.geometries.sentinel->prev;
+
+                        MAP_Mesh &mesh = *geo.opaque_meshes.push();
+
+                        MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
+                        buf.num_vertices = (int)vertices.count;
+                        if (should_import_colours) {
+                            buf.bytes_per_vertex = sizeof(vertices[0]);
+                            buf.data.resize(vertices.count * sizeof(vertices[0]));
+                            assert(buf.data.data);
+                            memcpy(buf.data.data, vertices.data, vertices.count * sizeof(vertices[0]));
+                        } else {
+                            static Array<PH2MAP__Vertex20> vertices20 = {};
+                            vertices20.clear();
+                            for (auto &vert24 : vertices) {
+                                vertices20.push({
+                                                vert24.position[0], vert24.position[1], vert24.position[2],
+                                                vert24.normal[0], vert24.normal[1], vert24.normal[2],
+                                                vert24.uv[0], vert24.uv[1]
+                                });
+                            }
+
+                            buf.bytes_per_vertex = sizeof(vertices20[0]);
+                            buf.data.resize(vertices20.count * sizeof(vertices20[0]));
+                            assert(buf.data.data);
+                            memcpy(buf.data.data, vertices20.data, vertices20.count * sizeof(vertices20[0]));
+                        }
+
+                        MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
+                        group.material_index = material_index;
+                        group.section_index = 0;
+
+                        {
+                            MAP_Mesh_Part *part = group.mesh_parts.push();
+                            part->strip_count = 1;
+                            part->strip_length = 0;
+
+                            for (int i = 0; i < strip_indices.count;) {
+                                if (strip_indices[i] == ~0u) {
+
+                                    strip_indices.remove_ordered(i);
+
+                                    part = group.mesh_parts.push();
+                                    part->strip_count = 1;
+                                    part->strip_length = 0;
+
+                                } else {
+                                    assert(strip_indices.data[i] < 65536);
+                                    ++part->strip_length;
+                                    ++i;
+                                }
+                            }
+
+                        }
+
+                        mesh.indices.reserve(strip_indices.count);
+                        mesh.indices.count = strip_indices.count;
+                        assert(mesh.indices.data);
+                        for (int i = 0; i < strip_indices.count; ++i) {
+                            mesh.indices.data[i] = (uint16_t)strip_indices.data[i];
+                        }
+
+                    }
                 }
 
                 MsgInfo("OBJ Import", "Imported!");
@@ -4329,7 +4624,11 @@ static void frame(void *userdata) {
             MAP_Texture tex = {};
             bool success = dds_import(dds_file_buf, tex);
             if (success) {
-                assert(!g.texture_subfiles.empty());
+                MsgInfo("DDS Import", "Imported!");
+
+                if (g.texture_subfiles.empty()) {
+                    g.texture_subfiles.push();
+                }
                 ((MAP_Texture_Subfile *)g.texture_subfiles.sentinel->prev)->textures.push(tex);
             }
         }
@@ -6248,8 +6547,9 @@ static void frame(void *userdata) {
         }
         if (ImGui::Button("New Material")) {
             MAP_Material mat = {};
-            assert(!g.materials.empty());
-            mat.subfile_index = ((MAP_Material *)g.materials.sentinel->prev)->subfile_index;
+            if (!g.materials.empty()) {
+                mat.subfile_index = ((MAP_Material *)g.materials.sentinel->prev)->subfile_index;
+            }
             mat.mode = 1;
             mat.texture_id = 0;
             mat.diffuse_color = 0xffffffff;
