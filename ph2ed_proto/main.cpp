@@ -5221,6 +5221,7 @@ static void frame(void *userdata) {
                             // @Note: Bleh.
                             g.overall_center_needs_recalc = true;
                         }
+                        defer { if (ret) ImGui::TreePop(); };
 
                         auto add_to = [] (LinkedList<MAP_Mesh, The_Arena_Allocator> *meshes, MAP_Mesh *mesh) {
                             if (!meshes->sentinel) {
@@ -5266,7 +5267,6 @@ static void frame(void *userdata) {
                         }
 
                         if (!ret) { continue; }
-                        defer { ImGui::TreePop(); };
 
                         visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
                             assert(b.geometry_ptr == &geo);
