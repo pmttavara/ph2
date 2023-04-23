@@ -4231,6 +4231,49 @@ static void frame(void *userdata) {
                 Array<PH2MAP__Vertex24> *current_verts = &materialless_unstripped_verts;
 
                 char b[1024] = {};
+                while (fgets(b, sizeof(b) - 1, f)) {
+                    if (char *lf = strrchr(b, '\n')) *lf = 0;
+
+                    const char *s = b;
+
+                    if (memcmp(s, "#MRGB ", 6) == 0) {
+                        s += 6;
+
+                        auto accum_hex_digit = [] (const char **s, unsigned int *digit) -> bool {
+                            int c = (*s)[0];
+                            if (c >= 'A' && c <= 'F') {
+                                *digit |= c - 'A' + 10;
+                            } else if (c >= 'a' && c <= 'f') {
+                                *digit |= c - 'a' + 10;
+                            } else if (c >= '0' && c <= '9') {
+                                *digit |= c - '0';
+                            } else {
+                                return false;
+                            }
+                            ++*s;
+
+                            return true;
+                        };
+
+                        for (;;) {
+                            unsigned int argb = 0;
+                            if (!accum_hex_digit(&s, &argb)) break; argb <<= 4;
+                            if (!accum_hex_digit(&s, &argb)) break; argb <<= 4;
+                            if (!accum_hex_digit(&s, &argb)) break; argb <<= 4;
+                            if (!accum_hex_digit(&s, &argb)) break; argb <<= 4;
+                            if (!accum_hex_digit(&s, &argb)) break; argb <<= 4;
+                            if (!accum_hex_digit(&s, &argb)) break; argb <<= 4;
+                            if (!accum_hex_digit(&s, &argb)) break; argb <<= 4;
+                            if (!accum_hex_digit(&s, &argb)) break;
+
+                            obj_colours.push(argb);
+                        }
+
+                    }
+                }
+
+                rewind(f);
+
                 hmm_vec3 center = {};
                 while (fgets(b, sizeof(b) - 1, f)) {
                     if (char *lf = strrchr(b, '\n')) *lf = 0;
@@ -4302,7 +4345,17 @@ static void frame(void *userdata) {
                             colour.Y = (float)atof(args[4]);
                             colour.X = (float)atof(args[5]);
                         }
-                        obj_colours.push(PH2MAP_bgra_to_u32(colour));
+                        auto colour_u32 = PH2MAP_bgra_to_u32(colour);
+                        if (obj_positions.count > obj_colours.count) {
+                            assert(obj_positions.count == obj_colours.count + 1);
+                            obj_colours.push(colour_u32);
+                        } else {
+                            assert(obj_positions.count > 0);
+                            assert(obj_positions.count <= obj_colours.count);
+                            if (matches == 7) {
+                                obj_colours[obj_positions.count - 1] = colour_u32;
+                            }
+                        }
                         center += pos;
                     } else if (strcmp("vt", directive) == 0) {
                         // UV
@@ -4320,6 +4373,7 @@ static void frame(void *userdata) {
                         normal.Y = (float)atof(args[1]);
                         normal.Z = (float)atof(args[2]);
                     } else if (strcmp("f", directive) == 0) {
+                        assert(obj_positions.count == obj_colours.count);
                         // Triangle/Quad
                         assert(matches == 4 || matches == 5);
                         // Log("Triangle/Quad: (%s, %s, %s%s%s)", args[0], args[1], args[2], matches == 5 ? ", " : "", matches == 5 ? args[3] : "");
@@ -4687,9 +4741,21 @@ static void frame(void *userdata) {
                 fprintf(obj, "vn %f %f %f\n", v.normal[0], v.normal[1], v.normal[2]);
             }
         }
-        fprintf(obj,
-                "\n"
-                "\n");
+        fprintf(obj, "\n");
+        {
+            int colours_printed = 0;
+            for (auto &buf : g.map_buffers) {
+                if (!buf.selected || &buf - g.map_buffers >= g.map_buffers_count) continue;
+                for (auto &v : buf.vertices) {
+                    if (colours_printed % 64 == 0) {
+                        fprintf(obj, "\n#MRGB ");
+                    }
+                    fprintf(obj, "%08x", v.color);
+                    ++colours_printed;
+                }
+            }
+        }
+        fprintf(obj, "\n\n");
 
         static bool material_touched[65536];
         memset(material_touched, 0, sizeof(material_touched));
