@@ -3012,7 +3012,7 @@ static void init(void *userdata) {
         ImGui::LoadIniSettingsFromMemory(R"(
 [Window][DockSpaceViewport_11111111]
 Pos=0,20
-Size=1536,789
+Size=1920,1007
 Collapsed=0
 
 [Window][Debug##Default]
@@ -3021,42 +3021,52 @@ Size=400,400
 Collapsed=0
 
 [Window][Console]
-Pos=953,633
-Size=452,229
+Pos=1051,667
+Size=869,360
 Collapsed=0
+DockId=0x00000006,0
 
 [Window][Editor]
 Pos=0,20
-Size=392,427
+Size=392,645
 Collapsed=0
 DockId=0x00000001,0
 
 [Window][Textures]
-Pos=0,449
-Size=392,360
+Pos=0,667
+Size=1049,360
 Collapsed=0
 DockId=0x00000005,0
 
 [Window][Materials]
-Pos=394,449
-Size=1142,360
+Pos=0,667
+Size=1049,360
 Collapsed=0
-DockId=0x00000006,0
+DockId=0x00000005,1
 
 [Window][Viewport]
 Pos=394,20
-Size=1142,427
+Size=1265,645
 Collapsed=0
-DockId=0x00000002,0
+DockId=0x00000007,0
+
+[Window][Edit Widget]
+Pos=1661,20
+Size=259,645
+Collapsed=0
+DockId=0x00000008,0
 
 [Docking][Data]
-DockSpace     ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1536,789 Split=Y Selected=0x13926F0B
-  DockNode    ID=0x00000003 Parent=0x8B93E3BD SizeRef=1536,427 Split=X
-    DockNode  ID=0x00000001 Parent=0x00000003 SizeRef=392,789 Selected=0x9F27EDF6
-    DockNode  ID=0x00000002 Parent=0x00000003 SizeRef=1142,789 CentralNode=1 Selected=0x13926F0B
-  DockNode    ID=0x00000004 Parent=0x8B93E3BD SizeRef=1536,360 Split=X Selected=0xFC744897
-    DockNode  ID=0x00000005 Parent=0x00000004 SizeRef=392,256 Selected=0xFC744897
-    DockNode  ID=0x00000006 Parent=0x00000004 SizeRef=1142,256 Selected=0x6AE1E39D
+DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y Selected=0x13926F0B
+  DockNode      ID=0x00000003 Parent=0x8B93E3BD SizeRef=1536,427 Split=X
+    DockNode    ID=0x00000001 Parent=0x00000003 SizeRef=392,789 Selected=0x9F27EDF6
+    DockNode    ID=0x00000002 Parent=0x00000003 SizeRef=1142,789 Split=X Selected=0x13926F0B
+      DockNode  ID=0x00000007 Parent=0x00000002 SizeRef=1265,645 CentralNode=1 Selected=0x13926F0B
+      DockNode  ID=0x00000008 Parent=0x00000002 SizeRef=259,645 Selected=0xDE39558F
+  DockNode      ID=0x00000004 Parent=0x8B93E3BD SizeRef=1536,360 Split=X Selected=0x6AE1E39D
+    DockNode    ID=0x00000005 Parent=0x00000004 SizeRef=906,360 Selected=0x6AE1E39D
+    DockNode    ID=0x00000006 Parent=0x00000004 SizeRef=751,360 Selected=0x49278EEE
+
 )");
     }
     {
@@ -3645,6 +3655,7 @@ char *win_import_or_export_dialog(LPCWSTR formats, LPCWSTR title, bool import = 
     ofn.lpstrFile = (LPWSTR)buf;
     ofn.nMaxFile = (DWORD)countof(buf) - 1;
     ofn.lpstrTitle = title;
+    ofn.Flags |= OFN_NOCHANGEDIR;
     ofn.Flags |= OFN_DONTADDTORECENT;
     ofn.Flags |= OFN_FILEMUSTEXIST;
     if (!import) {
