@@ -2973,6 +2973,14 @@ static bool file_exists(const uint16_t *filename16) {
 }
 static bool file_exists(LPCWSTR filename16) { return file_exists((const uint16_t *)filename16); }
 
+static bool file_exists(const char *filename8) {
+    auto filename16 = utf8_to_utf16(filename8);
+    if (!filename16) return false;
+    defer { free(filename16); };
+
+    return file_exists(filename16);
+}
+
 void *operator new(size_t, void *ptr) { return ptr; }
 static void init(void *userdata) {
 
@@ -4304,7 +4312,21 @@ static void frame(void *userdata) {
 
                         FILE *mtl = PH2CLD__fopen(s, "r");
                         if (!mtl) {
-                            continue;
+                            // maybe it was a relative path; search the .OBJ's folder.
+                            auto obj_file_buf_n = strlen(obj_file_buf);
+                            auto s_n = strlen(s);
+                            char *absolute = (char *)calloc(obj_file_buf_n + s_n + 1, 1);
+                            memcpy(absolute, obj_file_buf, obj_file_buf_n + 1);
+                            char *slash = max(strrchr(absolute, '/'), strrchr(absolute, '\\'));
+                            if (!slash) {
+                                continue;
+                            }
+
+                            memcpy(slash + 1, s, s_n + 1);
+                            mtl = PH2CLD__fopen(absolute, "r");
+                            if (!mtl) {
+                                continue;
+                            }
                         }
 
                         defer {
