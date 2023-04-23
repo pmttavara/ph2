@@ -26,7 +26,7 @@ if !errorlevel! neq 0 goto end
 ) else (
 REM Release mode:
 
-cl                    -DNDEBUG -O2 -Z7 -nologo -EHa- main.cpp -Feph2ed_proto.exe -link -noimplib -noexp
+cl                    -DNDEBUG -O2 -Z7 -nologo -EHa- main.cpp -Feph2ed_proto.exe -link -noimplib -noexp -incremental:no
 if !errorlevel! neq 0 goto end
 REM clang-cl -fuse-ld=lld -DNDEBUG -O2 -Z7 -nologo -EHa- main.cpp -Feph2ed_proto.exe -mavx2 -maes
 if !errorlevel! neq 0 goto end
