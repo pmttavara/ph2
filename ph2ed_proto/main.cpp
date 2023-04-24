@@ -4406,7 +4406,7 @@ static void frame(void *userdata) {
                         normal.Y = (float)atof(args[1]);
                         normal.Z = (float)atof(args[2]);
                     } else if (strcmp("f", directive) == 0) {
-                        assert(obj_positions.count == obj_colours.count);
+                        assert(obj_positions.count <= obj_colours.count);
                         // Triangle/Quad
                         assert(matches == 4 || matches == 5);
                         // Log("Triangle/Quad: (%s, %s, %s%s%s)", args[0], args[1], args[2], matches == 5 ? ", " : "", matches == 5 ? args[3] : "");
@@ -5497,11 +5497,13 @@ static void frame(void *userdata) {
                 ImGui::SameLine();
                 auto flags = ImGuiTreeNodeFlags_OpenOnArrow |
                     ImGuiTreeNodeFlags_OpenOnDoubleClick |
+                    ImGuiTreeNodeFlags_AllowItemOverlap |
                     (any_selected * ImGuiTreeNodeFlags_Selected);
                 if (empty) {
                     flags = ImGuiTreeNodeFlags_Leaf;
                 }
-                ImGui::SameLine(); bool ret = empty ? (ImGui::Text(b), false) : ImGui::TreeNodeEx(b, flags);
+                ImGui::SameLine(); bool ret = /*empty ? (ImGui::Text(b), false) : */ImGui::TreeNodeEx(b, flags);
+                defer { if (ret) ImGui::TreePop(); };
                 if (!empty && ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
                     bool orig = all_selected;
                     bool was_multi = false;
@@ -5531,8 +5533,17 @@ static void frame(void *userdata) {
                     // @Note: Bleh.
                     g.overall_center_needs_recalc = true;
                 }
+                {
+                    ImGui::SameLine();
+                    // ImGui::BeginDisabled(empty);
+                    if (ImGui::SmallButton("Delete") /*&& empty*/) {
+                        g.geometries.remove_ordered(&geo);
+                        geo.release();
+                        break;
+                    }
+                    // ImGui::EndDisabled();
+                }
                 if (!ret) { continue; }
-                defer { ImGui::TreePop(); };
 
                 for (auto &meshes : the_mesh_arrays) {
                     ImGui::PushID(meshes);
