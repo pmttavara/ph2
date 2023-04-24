@@ -78,6 +78,7 @@ struct ScopedTraceTimer {
 #define CAT_(a, b) CAT__(a, b)
 #define CAT(a, b) CAT_(a, b)
 
+#define ProfileScope(name) ScopedTraceTimer CAT(zz_profile, __COUNTER__) (name)
 #define ProfileFunction() ScopedTraceTimer CAT(zz_profile, __COUNTER__) (__FUNCSIG__)
 
 // Dear Imgui
@@ -1192,7 +1193,7 @@ struct PH2MAP__Material {
 };
 
 MAP_Geometry_Vertex map_extract_packed_vertex(char *vertex_buffer, int vertex_size, int num_vertices, int index) {
-    ProfileFunction();
+    // ProfileFunction();
 
     MAP_Geometry_Vertex result = {};
     const char *const vertex_ptr = vertex_buffer + index * vertex_size;
@@ -2141,7 +2142,7 @@ static MAP_Texture *map_get_texture_by_id(G &g, uint32_t id) {
     return nullptr;
 }
 static MAP_Texture_Buffer *map_get_texture_buffer_by_id(G &g, uint32_t id) {
-    ProfileFunction();
+    // ProfileFunction();
 
     for (auto &map_tex : g.map_textures) {
         assert(map_tex.subfile_ptr);
@@ -3255,7 +3256,7 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
 const float SCALE = 0.001f;
 const float widget_pixel_radius = 30;
 static float widget_radius(G &g, hmm_vec3 offset) {
-    ProfileFunction();
+    // ProfileFunction();
 
     return HMM_Length(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() * tanf(g.fov / 2);
 }
@@ -3840,7 +3841,7 @@ static void NO_SANITIZE no_asan_memcpy(void *destination, void *source, size_t c
 }
 
 static hmm_v4 PH2MAP_u32_to_bgra(uint32_t u) {
-    ProfileFunction();
+    // ProfileFunction();
 
     hmm_v4 bgra = {
         ((u >> 0) & 0xff) * (1.0f / 255),
