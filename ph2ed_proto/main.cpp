@@ -833,6 +833,9 @@ struct G : Map {
     double t = 0;
     float dt_history[1024] = {};
 
+    float mouse_x = 0;
+    float mouse_y = 0;
+
     ControlState control_state = {};
     float fov = FOV_DEFAULT;
     hmm_v3 bg_col = BG_COL_DEFAULT;
@@ -2895,7 +2898,7 @@ struct Ray_Vs_Aligned_Circle_Result {
     float distance_to_closest_point = {};
 };
 Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(hmm_vec3 ro, hmm_vec3 rd, hmm_vec3 so, float r) {
-    ProfileFunction();
+    // ProfileFunction();
 
     Ray_Vs_Aligned_Circle_Result result = {};
     result.t = HMM_Dot(so - ro, rd);
@@ -3166,6 +3169,7 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
 #ifndef NDEBUG
     {
         map_load(g, "map/ob01 (2).map");
+        cld_load(g, "../cld/cld/ob01.cld");
         // map_load(g, "map/ap64.map");
         // test_all_maps(g);
         // sapp_request_quit();
@@ -3287,6 +3291,57 @@ static Ray screen_to_ray(G &g, hmm_vec2 mouse_xy) {
     return ray;
 }
 
+struct Ray_Vs_MAP_Result {
+    bool hit = false;
+
+    float closest_t = INFINITY;
+    MAP_Mesh *hit_mesh = nullptr;
+    int hit_vertex_buffer = -1;
+    int hit_vertex = -1;
+    hmm_vec3 hit_widget_pos = {};
+};
+static Ray_Vs_MAP_Result ray_vs_map(G &g, hmm_vec4 ray_pos, hmm_vec4 ray_dir) {
+    Ray_Vs_MAP_Result result = {};
+    for (MAP_Geometry_Buffer &buf : g.map_buffers) {
+        if (&buf - g.map_buffers >= g.map_buffers_count) {
+            break;
+        }
+        if (!buf.shown) continue;
+        if (!buf.selected) continue;
+
+        assert(buf.mesh_ptr);
+        MAP_Mesh &mesh = *buf.mesh_ptr;
+        for (int vertex_buffer_index = 0; vertex_buffer_index < mesh.vertex_buffers.count; ++vertex_buffer_index) {
+            MAP_Mesh_Vertex_Buffer &vertex_buffer = mesh.vertex_buffers[vertex_buffer_index];
+
+            for (int vertex_index = 0; vertex_index < vertex_buffer.num_vertices; ++vertex_index) {
+                float (&vertex_floats)[3] = *(float(*)[3])&vertex_buffer.data[vertex_index * vertex_buffer.bytes_per_vertex];
+                hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+                hmm_vec3 offset = -g.cld_origin() + vertex;
+                offset.X *= SCALE;
+                offset.Y *= -SCALE;
+                offset.Z *= -SCALE;
+
+                hmm_vec3 widget_pos = vertex;
+                float radius = widget_radius(g, offset) / SCALE;
+
+                auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, radius);
+                if (raycast.hit) {
+                    if (raycast.t >= 0 && raycast.t < result.closest_t) {
+                        result.hit = true;
+                        result.closest_t = raycast.t;
+                        result.hit_mesh = &mesh;
+                        result.hit_vertex_buffer = vertex_buffer_index;
+                        result.hit_vertex = vertex_index;
+                        result.hit_widget_pos = widget_pos;
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
+
 static void event(const sapp_event *e_, void *userdata) {
     ProfileFunction();
 
@@ -3346,17 +3401,43 @@ static void event(const sapp_event *e_, void *userdata) {
     if (e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
         if (e.mouse_button == SAPP_MOUSEBUTTON_LEFT) {
             g.click_ray = screen_to_ray(g, { e.mouse_x, e.mouse_y });
+            const hmm_vec3 origin = -g.cld_origin();
+            const hmm_mat4 Tinv = HMM_Translate(-origin);
+            const hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
+            const hmm_mat4 Minv = Tinv * Sinv;
+            const hmm_vec4 ray_pos = Minv * hmm_vec4{ g.click_ray.pos.X, g.click_ray.pos.Y, g.click_ray.pos.Z, 1 };
+            const hmm_vec4 ray_dir = HMM_Normalize(Minv * hmm_vec4{ g.click_ray.dir.X, g.click_ray.dir.Y, g.click_ray.dir.Z, 0 });
 
             //Log("Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
             //Log("Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
 
-            if (g.cld.valid) {
-                const hmm_vec3 origin = -g.cld_origin();
-                const hmm_mat4 Tinv = HMM_Translate(-origin);
-                const hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
-                const hmm_mat4 Minv = Tinv * Sinv;
-                const hmm_vec4 ray_pos = Minv * hmm_vec4{ g.click_ray.pos.X, g.click_ray.pos.Y, g.click_ray.pos.Z, 1 };
-                const hmm_vec4 ray_dir = HMM_Normalize(Minv * hmm_vec4{ g.click_ray.dir.X, g.click_ray.dir.Y, g.click_ray.dir.Z, 0 });
+            bool map_hit = false;
+
+            if (g.select_cld_face < 0 || g.select_cld_group < 0) {
+
+                Ray_Vs_MAP_Result result = ray_vs_map(g, ray_pos, ray_dir);
+
+                if (result.closest_t < INFINITY) {
+                    g.widget_original_pos = result.hit_widget_pos;
+                    assert(result.hit_mesh);
+                    assert(result.hit_vertex_buffer >= 0);
+                    assert(result.hit_vertex_buffer < 4);
+                    assert(result.hit_vertex >= 0);
+                    g.control_state = ControlState::Dragging;
+
+                    g.select_cld_group = -1;
+                    g.select_cld_face = -1;
+                    g.drag_cld_group = -1;
+                    g.drag_cld_face = -1;
+                    g.drag_cld_vertex = -1;
+
+                    Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.hit_mesh, result.hit_vertex_buffer, result.hit_vertex);
+
+                    map_hit = true;
+                }
+            }
+
+            if (!map_hit && g.cld.valid) {
 
                 float closest_t = INFINITY;
                 int hit_group = -1;
@@ -3402,7 +3483,7 @@ static void event(const sapp_event *e_, void *userdata) {
 
                             auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, radius);
                             if (raycast.hit) {
-                                if (raycast.t < closest_t) {
+                                if (raycast.t >= 0 && raycast.t < closest_t) {
                                     closest_t = raycast.t;
                                     hit_group = group;
                                     hit_face_index = face_index;
@@ -3467,6 +3548,11 @@ static void event(const sapp_event *e_, void *userdata) {
                     if (closest_t < INFINITY) {
                         g.select_cld_group = hit_group;
                         g.select_cld_face = hit_face_index;
+
+                        for (MAP_Geometry_Buffer &buf : g.map_buffers) {
+                            buf.selected = false;
+                        }
+
                     } else {
                         g.select_cld_group = -1;
                         g.select_cld_face = -1;
@@ -3483,12 +3569,15 @@ static void event(const sapp_event *e_, void *userdata) {
         }
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_MOVE) {
+        g.mouse_x = e.mouse_x;
+        g.mouse_y = e.mouse_y;
         if (g.control_state == ControlState::Orbiting) {
             g.yaw += -e.mouse_dx * 3 * (0.022f * (TAU32 / 360));
             g.pitch += -e.mouse_dy * 3 * (0.022f * (TAU32 / 360));
         }
         if (g.control_state == ControlState::Dragging) {
-            if (g.cld.valid) {
+
+            if (g.cld.valid && g.drag_cld_face >= 0 && g.drag_cld_group >= 0 && g.drag_cld_vertex >= 0) {
                 hmm_vec2 prev_mouse_pos = { e.mouse_x - e.mouse_dx, e.mouse_y - e.mouse_dy };
                 hmm_vec2 this_mouse_pos = { e.mouse_x, e.mouse_y };
                 
@@ -5239,6 +5328,8 @@ static void frame(void *userdata) {
                 for (int i = g.map_buffers_count; i < g.map_buffers_max; i++) {
                     g.map_buffers[i].selected = false;
                 }
+                g.select_cld_group = -1; // @Cleanup: cld selection clear function?
+                g.select_cld_face = -1;
                 // @Note: Bleh!!!
                 g.overall_center_needs_recalc = true;
             }
@@ -5536,6 +5627,8 @@ static void frame(void *userdata) {
                             });
                         }
                     }
+                    g.select_cld_group = -1;
+                    g.select_cld_face = -1;
                     // @Note: Bleh.
                     g.overall_center_needs_recalc = true;
                 }
@@ -5633,6 +5726,8 @@ static void frame(void *userdata) {
                             visit_mesh_buffer(mesh, [&] (MAP_Geometry_Buffer &b) {
                                 b.selected = selected;
                             });
+                            g.select_cld_group = -1;
+                            g.select_cld_face = -1;
                             // @Note: Bleh.
                             g.overall_center_needs_recalc = true;
                         }
@@ -6890,6 +6985,40 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
     g.view_h = (float)ch * sapp_dpi_scale();
     {
         hmm_mat4 perspective = {};
+        hmm_mat4 V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
+        hmm_mat4 R = camera_rot(g);
+        auto draw_highlight_vertex_circle = [&g, &perspective, &V, &R] (bool dragging, float (&vertex_floats)[3]) {
+            hmm_mat4 P = perspective;
+
+            float scale_factor = 1;
+            float alpha = 1;
+            if (g.control_state != ControlState::Normal) {
+                alpha = 0.7f;
+            }
+            if (g.control_state == ControlState::Dragging) {
+                if (dragging) {
+                    alpha = 1;
+                    scale_factor *= 0.5f;
+                } else {
+                    alpha = 0.3f;
+                }
+            }
+            highlight_vertex_circle_vs_params_t params = {};
+            params.in_color = hmm_vec4 { 1, 1, 1, alpha };
+
+            hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+            hmm_vec3 offset = -g.cld_origin() + vertex;
+            offset.X *= SCALE;
+            offset.Y *= -SCALE;
+            offset.Z *= -SCALE;
+            hmm_mat4 T = HMM_Translate(offset);
+            float scale = scale_factor * widget_radius(g, offset);
+            hmm_mat4 S = HMM_Scale( { scale, scale, scale });
+            hmm_mat4 M = T * R * S;
+            params.MVP = P * V * M;
+            sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_highlight_vertex_circle_vs_params, SG_RANGE(params));
+            sg_draw(0, 6, 1);
+        };
         {
             if (g.fov < FOV_MIN) {
                 g.fov = FOV_MIN;
@@ -6964,16 +7093,16 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
             for (int i = 0; i < g.map_buffers_count; i++) {
                 MAP_Geometry_Buffer &buf = g.map_buffers[i];
                 if (!buf.shown) continue;
-                int num_times_to_render = buf.selected ? 2 : 1;
+                int num_times_to_render = buf.selected && !g.wireframe ? 2 : 1;
                 sg_pipeline pipelines[2] = {};
                 if (buf.source == MAP_Geometry_Buffer_Source::Opaque) {
                     fs_params.do_a2c_sharpening = true;
-                    pipelines[0] = (g.cull_backfaces ? g.map_pipeline           : g.map_pipeline_no_cull);
-                    pipelines[1] = (g.cull_backfaces ? g.map_pipeline_wireframe : g.map_pipeline_no_cull_wireframe);
+                    pipelines[0] = (g.cull_backfaces ? g.map_pipeline                   : g.map_pipeline_no_cull);
+                    pipelines[1] = (g.cull_backfaces ? g.map_pipeline_no_cull_wireframe : g.map_pipeline_no_cull_wireframe);
                 } else {
                     fs_params.do_a2c_sharpening = false;
-                    pipelines[0] = (g.cull_backfaces ? g.decal_pipeline           : g.decal_pipeline_no_cull);
-                    pipelines[1] = (g.cull_backfaces ? g.decal_pipeline_wireframe : g.decal_pipeline_no_cull_wireframe);
+                    pipelines[0] = (g.cull_backfaces ? g.decal_pipeline                   : g.decal_pipeline_no_cull);
+                    pipelines[1] = (g.cull_backfaces ? g.decal_pipeline_no_cull_wireframe : g.decal_pipeline_no_cull_wireframe);
                 }
                 {
                     vs_params.scaling_factor = { 1, 1, 1 };
@@ -6988,7 +7117,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                     vs_params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate({});
                 }
                 for (int render_time = 0; render_time < num_times_to_render; ++render_time) {
-                    int is_wireframe = buf.selected ? render_time : (int)g.wireframe;
+                    int is_wireframe = buf.selected && !g.wireframe ? render_time : (int)g.wireframe;
                     sg_apply_pipeline(pipelines[is_wireframe]);
                     fs_params.textured = g.textured;
                     fs_params.use_colours = g.use_lighting_colours;
@@ -7041,12 +7170,14 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
             }
         }
         if (g.cld.valid) {
-            highlight_vertex_circle_vs_params_t params = {};
-            hmm_mat4 P = perspective;
-            hmm_mat4 V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
             sg_apply_pipeline(g.highlight_vertex_circle_pipeline);
+            sg_bindings b = {};
+            b.vertex_buffers[0] = g.highlight_vertex_circle_buffer;
+            {
+                ProfileScope("sg_apply_bindings");
+                sg_apply_bindings(b);
+            }
             float screen_height = sapp_heightf();
-            hmm_mat4 R = camera_rot(g);
             for (int group = 0; group < 4; group++) {
                 if (group != g.select_cld_group) {
                     continue;
@@ -7069,44 +7200,12 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                         vertices_to_render = 4;
                     }
                     for (int i = 0; i < vertices_to_render; i++) {
-
-                        float scale_factor = 1;
-                        float alpha = 1;
-                        if (g.control_state != ControlState::Normal) {
-                            alpha = 0.7f;
-                        }
-                        if (g.control_state == ControlState::Dragging) {
-                            if (group == g.drag_cld_group && face_index == g.drag_cld_face && i == g.drag_cld_vertex) {
-                                alpha = 1;
-                                scale_factor *= 0.5f;
-                            } else {
-                                alpha = 0.3f;
-                            }
-                        }
-                        params.in_color = hmm_vec4 { 1, 1, 1, alpha };
-
-                        float (&vertex_floats)[3] = face->vertices[i];
-                        hmm_vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-                        hmm_vec3 offset = -g.cld_origin() + vertex;
-                        offset.X *= SCALE;
-                        offset.Y *= -SCALE;
-                        offset.Z *= -SCALE;
-                        hmm_mat4 T = HMM_Translate(offset);
-                        float scale = scale_factor * widget_radius(g, offset);
-                        hmm_mat4 S = HMM_Scale( { scale, scale, scale });
-                        hmm_mat4 M = T * R * S;
-                        params.MVP = P * V * M;
-                        sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_highlight_vertex_circle_vs_params, SG_RANGE(params));
-                        {
-                            sg_bindings b = {};
-                            b.vertex_buffers[0] = g.highlight_vertex_circle_buffer;
-                            sg_apply_bindings(b);
-                            sg_draw(0, 6, 1);
-                        }
+                        draw_highlight_vertex_circle(group == g.drag_cld_group && face_index == g.drag_cld_face && i == g.drag_cld_vertex, face->vertices[i]);
                     }
                 }
             }
-            if (0) { // @Debug
+#if (0)
+            { // @Debug
                 hmm_vec3 offset = g.click_ray.pos + g.click_ray.dir;
                 hmm_mat4 T = HMM_Translate(offset);
                 float scale = 1; //HMM_Length(g.cam_pos - offset) * widget_pixel_radius / screen_height;
@@ -7121,7 +7220,34 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                     sg_draw(0, 6, 1);
                 }
             }
+#endif
         }
+        if (g.control_state == ControlState::Normal) {
+            sg_apply_pipeline(g.highlight_vertex_circle_pipeline);
+            sg_bindings b = {};
+            b.vertex_buffers[0] = g.highlight_vertex_circle_buffer;
+            {
+                ProfileScope("sg_apply_bindings");
+                sg_apply_bindings(b);
+            }
+
+            const Ray mouse_ray = screen_to_ray(g, { g.mouse_x, g.mouse_y });
+            const hmm_vec3 origin = -g.cld_origin();
+            const hmm_mat4 Tinv = HMM_Translate(-origin);
+            const hmm_mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
+            const hmm_mat4 Minv = Tinv * Sinv;
+            const hmm_vec4 ray_pos = Minv * hmm_vec4{ mouse_ray.pos.X, mouse_ray.pos.Y, mouse_ray.pos.Z, 1 };
+            const hmm_vec4 ray_dir = HMM_Normalize(Minv * hmm_vec4{ mouse_ray.dir.X, mouse_ray.dir.Y, mouse_ray.dir.Z, 0 });
+
+            Ray_Vs_MAP_Result result = ray_vs_map(g, ray_pos, ray_dir);
+
+            if (result.hit) {
+                float vertex[3] = {result.hit_widget_pos.X, result.hit_widget_pos.Y, result.hit_widget_pos.Z};
+                draw_highlight_vertex_circle(false, vertex);
+                // Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.hit_mesh, result.hit_vertex_buffer, result.hit_vertex);
+            }
+        }
+        
     }
 }
 
