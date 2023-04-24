@@ -4632,7 +4632,12 @@ static void frame(void *userdata) {
 
                         Array<unsigned int> strip_indices = {}; defer { strip_indices.release(); };
                         strip_indices.resize(meshopt_stripifyBound(index_count));
-                        unsigned int restart_index = ~0u;
+                        // We'd like to use restart indices, but these meshes might be decals;
+                        // decals don't have MeshParts, which means everything has to be 1 strip.
+                        // (Or we have to autodetect bundles of strips of a particular length
+                        // and let that be a mesh part, but we don't know that that'll work ahead
+                        // of time!)
+                        unsigned int restart_index = 0; // ~0u;
                         size_t strip_size = meshopt_stripify(&strip_indices[0], list_indices.data, index_count, vertex_count, restart_index);
 
                         strip_indices.resize(strip_size);
