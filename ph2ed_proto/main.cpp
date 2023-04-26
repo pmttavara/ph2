@@ -2892,24 +2892,28 @@ static void imgui_do_console(G &g) {
 }
 
 struct Ray_Vs_Aligned_Circle_Result {
-    bool hit = false;
-    float t = 0;
-    HMM_Vec3 closest_point = {};
-    float distance_to_closest_point = {};
+    bool hit;
+    float t;
+    HMM_Vec3 closest_point;
+    float distance_to_closest_point;
 };
 Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(HMM_Vec3 ro, HMM_Vec3 rd, HMM_Vec3 so, float r) {
-    // ProfileFunction();
-
-    Ray_Vs_Aligned_Circle_Result result = {};
-    result.t = HMM_Dot(so - ro, rd);
+    //Ray_Vs_Aligned_Circle_Result result = {};
+    Ray_Vs_Aligned_Circle_Result result;
+    //result.t = HMM_Dot(so - ro, rd);
+    result.t = (so.X - ro.X) * rd.X + (so.Y - ro.Y) * rd.Y + (so.Z - ro.Z) * rd.Z;
     //Log("Dot %f", result.t);
-    result.closest_point = ro + rd * result.t;
+    //result.closest_point = ro + rd * result.t;
+    result.closest_point.X = ro.X + rd.X * result.t;
+    result.closest_point.Y = ro.Y + rd.Y * result.t;
+    result.closest_point.Z = ro.Z + rd.Z * result.t;
     //Log("Closest Point %f, %f, %f", result.closest_point.X, result.closest_point.Y, result.closest_point.Z);
-    result.distance_to_closest_point = HMM_Len(result.closest_point - so);
+    //result.distance_to_closest_point = HMM_Len(result.closest_point - so);
+    HMM_Vec3 closest_minus_so = { result.closest_point.X - so.X, result.closest_point.Y - so.Y, result.closest_point.Z - so.Z };
+    result.distance_to_closest_point = sqrtf(closest_minus_so.X * closest_minus_so.X + closest_minus_so.Y * closest_minus_so.Y + closest_minus_so.Z * closest_minus_so.Z);
     //Log("Distance %f (out of %f)", result.distance_to_closest_point, r);
-    if (result.distance_to_closest_point <= r) {
-        result.hit = true;
-    }
+    //if (result.distance_to_closest_point <= r) { result.hit = true; }
+    result.hit = (result.distance_to_closest_point <= r);
     return result;
 }
 
