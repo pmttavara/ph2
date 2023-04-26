@@ -408,6 +408,7 @@ struct MAP_Geometry_Buffer {
     uint32_t subfile_index = 0;
     struct MAP_Geometry *geometry_ptr = nullptr;
     struct MAP_Mesh *mesh_ptr = nullptr;
+    int mesh_index = 0;
     bool shown = true;
     bool selected = false; // Used by Imgui
     void release() {
@@ -483,6 +484,20 @@ struct LinkedList {
         }
 
         return nullptr;
+    }
+
+    int64_t get_index(T *ptr) {
+        assert(sentinel);
+
+        int64_t i = 0;
+        for (Node *node = sentinel->next; node != sentinel; node = node->next) {
+            if (node == ptr) {
+                return i;
+            }
+            ++i;
+        }
+
+        return -1;
     }
 
     void init() {
@@ -2699,6 +2714,7 @@ static void map_upload(G &g) {
         for (int i = 0; i < countof(lists); ++i) {
             auto &meshes = *lists[i];
             auto source = sources[i];
+            int mesh_index = 0;
             for (MAP_Mesh &mesh : meshes) {
 
                 assert(g.map_buffers_count < g.map_buffers_max);
@@ -2708,6 +2724,7 @@ static void map_upload(G &g) {
                 map_buffer.subfile_index = geo.subfile_index;
                 map_buffer.geometry_ptr = &geo;
                 map_buffer.mesh_ptr = &mesh;
+                map_buffer.mesh_index = mesh_index;
 
                 {
                     map_buffer.vertices.clear();
@@ -2739,6 +2756,8 @@ static void map_upload(G &g) {
                     map_destrip_mesh_part_group(map_buffer, indices_index, mesh, mesh_part_group);
                 }
                 assert(map_buffer.indices.count % 3 == 0);
+
+                ++mesh_index;
             }
         }
     }
@@ -3725,6 +3744,83 @@ static void event(const sapp_event *e_, void *userdata) {
     }
 }
 
+bool is_mesh_part_group_bogged(G &g, MAP_Geometry_Buffer_Source source, MAP_Mesh &mesh, MAP_Mesh_Part_Group &mesh_part_group, int mesh_index, int mpg_index, char (*reason)[8192], int *reason_n) {
+    auto &section = mesh.vertex_buffers[mesh_part_group.section_index];
+    MAP_Material *material = g.materials.at_index(mesh_part_group.material_index);
+    if (!material) {
+        return false;
+    }
+
+    bool bogged =
+        (section.bytes_per_vertex == 0x14 && (material->mode != 0)) ||
+        (section.bytes_per_vertex == 0x18 && (material->mode != 3)) ||
+        (section.bytes_per_vertex == 0x20 && (material->mode != 1 && material->mode != 2 && material->mode != 6)) ||
+        (section.bytes_per_vertex == 0x24 && (material->mode != 4));
+    if (!bogged) {
+        return false;
+    }
+    if (*reason_n >= sizeof(*reason) - 1) {
+        return false;
+    }
+
+    const char *source_str = nullptr;
+    const char *vertex_format = nullptr;
+    const char *modes = nullptr;
+    if (source == MAP_Geometry_Buffer_Source::Opaque) source_str = "Opaque";
+    if (source == MAP_Geometry_Buffer_Source::Transparent) source_str = "Transparent";
+    if (source == MAP_Geometry_Buffer_Source::Decal) source_str = "Decal";
+    if (section.bytes_per_vertex == 0x14) { vertex_format = "XU";   modes = "0"; }
+    if (section.bytes_per_vertex == 0x18) { vertex_format = "XCU";  modes = "3"; }
+    if (section.bytes_per_vertex == 0x20) { vertex_format = "XNU";  modes = "1, 2, or 6"; }
+    if (section.bytes_per_vertex == 0x24) { vertex_format = "XNCU"; modes = "4"; }
+
+    *reason_n += snprintf(*reason + *reason_n, sizeof(*reason) - *reason_n,
+                          "%s #%d group %d: %s vertices use mode %s. Material %d has mode %d.\n",
+                          source_str, mesh_index, mpg_index,
+                          vertex_format, modes,
+                          (int)mesh_part_group.material_index, (int)material->mode);
+    (*reason)[*reason_n] = '\0';
+    return true;
+}
+
+bool is_mesh_bogged(G &g, MAP_Geometry_Buffer_Source source, MAP_Mesh &mesh, int mesh_index, char (*reason)[8192], int *reason_n) {
+    bool result = false;
+    int mpg_index = 0;
+    for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
+        result |= is_mesh_part_group_bogged(g, source, mesh, mpg, mesh_index, mpg_index, reason, reason_n);
+        ++mpg_index;
+    }
+    return result;
+}
+
+bool is_geo_bogged(G &g, MAP_Geometry &geo, char (*reason)[8192], int *reason_n) {
+    bool result = false;
+    int mesh_index = 0;
+    for (MAP_Mesh &mesh : geo.opaque_meshes) {
+        result |= is_mesh_bogged(g, MAP_Geometry_Buffer_Source::Opaque, mesh, mesh_index, reason, reason_n);
+        ++mesh_index;
+    }
+    mesh_index = 0;
+    for (MAP_Mesh &mesh : geo.transparent_meshes) {
+        result |= is_mesh_bogged(g, MAP_Geometry_Buffer_Source::Transparent, mesh, mesh_index, reason, reason_n);
+        ++mesh_index;
+    }
+    mesh_index = 0;
+    for (MAP_Mesh &mesh : geo.decal_meshes) {
+        result |= is_mesh_bogged(g, MAP_Geometry_Buffer_Source::Decal, mesh, mesh_index, reason, reason_n);
+        ++mesh_index;
+    }
+    return result;
+}
+
+ImVec4 bogged_flash_colour(G &g) {
+    ImVec4 red = { (0xe0 / 255.0f), (0x3b / 255.0f), (0x0d / 255.0f), 1 };
+    ImVec4 white = { 1, 1, 1, 1 };
+    float lerp_t = sinf((float)g.t * TAU32) * 0.5f + 0.5f;
+    ImVec4 col = ImLerp(red, white, lerp_t);
+    return col;
+}
+
 struct my_dds_header {
     uint32_t size;
     uint32_t flags;
@@ -4331,12 +4427,6 @@ static void frame(void *userdata) {
                 Array<uint32_t> obj_colours = {}; defer { obj_colours.release(); };
 
                 bool should_import_colours = true;
-                {
-                    int result = MessageBoxA(0, "Import colours?\n(Colours may break or glitch some maps in the game.)", "OBJ Import", MB_YESNO | MB_ICONASTERISK | MB_TASKMODAL);
-                    if (result == IDNO) {
-                        should_import_colours = false;
-                    }
-                }
 
                 Array<PH2MAP__Vertex24> materialless_unstripped_verts = {}; defer { materialless_unstripped_verts.release(); };
                 Array<MAP_OBJ_Import_Material> import_materials = {};
@@ -5494,20 +5584,31 @@ static void frame(void *userdata) {
                         }
                         char b[256]; snprintf(b, sizeof(b), "Mesh Part Group #%d - %d Mesh Parts %s", mesh_part_group_index, (int)mesh_part_group.mesh_parts.count, vertex_format);
                         defer { mesh_part_group_index++; };
-                        if (!ImGui::TreeNodeEx(b, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_DefaultOpen)) {
+
+                        char bogged_reason[8192] = {};
+                        int  bogged_reason_n = 0;
+                        bool bogged = is_mesh_part_group_bogged(g, buf.source, mesh, mesh_part_group, buf.mesh_index, (int)mesh_part_group_index, &bogged_reason, &bogged_reason_n);
+                        ImGui::PushStyleColor(ImGuiCol_Text, bogged ? bogged_flash_colour(g) : ImGui::GetStyle().Colors[ImGuiCol_Text]);
+
+                        bool ret = ImGui::TreeNodeEx(b, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_DefaultOpen);
+
+                        ImGui::PopStyleColor();
+                        if (bogged && ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("%s", bogged_reason);
+                        }
+
+                        if (!ret) {
                             continue;
                         }
-                        ImGui::Indent();
                         ImGui::PushID(&mesh_part_group);
                         defer {
                             ImGui::PopID();
-                            ImGui::Unindent();
                             ImGui::TreePop();
                         };
 
                         int mat_index = mesh_part_group.material_index;
-                        ImGui::Text("Material Index:");
-                        if (ImGui::InputInt("###Material Index", &mat_index)) {
+                        ImGui::Columns(2, nullptr, false);
+                        if (ImGui::InputInt("Material", &mat_index)) {
                             // int mat_count = (int)g.materials.count() + (int)!!g.materials.empty();
                             // mat_index = (mat_index % mat_count + mat_count) % mat_count;
                             mesh_part_group.material_index = (uint16_t)mat_index;
@@ -5540,6 +5641,7 @@ static void frame(void *userdata) {
                                 texture_preview_tooltip(tex_id);
                             }
                         }
+                        ImGui::Columns(1);
                     }
                 }
             };
@@ -5608,8 +5710,20 @@ static void frame(void *userdata) {
                 if (empty) {
                     flags = ImGuiTreeNodeFlags_Leaf;
                 }
+
+                char bogged_reason[8192] = {};
+                int  bogged_reason_n = 0;
+                bool bogged = is_geo_bogged(g, geo, &bogged_reason, &bogged_reason_n);
+                ImGui::PushStyleColor(ImGuiCol_Text, bogged ? bogged_flash_colour(g) : ImGui::GetStyle().Colors[ImGuiCol_Text]);
+
                 ImGui::SameLine(); bool ret = /*empty ? (ImGui::Text(b), false) : */ImGui::TreeNodeEx(b, flags);
                 defer { if (ret) ImGui::TreePop(); };
+
+                ImGui::PopStyleColor();
+                if (bogged && ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", bogged_reason);
+                }
+
                 if (!empty && ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
                     bool orig = all_selected;
                     bool was_multi = false;
@@ -5707,16 +5821,29 @@ static void frame(void *userdata) {
                             });
                         }
 
-                        char *source = "???";
-                        if (meshes == &geo.opaque_meshes) source = "Opaque";
-                        else if (meshes == &geo.transparent_meshes) source = "Transparent";
-                        else if (meshes == &geo.decal_meshes) source = "Decal";
-                        char b[512]; snprintf(b, sizeof b, "%s Mesh #%d", source, mesh_index);
+                        MAP_Geometry_Buffer_Source source = MAP_Geometry_Buffer_Source::Opaque;
+                        char *source_str = "???";
+                        if (meshes == &geo.opaque_meshes)           { source_str = "Opaque";      source = MAP_Geometry_Buffer_Source::Opaque; }
+                        else if (meshes == &geo.transparent_meshes) { source_str = "Transparent"; source = MAP_Geometry_Buffer_Source::Transparent; }
+                        else if (meshes == &geo.decal_meshes)       { source_str = "Decal";       source = MAP_Geometry_Buffer_Source::Decal; }
+                        char b[512]; snprintf(b, sizeof b, "%s Mesh #%d", source_str, mesh_index);
                         auto flags = ImGuiTreeNodeFlags_OpenOnArrow |
                             ImGuiTreeNodeFlags_AllowItemOverlap |
                             ImGuiTreeNodeFlags_OpenOnDoubleClick |
                             (any_selected * ImGuiTreeNodeFlags_Selected);
+
+                        char bogged_reason[8192] = {};
+                        int  bogged_reason_n = 0;
+                        bool bogged = is_mesh_bogged(g, source, mesh, mesh_index, &bogged_reason, &bogged_reason_n);
+                        ImGui::PushStyleColor(ImGuiCol_Text, bogged ? bogged_flash_colour(g) : ImGui::GetStyle().Colors[ImGuiCol_Text]);
+
                         ImGui::SameLine(); bool ret = ImGui::TreeNodeEx(b, flags);
+
+                        ImGui::PopStyleColor();
+                        if (bogged && ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("%s", bogged_reason);
+                        }
+
                         if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
                             bool orig = all_selected;
                             bool was_multi = false;
