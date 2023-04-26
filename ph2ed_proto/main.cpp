@@ -3306,6 +3306,7 @@ struct Ray_Vs_MAP_Result {
 };
 static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
     Ray_Vs_MAP_Result result = {};
+    float widget_radius_factor = (widget_pixel_radius / sapp_heightf() * tanf(g.fov / 2) / SCALE);
     for (MAP_Geometry_Buffer &buf : g.map_buffers) {
         if (&buf - g.map_buffers >= g.map_buffers_count) {
             break;
@@ -3319,17 +3320,17 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
             MAP_Mesh_Vertex_Buffer &vertex_buffer = mesh.vertex_buffers[vertex_buffer_index];
 
             for (int vertex_index = 0; vertex_index < vertex_buffer.num_vertices; ++vertex_index) {
-                float (&vertex_floats)[3] = *(float(*)[3])&vertex_buffer.data[vertex_index * vertex_buffer.bytes_per_vertex];
-                HMM_Vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-                HMM_Vec3 offset = -g.cld_origin() + vertex;
+                HMM_Vec3 vertex = *(HMM_Vec3 *)&vertex_buffer.data.data[vertex_index * vertex_buffer.bytes_per_vertex];
+                // HMM_Vec3 offset = -g.cld_origin() + vertex;
+                HMM_Vec3 offset = vertex;
                 offset.X *= SCALE;
                 offset.Y *= -SCALE;
                 offset.Z *= -SCALE;
 
                 HMM_Vec3 widget_pos = vertex;
-                float radius = widget_radius(g, offset) / SCALE;
-
-                auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, radius);
+                // float radius = widget_radius(g, offset) / SCALE;
+                HMM_Vec3 cam_pos_minus_offset = { g.cam_pos.X - offset.X, g.cam_pos.Y - offset.Y, g.cam_pos.Z - offset.Z, };
+                auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, sqrtf(cam_pos_minus_offset.X * cam_pos_minus_offset.X + cam_pos_minus_offset.Y * cam_pos_minus_offset.Y + cam_pos_minus_offset.Z * cam_pos_minus_offset.Z) * widget_radius_factor);
                 if (raycast.hit) {
                     if (raycast.t >= 0 && raycast.t < result.closest_t) {
                         result.hit = true;
