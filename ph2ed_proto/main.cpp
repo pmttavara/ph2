@@ -2897,23 +2897,32 @@ struct Ray_Vs_Aligned_Circle_Result {
     HMM_Vec3 closest_point;
     float distance_to_closest_point;
 };
-Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(HMM_Vec3 ro, HMM_Vec3 rd, HMM_Vec3 so, float r) {
+
+#define ray_vs_aligned_circle_(result, ro_, rd_, so_, r_) do { \
+    auto &&ro = (ro_); \
+    auto &&rd = (rd_); \
+    auto &&so = (so_); \
+    auto &&r = (r_); \
+    /* result.t = HMM_Dot(so - ro, rd); */ \
+    result.t = (so.X - ro.X) * rd.X + (so.Y - ro.Y) * rd.Y + (so.Z - ro.Z) * rd.Z; \
+    /* Log("Dot %f", result.t); */ \
+    /* result.closest_point = ro + rd * result.t; */ \
+    result.closest_point.X = ro.X + rd.X * result.t; \
+    result.closest_point.Y = ro.Y + rd.Y * result.t; \
+    result.closest_point.Z = ro.Z + rd.Z * result.t; \
+    /* Log("Closest Point %f, %f, %f", result.closest_point.X, result.closest_point.Y, result.closest_point.Z); */ \
+    /* result.distance_to_closest_point = HMM_Len(result.closest_point - so); */ \
+    HMM_Vec3 closest_minus_so = { result.closest_point.X - so.X, result.closest_point.Y - so.Y, result.closest_point.Z - so.Z }; \
+    result.distance_to_closest_point = sqrtf(closest_minus_so.X * closest_minus_so.X + closest_minus_so.Y * closest_minus_so.Y + closest_minus_so.Z * closest_minus_so.Z); \
+    /* Log("Distance %f (out of %f)", result.distance_to_closest_point, r); */ \
+    /* if (result.distance_to_closest_point <= r) { result.hit = true; } */ \
+    result.hit = (result.distance_to_closest_point <= r); \
+} while (0);
+
+Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(HMM_Vec3 ro_, HMM_Vec3 rd_, HMM_Vec3 so_, float r_) {
     //Ray_Vs_Aligned_Circle_Result result = {};
     Ray_Vs_Aligned_Circle_Result result;
-    //result.t = HMM_Dot(so - ro, rd);
-    result.t = (so.X - ro.X) * rd.X + (so.Y - ro.Y) * rd.Y + (so.Z - ro.Z) * rd.Z;
-    //Log("Dot %f", result.t);
-    //result.closest_point = ro + rd * result.t;
-    result.closest_point.X = ro.X + rd.X * result.t;
-    result.closest_point.Y = ro.Y + rd.Y * result.t;
-    result.closest_point.Z = ro.Z + rd.Z * result.t;
-    //Log("Closest Point %f, %f, %f", result.closest_point.X, result.closest_point.Y, result.closest_point.Z);
-    //result.distance_to_closest_point = HMM_Len(result.closest_point - so);
-    HMM_Vec3 closest_minus_so = { result.closest_point.X - so.X, result.closest_point.Y - so.Y, result.closest_point.Z - so.Z };
-    result.distance_to_closest_point = sqrtf(closest_minus_so.X * closest_minus_so.X + closest_minus_so.Y * closest_minus_so.Y + closest_minus_so.Z * closest_minus_so.Z);
-    //Log("Distance %f (out of %f)", result.distance_to_closest_point, r);
-    //if (result.distance_to_closest_point <= r) { result.hit = true; }
-    result.hit = (result.distance_to_closest_point <= r);
+    ray_vs_aligned_circle_(result, ro_, rd_, so_, r_);
     return result;
 }
 
@@ -3322,15 +3331,10 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
             for (int vertex_index = 0; vertex_index < vertex_buffer.num_vertices; ++vertex_index) {
                 HMM_Vec3 vertex = *(HMM_Vec3 *)&vertex_buffer.data.data[vertex_index * vertex_buffer.bytes_per_vertex];
                 // HMM_Vec3 offset = -g.cld_origin() + vertex;
-                HMM_Vec3 offset = vertex;
-                offset.X *= SCALE;
-                offset.Y *= -SCALE;
-                offset.Z *= -SCALE;
-
-                HMM_Vec3 widget_pos = vertex;
                 // float radius = widget_radius(g, offset) / SCALE;
-                HMM_Vec3 cam_pos_minus_offset = { g.cam_pos.X - offset.X, g.cam_pos.Y - offset.Y, g.cam_pos.Z - offset.Z, };
-                auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, sqrtf(cam_pos_minus_offset.X * cam_pos_minus_offset.X + cam_pos_minus_offset.Y * cam_pos_minus_offset.Y + cam_pos_minus_offset.Z * cam_pos_minus_offset.Z) * widget_radius_factor);
+                HMM_Vec3 cam_pos_minus_offset = { g.cam_pos.X - (vertex.X * SCALE), g.cam_pos.Y + (vertex.Y * SCALE), g.cam_pos.Z + (vertex.Z * SCALE), };
+                Ray_Vs_Aligned_Circle_Result raycast;
+                ray_vs_aligned_circle_(raycast, ray_pos.XYZ, ray_dir.XYZ, vertex, sqrtf(cam_pos_minus_offset.X * cam_pos_minus_offset.X + cam_pos_minus_offset.Y * cam_pos_minus_offset.Y + cam_pos_minus_offset.Z * cam_pos_minus_offset.Z) * widget_radius_factor);
                 if (raycast.hit) {
                     if (raycast.t >= 0 && raycast.t < result.closest_t) {
                         result.hit = true;
@@ -3338,7 +3342,7 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                         result.hit_mesh = &mesh;
                         result.hit_vertex_buffer = vertex_buffer_index;
                         result.hit_vertex = vertex_index;
-                        result.hit_widget_pos = widget_pos;
+                        result.hit_widget_pos = vertex;
                     }
                 }
             }
