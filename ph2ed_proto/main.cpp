@@ -3370,6 +3370,16 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                     }
                 }
             }
+
+            for (int index_index = 0; index_index < buf.indices.count; index_index += 3) {
+                HMM_Vec3 a = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[index_index + 0]];
+                HMM_Vec3 b = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[index_index + 1]];
+                HMM_Vec3 c = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[index_index + 2]];
+                auto raycast = ray_vs_triangle(ray_pos.XYZ, ray_dir.XYZ, a, b, c);
+                if (raycast.hit) {
+                    // __debugbreak();
+                }
+            }
         }
     }
     return result;
