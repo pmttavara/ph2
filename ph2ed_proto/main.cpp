@@ -2953,22 +2953,88 @@ Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(HMM_Vec3 ro_, HMM_Vec3 rd_, H
 static inline float abs(float x) { return x >= 0 ? x : -x; }
 
 struct Ray_Vs_Plane_Result {
-    bool hit = false;
-    float t = 0;
-    HMM_Vec3 point = {};
+    bool hit;
+    float t;
+    HMM_Vec3 point;
 };
-Ray_Vs_Plane_Result ray_vs_plane(Ray ray, HMM_Vec3 plane_point, HMM_Vec3 plane_normal) {
-    ProfileFunction();
+
+// @Attribution: thebaker__ https://twitch.tv/thebaker__
+static Ray_Vs_Plane_Result ray_vs_triangle(HMM_Vec3 ray_pos, HMM_Vec3 ray_dir,
+                                              HMM_Vec3 a, HMM_Vec3 b, HMM_Vec3 c) {
+    // assuming ray_d is normalized
+    Ray_Vs_Plane_Result result;
+    result.t = INFINITY;
+
+    float u;
+    float v;
+    float det;
+    float invDet;
+
+    HMM_Vec3 tvec;
+    HMM_Vec3 pvec;
+    HMM_Vec3 qvec;
+
+    HMM_Vec3 edge0 = b - a;
+    HMM_Vec3 edge1 = c - a;
+
+    pvec = HMM_Cross(ray_dir, edge1);
+    det = HMM_Dot(edge0, pvec);
+
+    float epsilon = 0.000001f;
+
+    if (det > -0.00001f && det < 0.00001f) {
+        result.hit = false;
+        return result;
+    }
+
+    invDet = 1.0f / det;
+
+    tvec =  ray_pos - a;
+
+    u = HMM_Dot(tvec, pvec) * invDet;
+
+    if (u < 0.0f || u > 1.0f) {
+        result.hit = false;
+        return result;
+    }
+
+    qvec = HMM_Cross(tvec, edge0);
+
+    v = HMM_Dot(ray_dir, qvec) * invDet;
+    if (v < 0.0f || u + v > 1.0f) {
+        result.hit = false;
+        return result;
+    }
+
+    result.t = HMM_Dot(edge1, qvec) * invDet;
+
+    if(result.t < 0) {
+        result.hit = false;
+        return result;
+    }
+
+    result.hit = result.t != INFINITY && result.t != -INFINITY;
+
+    result.point = ray_pos + ray_dir * result.t;
+
+    // //@Speed is it faster to add a "wants_normal" bool here for when we don't require the normal?
+    // result.hit_surface_normal = normalize(cross(edge0, edge1));
+
+    return result;
+}
+
+Ray_Vs_Plane_Result ray_vs_plane(HMM_Vec3 ray_pos, HMM_Vec3 ray_dir, HMM_Vec3 plane_point, HMM_Vec3 plane_normal) {
+    // ProfileFunction();
 
     Ray_Vs_Plane_Result result = {};
 
-    assert(HMM_Len(plane_normal) != 0);
-    assert(HMM_Len(ray.dir) != 0);
+    // assert(HMM_Len(plane_normal) != 0);
+    // assert(HMM_Len(ray.dir) != 0);
     plane_normal = HMM_Norm(plane_normal);
     
-    HMM_Vec3 displacement = plane_point - ray.pos;
+    HMM_Vec3 displacement = plane_point - ray_pos;
     float distance_to_origin = HMM_Dot(displacement, plane_normal);
-    float cos_theta = HMM_Dot(ray.dir, plane_normal);
+    float cos_theta = HMM_Dot(ray_dir, plane_normal);
     if (abs(cos_theta) < 0.0001) {
         result.hit = abs(distance_to_origin) < 0.0001;
         result.t = 0;
@@ -2976,34 +3042,11 @@ Ray_Vs_Plane_Result ray_vs_plane(Ray ray, HMM_Vec3 plane_point, HMM_Vec3 plane_n
         result.t = distance_to_origin / cos_theta;
         result.hit = result.t >= 0;
     }
-    result.point = ray.pos + ray.dir * result.t;
+    result.point.X = ray_pos.X + ray_dir.X * result.t;
+    result.point.Y = ray_pos.Y + ray_dir.Y * result.t;
+    result.point.Z = ray_pos.Z + ray_dir.Z * result.t;
 
     return result;
-}
-Ray_Vs_Plane_Result ray_vs_triangle(Ray ray, HMM_Vec3 a, HMM_Vec3 b, HMM_Vec3 c) {
-    ProfileFunction();
-
-    HMM_Vec3 normal = HMM_Norm(HMM_Cross(b-a, c-a));
-    auto raycast = ray_vs_plane(ray, a, normal);
-    HMM_Vec3 p = raycast.point;
-    HMM_Vec3 ba = a - b;
-    HMM_Vec3 ca = a - c;
-    HMM_Vec3 bp = p - b;
-    HMM_Vec3 cp = p - c;
-    float beta = 0;
-    {
-        HMM_Vec3 v = ba - HMM_Dot(ba, ca) / HMM_LenSqr(ca) * ca;
-        beta = 1 - HMM_Dot(v, bp) / HMM_Dot(v, ba);
-    }
-    float gamma = 0;
-    {
-        HMM_Vec3 v = ca - HMM_Dot(ca, ba) / HMM_LenSqr(ba) * ba;
-        gamma = 1 - HMM_Dot(v, cp) / HMM_Dot(v, ca);
-    }
-    float u = beta;
-    float v = gamma;
-    raycast.hit = raycast.hit && u >= 0 && v >= 0 && u + v <= 1;
-    return raycast;
 }
 
 static bool file_exists(const uint16_t *filename16) {
@@ -3336,8 +3379,12 @@ struct Ray_Vs_MAP_Result {
     int hit_vertex_buffer = -1;
     int hit_vertex = -1;
     HMM_Vec3 hit_widget_pos = {};
+
+    // int hit_index_index = -1;
 };
 static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
+    ProfileFunction();
+
     Ray_Vs_MAP_Result result = {};
     float widget_radius_factor = (widget_pixel_radius / sapp_heightf() * tanf(g.fov / 2) / SCALE);
     for (MAP_Geometry_Buffer &buf : g.map_buffers) {
@@ -3567,12 +3614,11 @@ static void event(const sapp_event *e_, void *userdata) {
                                 HMM_Vec3 a = { face->vertices[0][0], face->vertices[0][1], face->vertices[0][2] };
                                 HMM_Vec3 b = { face->vertices[1][0], face->vertices[1][1], face->vertices[1][2] };
                                 HMM_Vec3 c = { face->vertices[2][0], face->vertices[2][1], face->vertices[2][2] };
-                                Ray ray = { ray_pos.XYZ, ray_dir.XYZ };
-                                auto raycast = ray_vs_triangle(ray, a, b, c);
+                                auto raycast = ray_vs_triangle(ray_pos.XYZ, ray_dir.XYZ, a, b, c);
                                 if (!raycast.hit) {
                                     if (face->quad) {
                                         HMM_Vec3 d = { face->vertices[3][0], face->vertices[3][1], face->vertices[3][2] };
-                                        raycast = ray_vs_triangle(ray, a, c, d);
+                                        raycast = ray_vs_triangle(ray_pos.XYZ, ray_dir.XYZ, a, c, d);
                                     }
                                 }
                                 if (raycast.hit) {
@@ -3670,8 +3716,8 @@ static void event(const sapp_event *e_, void *userdata) {
                     if (aligned_with_camera) {
                         // Remember you gotta put the plane in the coordinate space of the cld file!
                         HMM_Vec3 plane_normal = ((Sinv * camera_rot(g)) * HMM_Vec4 { 0, 0, -1, 0 }).XYZ;
-                        auto click_raycast = ray_vs_plane(Ray { click_ray_pos.XYZ, click_ray_dir.XYZ }, widget_pos, plane_normal);
-                        auto raycast = ray_vs_plane(Ray { this_ray_pos.XYZ, this_ray_dir.XYZ }, widget_pos, plane_normal);
+                        auto click_raycast = ray_vs_plane(click_ray_pos.XYZ, click_ray_dir.XYZ, widget_pos, plane_normal);
+                        auto raycast = ray_vs_plane(this_ray_pos.XYZ, this_ray_dir.XYZ, widget_pos, plane_normal);
 
                         assert(click_raycast.hit); // How could it not hit if it's aligned to the camera?
                         assert(raycast.hit);
@@ -3714,8 +3760,8 @@ static void event(const sapp_event *e_, void *userdata) {
                         vertex_floats[2] = target.Z;
                         g.staleify_cld();
                     } else { // @Temporary: only along XZ plane
-                        auto click_raycast = ray_vs_plane(Ray { click_ray_pos.XYZ, click_ray_dir.XYZ }, widget_pos, { 0, 1, 0 });
-                        auto raycast = ray_vs_plane(Ray { this_ray_pos.XYZ, this_ray_dir.XYZ }, widget_pos, { 0, 1, 0 });
+                        auto click_raycast = ray_vs_plane(click_ray_pos.XYZ, click_ray_dir.XYZ, widget_pos, { 0, 1, 0 });
+                        auto raycast = ray_vs_plane(this_ray_pos.XYZ, this_ray_dir.XYZ, widget_pos, { 0, 1, 0 });
                         if (click_raycast.hit && raycast.hit) {
                             // @Note: Drag-offsetting should use a screenspace offset computed when first clicked,
                             //        rather than a new raycast, so that distant vertices don't have problems and
