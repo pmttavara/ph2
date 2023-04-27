@@ -2958,68 +2958,46 @@ struct Ray_Vs_Plane_Result {
     HMM_Vec3 point;
 };
 
+#define ray_vs_triangle_(result, ray_pos, ray_dir, a, b, c) do { \
+    auto ray_pos_ = (ray_pos); \
+    auto ray_dir_ = (ray_dir); \
+    auto a_ = (a); \
+    auto b_ = (b); \
+    auto c_ = (c); \
+    /* assuming ray_d is normalized */ \
+    result.hit = false; \
+    HMM_Vec3 edge0; edge0.X = b_.X - a_.X; edge0.Y = b_.Y - a_.Y; edge0.Z = b_.Z - a_.Z; \
+    HMM_Vec3 edge1; edge1.X = c_.X - a_.X; edge1.Y = c_.Y - a_.Y; edge1.Z = c_.Z - a_.Z; \
+    /* pvec = HMM_Cross(ray_dir_, edge1); */ \
+    HMM_Vec3 pvec; pvec.X = (ray_dir_.Y * edge1.Z) - (ray_dir_.Z * edge1.Y); pvec.Y = (ray_dir_.Z * edge1.X) - (ray_dir_.X * edge1.Z); pvec.Z = (ray_dir_.X * edge1.Y) - (ray_dir_.Y * edge1.X); \
+    /* det = HMM_Dot(edge0, pvec); */ \
+    float det = (edge0.X * pvec.X) + (edge0.Y * pvec.Y) + (edge0.Z * pvec.Z); \
+    if (det < -0.000001f || det > 0.000001f) { \
+        float invDet = 1.0f / det; \
+        HMM_Vec3 tvec; tvec.X = ray_pos_.X - a_.X; tvec.Y = ray_pos_.Y - a_.Y; tvec.Z = ray_pos_.Z - a_.Z; \
+        /* u = HMM_Dot(tvec, pvec) * invDet; */ \
+        float u = ((tvec.X * pvec.X) + (tvec.Y * pvec.Y) + (tvec.Z * pvec.Z)) * invDet; \
+        if (u >= 0.0f && u <= 1.0f) { \
+            HMM_Vec3 qvec = HMM_Cross(tvec, edge0); \
+            float v = HMM_Dot(ray_dir_, qvec) * invDet; \
+            if (v >= 0.0f && u + v <= 1.0f) { \
+                result.t = HMM_Dot(edge1, qvec) * invDet; \
+                if (result.t >= 0) { \
+                    result.hit = result.t != INFINITY && result.t != -INFINITY; \
+                    result.point = ray_pos_ + ray_dir_ * result.t; \
+                    /* //@Speed is it faster to add a "wants_normal" bool here for when we don't require the normal? */ \
+                    /* result.hit_surface_normal = normalize(cross(edge0, edge1)); */ \
+                } \
+            } \
+        } \
+    } \
+} while (0)
+
 // @Attribution: thebaker__ https://twitch.tv/thebaker__
 static Ray_Vs_Plane_Result ray_vs_triangle(HMM_Vec3 ray_pos, HMM_Vec3 ray_dir,
-                                              HMM_Vec3 a, HMM_Vec3 b, HMM_Vec3 c) {
-    // assuming ray_d is normalized
+                                           HMM_Vec3 a, HMM_Vec3 b, HMM_Vec3 c) {
     Ray_Vs_Plane_Result result;
-    result.t = INFINITY;
-
-    float u;
-    float v;
-    float det;
-    float invDet;
-
-    HMM_Vec3 tvec;
-    HMM_Vec3 pvec;
-    HMM_Vec3 qvec;
-
-    HMM_Vec3 edge0 = b - a;
-    HMM_Vec3 edge1 = c - a;
-
-    pvec = HMM_Cross(ray_dir, edge1);
-    det = HMM_Dot(edge0, pvec);
-
-    float epsilon = 0.000001f;
-
-    if (det > -0.00001f && det < 0.00001f) {
-        result.hit = false;
-        return result;
-    }
-
-    invDet = 1.0f / det;
-
-    tvec =  ray_pos - a;
-
-    u = HMM_Dot(tvec, pvec) * invDet;
-
-    if (u < 0.0f || u > 1.0f) {
-        result.hit = false;
-        return result;
-    }
-
-    qvec = HMM_Cross(tvec, edge0);
-
-    v = HMM_Dot(ray_dir, qvec) * invDet;
-    if (v < 0.0f || u + v > 1.0f) {
-        result.hit = false;
-        return result;
-    }
-
-    result.t = HMM_Dot(edge1, qvec) * invDet;
-
-    if(result.t < 0) {
-        result.hit = false;
-        return result;
-    }
-
-    result.hit = result.t != INFINITY && result.t != -INFINITY;
-
-    result.point = ray_pos + ray_dir * result.t;
-
-    // //@Speed is it faster to add a "wants_normal" bool here for when we don't require the normal?
-    // result.hit_surface_normal = normalize(cross(edge0, edge1));
-
+    ray_vs_triangle_(result, ray_pos, ray_dir, a, b, c);
     return result;
 }
 
@@ -3418,13 +3396,23 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                 }
             }
 
+            Ray_Vs_Plane_Result raycast = {};
             for (int index_index = 0; index_index < buf.indices.count; index_index += 3) {
                 HMM_Vec3 a = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[index_index + 0]];
                 HMM_Vec3 b = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[index_index + 1]];
                 HMM_Vec3 c = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[index_index + 2]];
-                auto raycast = ray_vs_triangle(ray_pos.XYZ, ray_dir.XYZ, a, b, c);
+                ray_vs_triangle_(raycast, ray_pos.XYZ, ray_dir.XYZ, a, b, c);
                 if (raycast.hit) {
                     // __debugbreak();
+                    if (raycast.t >= 0 && raycast.t < result.closest_t) {
+                        // Log("Hit %d", index_index);
+                        result.hit = false;
+                        result.closest_t = raycast.t;
+                        result.hit_mesh = nullptr; // &mesh;
+                        result.hit_vertex_buffer = -1; // vertex_buffer_index;
+                        result.hit_vertex = -1; // vertex_index;
+                        // result.hit_widget_pos = vertex;
+                    }
                 }
             }
         }
@@ -3507,7 +3495,7 @@ static void event(const sapp_event *e_, void *userdata) {
 
                 Ray_Vs_MAP_Result result = ray_vs_map(g, ray_pos, ray_dir);
 
-                if (result.closest_t < INFINITY) {
+                if (result.hit && result.closest_t < INFINITY) {
                     g.widget_original_pos = result.hit_widget_pos;
                     assert(result.hit_mesh);
                     assert(result.hit_vertex_buffer >= 0);
