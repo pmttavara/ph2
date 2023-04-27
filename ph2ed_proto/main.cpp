@@ -14,6 +14,11 @@ int num_array_resizes = 0;
 
 // Path to MVP:
 // - MAP mesh vertex snapping
+//      - cast triangles
+//      - optimize
+//      - BVH
+//      - dragging
+//      - snapping
 
 // FINISHED on Path to MVP:
 // - Multimesh movement/deleting/editing
@@ -417,6 +422,8 @@ struct MAP_Geometry_Buffer {
         sg_destroy_buffer(index_buffer);
         sg_destroy_buffer(vertex_buffer);
         vertices.release();
+        indices.release();
+        vertices_per_mesh_part_group.release();
         *this = {};
     }
 };
@@ -1210,66 +1217,60 @@ struct PH2MAP__Material {
     float specularity;
 };
 
-MAP_Geometry_Vertex map_extract_packed_vertex(char *vertex_buffer, int vertex_size, int num_vertices, int index) {
-    // ProfileFunction();
-
-    MAP_Geometry_Vertex result = {};
-    const char *const vertex_ptr = vertex_buffer + index * vertex_size;
-    assert(index < num_vertices);
-    switch (vertex_size) {
-        case 0x14: {
-            const auto vert = *(const PH2MAP__Vertex14 *)vertex_ptr;
-            result.position[0] = vert.position[0];
-            result.position[1] = vert.position[1];
-            result.position[2] = vert.position[2];
-            result.uv[0] = vert.uv[0];
-            result.uv[1] = vert.uv[1];
-        } break;
-        case 0x18: {
-            const auto vert = *(const PH2MAP__Vertex18 *)vertex_ptr;
-            result.position[0] = vert.position[0];
-            result.position[1] = vert.position[1];
-            result.position[2] = vert.position[2];
-            result.color = vert.color;
-            result.uv[0] = vert.uv[0];
-            result.uv[1] = vert.uv[1];
-        } break;
-        case 0x20: {
-            const auto vert = *(const PH2MAP__Vertex20 *)vertex_ptr;
-            result.position[0] = vert.position[0];
-            result.position[1] = vert.position[1];
-            result.position[2] = vert.position[2];
-            result.normal[0] = vert.normal[0];
-            result.normal[1] = vert.normal[1];
-            result.normal[2] = vert.normal[2];
-            result.uv[0] = vert.uv[0];
-            result.uv[1] = vert.uv[1];
-        } break;
-        case 0x24: {
-            const auto vert = *(const PH2MAP__Vertex24 *)vertex_ptr;
-            result.position[0] = vert.position[0];
-            result.position[1] = vert.position[1];
-            result.position[2] = vert.position[2];
-            result.normal[0] = vert.normal[0];
-            result.normal[1] = vert.normal[1];
-            result.normal[2] = vert.normal[2];
-            result.color = vert.color;
-            result.uv[0] = vert.uv[0];
-            result.uv[1] = vert.uv[1];
-        } break;
-        default: {
-            assert(false);
-        } break;
-    }
-    return result;
-}
-
 void map_unpack_mesh_vertex_buffer(MAP_Geometry_Buffer &buffer, MAP_Mesh &mesh) {
     ProfileFunction();
 
     for (MAP_Mesh_Vertex_Buffer &vertex_buffer : mesh.vertex_buffers) {
         for (int i = 0; i < vertex_buffer.num_vertices; i++) {
-            auto unpacked_vertex = map_extract_packed_vertex(vertex_buffer.data.data, vertex_buffer.bytes_per_vertex, vertex_buffer.num_vertices, i);
+            MAP_Geometry_Vertex result = {};
+            const char *const vertex_ptr = vertex_buffer.data.data + i * vertex_buffer.bytes_per_vertex;
+            assert(i < vertex_buffer.num_vertices);
+            switch (vertex_buffer.bytes_per_vertex) {
+                case 0x14: {
+                    const auto vert = *(const PH2MAP__Vertex14 *)vertex_ptr;
+                    result.position[0] = vert.position[0];
+                    result.position[1] = vert.position[1];
+                    result.position[2] = vert.position[2];
+                    result.uv[0] = vert.uv[0];
+                    result.uv[1] = vert.uv[1];
+                } break;
+                case 0x18: {
+                    const auto vert = *(const PH2MAP__Vertex18 *)vertex_ptr;
+                    result.position[0] = vert.position[0];
+                    result.position[1] = vert.position[1];
+                    result.position[2] = vert.position[2];
+                    result.color = vert.color;
+                    result.uv[0] = vert.uv[0];
+                    result.uv[1] = vert.uv[1];
+                } break;
+                case 0x20: {
+                    const auto vert = *(const PH2MAP__Vertex20 *)vertex_ptr;
+                    result.position[0] = vert.position[0];
+                    result.position[1] = vert.position[1];
+                    result.position[2] = vert.position[2];
+                    result.normal[0] = vert.normal[0];
+                    result.normal[1] = vert.normal[1];
+                    result.normal[2] = vert.normal[2];
+                    result.uv[0] = vert.uv[0];
+                    result.uv[1] = vert.uv[1];
+                } break;
+                case 0x24: {
+                    const auto vert = *(const PH2MAP__Vertex24 *)vertex_ptr;
+                    result.position[0] = vert.position[0];
+                    result.position[1] = vert.position[1];
+                    result.position[2] = vert.position[2];
+                    result.normal[0] = vert.normal[0];
+                    result.normal[1] = vert.normal[1];
+                    result.normal[2] = vert.normal[2];
+                    result.color = vert.color;
+                    result.uv[0] = vert.uv[0];
+                    result.uv[1] = vert.uv[1];
+                } break;
+                default: {
+                    assert(false);
+                } break;
+            }
+            auto unpacked_vertex = result;
             buffer.vertices.push(unpacked_vertex);
         }
     }
@@ -1293,14 +1294,14 @@ void map_destrip_mesh_part_group(MAP_Geometry_Buffer &buffer, int &indices_index
 
         int num_vertices_written_in_this_strip = 0;
         for (int strip_index = 0; strip_index < outer_max; strip_index++) {
-            unsigned int memory = (mesh.indices[indices_index++]) << 0x10;
+            unsigned int memory = (mesh.indices.data[indices_index++]) << 0x10;
             unsigned int mask = 0xFFFF0000;
-            uint16_t currentIndex = (mesh.indices[indices_index++]);
+            uint16_t currentIndex = (mesh.indices.data[indices_index++]);
             for (int i = 2; i < inner_max; i++) {
                 memory = (memory & mask) + (currentIndex << (0x10 & mask));
                 mask ^= 0xFFFFFFFF;
 
-                currentIndex = (mesh.indices[indices_index++]);
+                currentIndex = (mesh.indices.data[indices_index++]);
 
                 uint32_t a = memory >> 0x10;
                 uint32_t b = memory & 0xffff;
@@ -2763,6 +2764,8 @@ static void map_upload(G &g) {
     }
     for (auto &sub : g.texture_subfiles) {
         for (auto &tex : sub.textures) {
+            ProfileScope("Upload texture");
+
             sg_image_desc d = {};
             d.width = tex.width;
             d.height = tex.height;
@@ -2798,6 +2801,8 @@ static void map_upload(G &g) {
         // }
     }
     for (int i = 0; i < g.map_buffers_count; i++) {
+        ProfileScope("Update MAP buffer");
+
         auto &buf = g.map_buffers[i];
         sg_update_buffer(buf.vertex_buffer, sg_range { buf.vertices.data, buf.vertices.count * sizeof(buf.vertices[0]) });
         sg_update_buffer(buf.index_buffer, sg_range { buf.indices.data, buf.indices.count * sizeof(buf.indices[0]) });
