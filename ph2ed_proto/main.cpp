@@ -2953,34 +2953,37 @@ Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(HMM_Vec3 ro_, HMM_Vec3 rd_, H
 struct Ray_Vs_Sphere_Result {
     bool hit;
     float t;
-    float exit_t;
+    // float exit_t;
 };
+
+#define ray_vs_sphere_(result, ro_, rd_, so_, r_) \
+    do { \
+        auto &&ro = (ro_); \
+        auto &&rd = (rd_); \
+        auto &&so = (so_); \
+        auto &&r = (r_); \
+        (result).hit = false; \
+        HMM_Vec3 oc = { oc.X = ro.X - so.X, oc.Y = ro.Y - so.Y, oc.Z = ro.Z - so.Z }; \
+        float b = (oc.X * rd.X) + (oc.Y * rd.Y) + (oc.Z * rd.Z); \
+        float c = (oc.X * oc.X) + (oc.Y * oc.Y) + (oc.Z * oc.Z) - r * r; \
+        float h = b * b - c; \
+        if (h >= 0.0) { \
+            h = sqrtf(h); \
+            float t = -b - h; \
+            /* float exit_t = -b + h; */ \
+            if (t >= 0 /* || exit_t >= 0 */) { \
+                (result).hit = true; \
+                (result).t = t; \
+                /* (result).exit_t = exit_t; */ \
+            } \
+        } \
+    } while (0);
+
 // sphere of size ra centered at point so
-Ray_Vs_Sphere_Result ray_vs_sphere(HMM_Vec3 ro, HMM_Vec3 rd, HMM_Vec3 so, float r) {
-    Ray_Vs_Sphere_Result result;
-
-    HMM_Vec3 oc = ro - so;
-    float b = HMM_Dot(oc, rd);
-    float c = HMM_Dot(oc, oc) - r * r;
-    float h = b * b - c;
-    if (h < 0.0) {
-        result.hit = false;
-        return result;
-    }
-    h = sqrtf(h);
-
-    float t = -b - h;
-    float exit_t = -b + h;
-
-    if (t < 0 || exit_t < 0) {
-        result.hit = false;
-        return result;
-    }
-    result.hit = true;
-    result.t = t;
-    result.exit_t = exit_t;
-
-    return result;
+Ray_Vs_Sphere_Result ray_vs_sphere(HMM_Vec3 ro_, HMM_Vec3 rd_, HMM_Vec3 so_, float r_) {
+    Ray_Vs_Sphere_Result result_;
+    ray_vs_sphere_(result_, ro_, rd_, so_, r_);
+    return result_;
 }
 
 static inline float abs(float x) { return x >= 0 ? x : -x; }
@@ -3398,6 +3401,7 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
 
     Ray_Vs_MAP_Result result = {};
     float widget_radius_factor = (widget_pixel_radius / sapp_heightf() * tanf(g.fov / 2) / SCALE);
+    Ray_Vs_Sphere_Result sphere_raycast = {};
     for (MAP_Geometry_Buffer &buf : g.map_buffers) {
         if (&buf - g.map_buffers >= g.map_buffers_count) {
             break;
@@ -3417,17 +3421,16 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                 HMM_Vec3 cam_pos_minus_offset = { g.cam_pos.X - (vertex.X * SCALE), g.cam_pos.Y + (vertex.Y * SCALE), g.cam_pos.Z + (vertex.Z * SCALE), };
                 // Ray_Vs_Aligned_Circle_Result raycast;
                 // ray_vs_aligned_circle_(raycast, ray_pos.XYZ, ray_dir.XYZ, vertex, sqrtf(cam_pos_minus_offset.X * cam_pos_minus_offset.X + cam_pos_minus_offset.Y * cam_pos_minus_offset.Y + cam_pos_minus_offset.Z * cam_pos_minus_offset.Z) * widget_radius_factor);
-                Ray_Vs_Sphere_Result raycast;
-                raycast = ray_vs_sphere(
+                ray_vs_sphere_(sphere_raycast,
                     ray_pos.XYZ,
                     ray_dir.XYZ,
                     vertex,
                     sqrtf(cam_pos_minus_offset.X * cam_pos_minus_offset.X + cam_pos_minus_offset.Y * cam_pos_minus_offset.Y + cam_pos_minus_offset.Z * cam_pos_minus_offset.Z) * widget_radius_factor
                 );
-                if (raycast.hit) {
-                    if (raycast.t >= 0 && raycast.t < result.closest_t) {
+                if (sphere_raycast.hit) {
+                    if (sphere_raycast.t >= 0 && sphere_raycast.t < result.closest_t) {
                         result.hit = true;
-                        result.closest_t = raycast.t;
+                        result.closest_t = sphere_raycast.t;
                         result.hit_mesh = &mesh;
                         result.hit_vertex_buffer = vertex_buffer_index;
                         result.hit_vertex = vertex_index;
