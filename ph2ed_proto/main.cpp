@@ -2950,6 +2950,39 @@ Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(HMM_Vec3 ro_, HMM_Vec3 rd_, H
     return result;
 }
 
+struct Ray_Vs_Sphere_Result {
+    bool hit;
+    float t;
+    float exit_t;
+};
+// sphere of size ra centered at point so
+Ray_Vs_Sphere_Result ray_vs_sphere(HMM_Vec3 ro, HMM_Vec3 rd, HMM_Vec3 so, float r) {
+    Ray_Vs_Sphere_Result result;
+
+    HMM_Vec3 oc = ro - so;
+    float b = HMM_Dot(oc, rd);
+    float c = HMM_Dot(oc, oc) - r * r;
+    float h = b * b - c;
+    if (h < 0.0) {
+        result.hit = false;
+        return result;
+    }
+    h = sqrtf(h);
+
+    float t = -b - h;
+    float exit_t = -b + h;
+
+    if (t < 0 || exit_t < 0) {
+        result.hit = false;
+        return result;
+    }
+    result.hit = true;
+    result.t = t;
+    result.exit_t = exit_t;
+
+    return result;
+}
+
 static inline float abs(float x) { return x >= 0 ? x : -x; }
 
 struct Ray_Vs_Plane_Result {
@@ -3382,8 +3415,15 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                 // HMM_Vec3 offset = -g.cld_origin() + vertex;
                 // float radius = widget_radius(g, offset) / SCALE;
                 HMM_Vec3 cam_pos_minus_offset = { g.cam_pos.X - (vertex.X * SCALE), g.cam_pos.Y + (vertex.Y * SCALE), g.cam_pos.Z + (vertex.Z * SCALE), };
-                Ray_Vs_Aligned_Circle_Result raycast;
-                ray_vs_aligned_circle_(raycast, ray_pos.XYZ, ray_dir.XYZ, vertex, sqrtf(cam_pos_minus_offset.X * cam_pos_minus_offset.X + cam_pos_minus_offset.Y * cam_pos_minus_offset.Y + cam_pos_minus_offset.Z * cam_pos_minus_offset.Z) * widget_radius_factor);
+                // Ray_Vs_Aligned_Circle_Result raycast;
+                // ray_vs_aligned_circle_(raycast, ray_pos.XYZ, ray_dir.XYZ, vertex, sqrtf(cam_pos_minus_offset.X * cam_pos_minus_offset.X + cam_pos_minus_offset.Y * cam_pos_minus_offset.Y + cam_pos_minus_offset.Z * cam_pos_minus_offset.Z) * widget_radius_factor);
+                Ray_Vs_Sphere_Result raycast;
+                raycast = ray_vs_sphere(
+                    ray_pos.XYZ,
+                    ray_dir.XYZ,
+                    vertex,
+                    sqrtf(cam_pos_minus_offset.X * cam_pos_minus_offset.X + cam_pos_minus_offset.Y * cam_pos_minus_offset.Y + cam_pos_minus_offset.Z * cam_pos_minus_offset.Z) * widget_radius_factor
+                );
                 if (raycast.hit) {
                     if (raycast.t >= 0 && raycast.t < result.closest_t) {
                         result.hit = true;
