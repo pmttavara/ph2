@@ -2915,41 +2915,6 @@ static void imgui_do_console(G &g) {
     }
 }
 
-struct Ray_Vs_Aligned_Circle_Result {
-    bool hit;
-    float t;
-    HMM_Vec3 closest_point;
-    float distance_to_closest_point;
-};
-
-#define ray_vs_aligned_circle_(result, ro_, rd_, so_, r_) do { \
-    auto &&ro = (ro_); \
-    auto &&rd = (rd_); \
-    auto &&so = (so_); \
-    auto &&r = (r_); \
-    /* result.t = HMM_Dot(so - ro, rd); */ \
-    result.t = (so.X - ro.X) * rd.X + (so.Y - ro.Y) * rd.Y + (so.Z - ro.Z) * rd.Z; \
-    /* Log("Dot %f", result.t); */ \
-    /* result.closest_point = ro + rd * result.t; */ \
-    result.closest_point.X = ro.X + rd.X * result.t; \
-    result.closest_point.Y = ro.Y + rd.Y * result.t; \
-    result.closest_point.Z = ro.Z + rd.Z * result.t; \
-    /* Log("Closest Point %f, %f, %f", result.closest_point.X, result.closest_point.Y, result.closest_point.Z); */ \
-    /* result.distance_to_closest_point = HMM_Len(result.closest_point - so); */ \
-    HMM_Vec3 closest_minus_so = { result.closest_point.X - so.X, result.closest_point.Y - so.Y, result.closest_point.Z - so.Z }; \
-    result.distance_to_closest_point = sqrtf(closest_minus_so.X * closest_minus_so.X + closest_minus_so.Y * closest_minus_so.Y + closest_minus_so.Z * closest_minus_so.Z); \
-    /* Log("Distance %f (out of %f)", result.distance_to_closest_point, r); */ \
-    /* if (result.distance_to_closest_point <= r) { result.hit = true; } */ \
-    result.hit = (result.distance_to_closest_point <= r); \
-} while (0);
-
-Ray_Vs_Aligned_Circle_Result ray_vs_aligned_circle(HMM_Vec3 ro_, HMM_Vec3 rd_, HMM_Vec3 so_, float r_) {
-    //Ray_Vs_Aligned_Circle_Result result = {};
-    Ray_Vs_Aligned_Circle_Result result;
-    ray_vs_aligned_circle_(result, ro_, rd_, so_, r_);
-    return result;
-}
-
 struct Ray_Vs_Sphere_Result {
     bool hit;
     float t;
@@ -3353,14 +3318,9 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
 // I should ask the community what they know about the units used in the game
 const float SCALE = 0.001f;
 const float widget_pixel_radius = 30;
-static float widget_radius(G &g, HMM_Vec3 offset) {
-    // ProfileFunction();
-
-    return HMM_Len(g.cam_pos - offset) * widget_pixel_radius / sapp_heightf() * tanf(g.fov / 2);
-}
 
 static HMM_Mat4 camera_rot(G &g) {
-    ProfileFunction();
+    // ProfileFunction();
 
     // We pitch the camera by applying a rotation around X,
     // then yaw the camera by applying a rotation around Y.
@@ -3368,6 +3328,24 @@ static HMM_Mat4 camera_rot(G &g) {
     auto yaw_matrix = HMM_Rotate_RH(g.yaw, HMM_V3(0, 1, 0));
     return yaw_matrix * pitch_matrix;
 }
+
+static float widget_radius(G &g, HMM_Vec3 offset) {
+    // ProfileFunction();
+
+    HMM_Vec4 cam_forward = { 0, 0, -1, 0 };
+    HMM_Mat4 cam_rot = camera_rot(g);
+
+    cam_forward = HMM_MulM4V4(cam_rot, cam_forward);
+
+    HMM_Vec3 disp = g.cam_pos - offset;
+
+    // float dist = HMM_Len(disp);
+    // float cos_theta = HMM_Dot(disp, cam_forward.XYZ) / dist;
+
+    return HMM_Dot(disp, cam_forward.XYZ) * widget_pixel_radius / sapp_heightf() * tanf(g.fov / 2);
+}
+
+
 static Ray screen_to_ray(G &g, HMM_Vec2 mouse_xy) {
     ProfileFunction();
 
@@ -3400,6 +3378,11 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
     ProfileFunction();
 
     Ray_Vs_MAP_Result result = {};
+    HMM_Vec4 cam_forward = { 0, 0, -1, 0 };
+    {
+        HMM_Mat4 cam_rot = camera_rot(g);
+        cam_forward = HMM_MulM4V4(cam_rot, cam_forward);
+    }
     float widget_radius_factor = (widget_pixel_radius / sapp_heightf() * tanf(g.fov / 2) / SCALE);
     Ray_Vs_Sphere_Result sphere_raycast = {};
     for (MAP_Geometry_Buffer &buf : g.map_buffers) {
@@ -3418,15 +3401,8 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                 HMM_Vec3 vertex = *(HMM_Vec3 *)&vertex_buffer.data.data[vertex_index * vertex_buffer.bytes_per_vertex];
                 // HMM_Vec3 offset = -g.cld_origin() + vertex;
                 // float radius = widget_radius(g, offset) / SCALE;
-                HMM_Vec3 cam_pos_minus_offset = { g.cam_pos.X - (vertex.X * SCALE), g.cam_pos.Y + (vertex.Y * SCALE), g.cam_pos.Z + (vertex.Z * SCALE), };
-                // Ray_Vs_Aligned_Circle_Result raycast;
-                // ray_vs_aligned_circle_(raycast, ray_pos.XYZ, ray_dir.XYZ, vertex, sqrtf(cam_pos_minus_offset.X * cam_pos_minus_offset.X + cam_pos_minus_offset.Y * cam_pos_minus_offset.Y + cam_pos_minus_offset.Z * cam_pos_minus_offset.Z) * widget_radius_factor);
-                ray_vs_sphere_(sphere_raycast,
-                    ray_pos.XYZ,
-                    ray_dir.XYZ,
-                    vertex,
-                    sqrtf(cam_pos_minus_offset.X * cam_pos_minus_offset.X + cam_pos_minus_offset.Y * cam_pos_minus_offset.Y + cam_pos_minus_offset.Z * cam_pos_minus_offset.Z) * widget_radius_factor
-                );
+                HMM_Vec3 disp = { g.cam_pos.X - (vertex.X * SCALE), g.cam_pos.Y + (vertex.Y * SCALE), g.cam_pos.Z + (vertex.Z * SCALE), };
+                ray_vs_sphere_(sphere_raycast, ray_pos.XYZ, ray_dir.XYZ, vertex, (disp.X * cam_forward.X + disp.Y * cam_forward.Y + disp.Z * cam_forward.Z) * widget_radius_factor);
                 if (sphere_raycast.hit) {
                     if (sphere_raycast.t >= 0 && sphere_raycast.t < result.closest_t) {
                         result.hit = true;
@@ -3602,7 +3578,7 @@ static void event(const sapp_event *e_, void *userdata) {
                             HMM_Vec3 widget_pos = vertex;
                             float radius = widget_radius(g, offset) / SCALE;
 
-                            auto raycast = ray_vs_aligned_circle(ray_pos.XYZ, ray_dir.XYZ, widget_pos, radius);
+                            auto raycast = ray_vs_sphere(ray_pos.XYZ, ray_dir.XYZ, widget_pos, radius);
                             if (raycast.hit) {
                                 if (raycast.t >= 0 && raycast.t < closest_t) {
                                     closest_t = raycast.t;
