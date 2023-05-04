@@ -3369,10 +3369,9 @@ struct Ray_Vs_MAP_Result {
     float closest_t = INFINITY;
     MAP_Mesh *hit_mesh = nullptr;
     int hit_vertex_buffer = -1;
+    int hit_face = -1;
     int hit_vertex = -1;
     HMM_Vec3 hit_widget_pos = {};
-
-    // int hit_index_index = -1;
 };
 static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
     ProfileFunction();
@@ -3390,7 +3389,6 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
             break;
         }
         if (!buf.shown) continue;
-        if (!buf.selected) continue;
 
         assert(buf.mesh_ptr);
         MAP_Mesh &mesh = *buf.mesh_ptr;
@@ -3409,6 +3407,7 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                         result.closest_t = sphere_raycast.t;
                         result.hit_mesh = &mesh;
                         result.hit_vertex_buffer = vertex_buffer_index;
+                        result.hit_face = -1;
                         result.hit_vertex = vertex_index;
                         result.hit_widget_pos = vertex;
                     }
@@ -3416,21 +3415,117 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
             }
 
             Ray_Vs_Plane_Result raycast = {};
-            for (int index_index = 0; index_index < buf.indices.count; index_index += 3) {
-                HMM_Vec3 a = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[index_index + 0]];
-                HMM_Vec3 b = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[index_index + 1]];
-                HMM_Vec3 c = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[index_index + 2]];
+            assert(buf.indices.count % 3 == 0);
+            for (int face = 0; face < buf.indices.count / 3; ++face) {
+                HMM_Vec3 a = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[face * 3 + 0]];
+                HMM_Vec3 b = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[face * 3 + 1]];
+                HMM_Vec3 c = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[face * 3 + 2]];
                 ray_vs_triangle_(raycast, ray_pos.XYZ, ray_dir.XYZ, a, b, c);
                 if (raycast.hit) {
-                    // __debugbreak();
                     if (raycast.t >= 0 && raycast.t < result.closest_t) {
-                        // Log("Hit %d", index_index);
-                        result.hit = false;
+                        result.hit = true;
                         result.closest_t = raycast.t;
-                        result.hit_mesh = nullptr; // &mesh;
-                        result.hit_vertex_buffer = -1; // vertex_buffer_index;
-                        result.hit_vertex = -1; // vertex_index;
-                        // result.hit_widget_pos = vertex;
+                        result.hit_mesh = &mesh;
+                        result.hit_vertex_buffer = vertex_buffer_index;
+                        result.hit_face = face;
+                        result.hit_vertex = -1;
+                        result.hit_widget_pos = {};
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
+
+struct Ray_Vs_CLD_Result {
+    bool hit = false;
+    float closest_t = INFINITY;
+    int hit_group = -1;
+    int hit_face_index = -1;
+    int hit_vertex = -1;
+    HMM_Vec3 hit_widget_pos = {};
+};
+static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
+    Ray_Vs_CLD_Result result = {};
+    for (int group = 0; group < 4; group++) {
+        PH2CLD_Face *faces = g.cld.group_0_faces;
+        size_t num_faces = g.cld.group_0_faces_count;
+        if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
+        if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
+        if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
+        for (int face_index = 0; face_index < num_faces; face_index++) {
+            PH2CLD_Face *face = &faces[face_index];
+            int vertices_to_raycast = 3;
+            if (face->quad) {
+                vertices_to_raycast = 4;
+            }
+
+            for (int vertex_index = 0; vertex_index < vertices_to_raycast; vertex_index++) {
+                float (&vertex_floats)[3] = face->vertices[vertex_index];
+                HMM_Vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+                //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
+                //Log("Minv*Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
+
+                //Log("Vertex Pos = %f, %f, %f", vertex.X, vertex.Y, vertex.Z);
+
+                HMM_Vec3 offset = -g.cld_origin() + vertex;
+                offset.X *= SCALE;
+                offset.Y *= -SCALE;
+                offset.Z *= -SCALE;
+
+                HMM_Vec3 widget_pos = vertex;
+                float radius = widget_radius(g, offset) / SCALE;
+
+                auto raycast = ray_vs_sphere(ray_pos.XYZ, ray_dir.XYZ, widget_pos, radius);
+                if (raycast.hit && raycast.t >= 0) {
+                    float bias = 0; // @Ugly
+                    if ((g.select_cld_group == group) && (g.select_cld_face == face_index)) {
+                        bias = 0.01f;
+                    }
+                    if (raycast.t < result.closest_t + bias) {
+                        result.hit = true;
+                        result.closest_t = raycast.t;
+                        result.hit_group = group;
+                        result.hit_face_index = face_index;
+                        result.hit_vertex = vertex_index;
+                        result.hit_widget_pos = widget_pos;
+                    }
+                }
+            }
+        }
+    }
+    for (int group = 0; group < 4; group++) {
+        PH2CLD_Face *faces = g.cld.group_0_faces;
+        size_t num_faces = g.cld.group_0_faces_count;
+        if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
+        if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
+        if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
+        for (int face_index = 0; face_index < num_faces; face_index++) {
+            PH2CLD_Face *face = &faces[face_index];
+            int vertices_to_raycast = 3;
+            if (face->quad) {
+                vertices_to_raycast = 4;
+            }
+            {
+                HMM_Vec3 a = { face->vertices[0][0], face->vertices[0][1], face->vertices[0][2] };
+                HMM_Vec3 b = { face->vertices[1][0], face->vertices[1][1], face->vertices[1][2] };
+                HMM_Vec3 c = { face->vertices[2][0], face->vertices[2][1], face->vertices[2][2] };
+                auto raycast = ray_vs_triangle(ray_pos.XYZ, ray_dir.XYZ, a, b, c);
+                if (!raycast.hit) {
+                    if (face->quad) {
+                        HMM_Vec3 d = { face->vertices[3][0], face->vertices[3][1], face->vertices[3][2] };
+                        raycast = ray_vs_triangle(ray_pos.XYZ, ray_dir.XYZ, a, c, d);
+                    }
+                }
+                if (raycast.hit && raycast.t >= 0) {
+                    if (raycast.t < result.closest_t) {
+                        result.hit = true;
+                        result.closest_t = raycast.t;
+                        result.hit_group = group;
+                        result.hit_face_index = face_index;
+                        result.hit_vertex = -1;
+                        result.hit_widget_pos = {};
                     }
                 }
             }
@@ -3508,155 +3603,74 @@ static void event(const sapp_event *e_, void *userdata) {
             //Log("Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
             //Log("Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
 
-            bool map_hit = false;
+            float closest_t = INFINITY;
 
-            if (g.select_cld_face < 0 || g.select_cld_group < 0) {
+            {
+                Ray_Vs_MAP_Result raycast = ray_vs_map(g, ray_pos, ray_dir);
 
-                Ray_Vs_MAP_Result result = ray_vs_map(g, ray_pos, ray_dir);
+                if (raycast.hit && raycast.closest_t < closest_t) {
+                    closest_t = raycast.closest_t;
 
-                if (result.hit && result.closest_t < INFINITY) {
-                    g.widget_original_pos = result.hit_widget_pos;
-                    assert(result.hit_mesh);
-                    assert(result.hit_vertex_buffer >= 0);
-                    assert(result.hit_vertex_buffer < 4);
-                    assert(result.hit_vertex >= 0);
-                    g.control_state = ControlState::Dragging;
+                    assert(raycast.hit_mesh);
+                    assert(raycast.hit_vertex_buffer >= 0);
+                    assert(raycast.hit_vertex_buffer < 4);
 
-                    g.select_cld_group = -1;
-                    g.select_cld_face = -1;
-                    g.drag_cld_group = -1;
-                    g.drag_cld_face = -1;
-                    g.drag_cld_vertex = -1;
+                    if (raycast.hit_vertex >= 0) {
+                        assert(raycast.hit_face < 0);
 
-                    Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.hit_mesh, result.hit_vertex_buffer, result.hit_vertex);
+                        g.widget_original_pos = raycast.hit_widget_pos;
+                        g.control_state = ControlState::Dragging;
 
-                    map_hit = true;
+                        Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", raycast.hit_mesh, raycast.hit_vertex_buffer, raycast.hit_vertex);
+                    } else {
+                        assert(raycast.hit_face >= 0);
+
+                        g.control_state = ControlState::Normal;
+
+                        Log("Hit MAP face: Mesh %p, vertex buffer %d, face %d", raycast.hit_mesh, raycast.hit_vertex_buffer, raycast.hit_face);
+                    }
                 }
             }
 
-            if (!map_hit && g.cld.valid) {
+            if (g.cld.valid) {
+                Ray_Vs_CLD_Result raycast = ray_vs_cld(g, ray_pos, ray_dir);
+                if (raycast.hit && raycast.closest_t < closest_t) {
+                    closest_t = raycast.closest_t;
 
-                float closest_t = INFINITY;
-                int hit_group = -1;
-                int hit_face_index = -1;
-                int hit_vertex = -1;
-                HMM_Vec3 hit_widget_pos = {};
-                for (int group = 0; group < 4; group++) {
-                    if (group != g.select_cld_group) {
-                        continue;
+                    for (MAP_Geometry_Buffer& buf : g.map_buffers) {
+                        buf.selected = false;
                     }
 
-                    PH2CLD_Face *faces = g.cld.group_0_faces;
-                    size_t num_faces = g.cld.group_0_faces_count;
-                    if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
-                    if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
-                    if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
-                    for (int face_index = 0; face_index < num_faces; face_index++) {
-                        if (face_index != g.select_cld_face) {
-                            continue;
-                        }
+                    assert(raycast.hit_group >= 0);
+                    assert(raycast.hit_group < 4);
+                    assert(raycast.hit_face_index >= 0);
+                    g.select_cld_group = raycast.hit_group;
+                    g.select_cld_face = raycast.hit_face_index;
+                    if (raycast.hit_vertex == -1) {
+                        g.control_state = ControlState::Normal;
+                        g.drag_cld_group = -1;
+                        g.drag_cld_face = -1;
+                        g.drag_cld_vertex = -1;
 
-                        PH2CLD_Face *face = &faces[face_index];
-                        int vertices_to_raycast = 3;
-                        if (face->quad) {
-                            vertices_to_raycast = 4;
-                        }
-
-                        for (int vertex_index = 0; vertex_index < vertices_to_raycast; vertex_index++) {
-                            float (&vertex_floats)[3] = face->vertices[vertex_index];
-                            HMM_Vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
-                            //Log("Minv*Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
-                            //Log("Minv*Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
-
-                            //Log("Vertex Pos = %f, %f, %f", vertex.X, vertex.Y, vertex.Z);
-
-                            HMM_Vec3 offset = -g.cld_origin() + vertex;
-                            offset.X *= SCALE;
-                            offset.Y *= -SCALE;
-                            offset.Z *= -SCALE;
-
-                            HMM_Vec3 widget_pos = vertex;
-                            float radius = widget_radius(g, offset) / SCALE;
-
-                            auto raycast = ray_vs_sphere(ray_pos.XYZ, ray_dir.XYZ, widget_pos, radius);
-                            if (raycast.hit) {
-                                if (raycast.t >= 0 && raycast.t < closest_t) {
-                                    closest_t = raycast.t;
-                                    hit_group = group;
-                                    hit_face_index = face_index;
-                                    hit_vertex = vertex_index;
-                                    hit_widget_pos = widget_pos;
-                                }
-                            }
-                        }
-                    }
-                }
-                if (closest_t < INFINITY) {
-                    g.widget_original_pos = hit_widget_pos;
-                    assert(hit_group >= 0);
-                    assert(hit_group < 4);
-                    assert(hit_face_index >= 0);
-                    assert(hit_vertex >= 0);
-                    assert(hit_vertex < 4);
-                    assert(g.select_cld_group == hit_group);
-                    assert(g.select_cld_face == hit_face_index);
-                    g.control_state = ControlState::Dragging;
-                    g.drag_cld_group = hit_group;
-                    g.drag_cld_face = hit_face_index;
-                    g.drag_cld_vertex = hit_vertex;
-                } else {
-                    for (int group = 0; group < 4; group++) {
-                        PH2CLD_Face *faces = g.cld.group_0_faces;
-                        size_t num_faces = g.cld.group_0_faces_count;
-                        if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
-                        if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
-                        if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
-                        for (int face_index = 0; face_index < num_faces; face_index++) {
-                            PH2CLD_Face *face = &faces[face_index];
-                            int vertices_to_raycast = 3;
-                            if (face->quad) {
-                                vertices_to_raycast = 4;
-                            }
-                            {
-                                HMM_Vec3 a = { face->vertices[0][0], face->vertices[0][1], face->vertices[0][2] };
-                                HMM_Vec3 b = { face->vertices[1][0], face->vertices[1][1], face->vertices[1][2] };
-                                HMM_Vec3 c = { face->vertices[2][0], face->vertices[2][1], face->vertices[2][2] };
-                                auto raycast = ray_vs_triangle(ray_pos.XYZ, ray_dir.XYZ, a, b, c);
-                                if (!raycast.hit) {
-                                    if (face->quad) {
-                                        HMM_Vec3 d = { face->vertices[3][0], face->vertices[3][1], face->vertices[3][2] };
-                                        raycast = ray_vs_triangle(ray_pos.XYZ, ray_dir.XYZ, a, c, d);
-                                    }
-                                }
-                                if (raycast.hit) {
-                                    if (raycast.t < closest_t) {
-                                        closest_t = raycast.t;
-                                        hit_group = group;
-                                        hit_face_index = face_index;
-                                        hit_vertex = -1;
-                                        Log("hit %d, %d", hit_group, hit_face_index);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    assert(hit_vertex == -1);
-                    if (closest_t < INFINITY) {
-                        g.select_cld_group = hit_group;
-                        g.select_cld_face = hit_face_index;
-
-                        for (MAP_Geometry_Buffer &buf : g.map_buffers) {
-                            buf.selected = false;
-                        }
-
+                        Log("Hit CLD face: Group %d, Face %d", raycast.hit_group, raycast.hit_face_index);
                     } else {
-                        g.select_cld_group = -1;
-                        g.select_cld_face = -1;
+                        g.widget_original_pos = raycast.hit_widget_pos;
+                        assert(raycast.hit_vertex >= 0);
+                        assert(raycast.hit_vertex < 4);
+
+                        g.control_state = ControlState::Dragging;
+                        g.drag_cld_group = raycast.hit_group;
+                        g.drag_cld_face = raycast.hit_face_index;
+                        g.drag_cld_vertex = raycast.hit_vertex;
+
+                        Log("Hit CLD vertex: Group %d, Face %d, vertex %d", raycast.hit_group, raycast.hit_face_index, raycast.hit_vertex);
                     }
-                    g.control_state = ControlState::Normal;
+                } else {
                     g.drag_cld_group = -1;
                     g.drag_cld_face = -1;
                     g.drag_cld_vertex = -1;
+                    g.select_cld_group = -1;
+                    g.select_cld_face = -1;
                 }
             }
         }
@@ -7193,22 +7207,9 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
         HMM_Mat4 perspective = {};
         HMM_Mat4 V = HMM_Transpose(camera_rot(g)) * HMM_Translate(-g.cam_pos);
         HMM_Mat4 R = camera_rot(g);
-        auto draw_highlight_vertex_circle = [&g, &perspective, &V, &R] (bool dragging, float (&vertex_floats)[3]) {
+        auto draw_highlight_vertex_circle = [&g, &perspective, &V, &R] (float (&vertex_floats)[3], float scale_factor, float alpha) {
             HMM_Mat4 P = perspective;
 
-            float scale_factor = 1;
-            float alpha = 1;
-            if (g.control_state != ControlState::Normal) {
-                alpha = 0.7f;
-            }
-            if (g.control_state == ControlState::Dragging) {
-                if (dragging) {
-                    alpha = 1;
-                    scale_factor *= 0.5f;
-                } else {
-                    alpha = 0.3f;
-                }
-            }
             highlight_vertex_circle_vs_params_t params = {};
             params.in_color = HMM_Vec4 { 1, 1, 1, alpha };
 
@@ -7406,7 +7407,20 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                         vertices_to_render = 4;
                     }
                     for (int i = 0; i < vertices_to_render; i++) {
-                        draw_highlight_vertex_circle(group == g.drag_cld_group && face_index == g.drag_cld_face && i == g.drag_cld_vertex, face->vertices[i]);
+                        float scale_factor = 1;
+                        float alpha = 1;
+                        if (g.control_state != ControlState::Normal) {
+                            alpha = 0.7f;
+                        }
+                        if (g.control_state == ControlState::Dragging) {
+                            if (group == g.drag_cld_group && face_index == g.drag_cld_face && i == g.drag_cld_vertex) {
+                                alpha = 1;
+                                scale_factor *= 0.5f;
+                            } else {
+                                alpha = 0.3f;
+                            }
+                        }
+                        draw_highlight_vertex_circle(face->vertices[i], scale_factor, alpha);
                     }
                 }
             }
@@ -7448,9 +7462,29 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
             Ray_Vs_MAP_Result result = ray_vs_map(g, ray_pos, ray_dir);
 
             if (result.hit) {
-                float vertex[3] = {result.hit_widget_pos.X, result.hit_widget_pos.Y, result.hit_widget_pos.Z};
-                draw_highlight_vertex_circle(false, vertex);
-                // Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.hit_mesh, result.hit_vertex_buffer, result.hit_vertex);
+                if (result.hit_vertex >= 0) {
+                    float vertex[3] = { result.hit_widget_pos.X, result.hit_widget_pos.Y, result.hit_widget_pos.Z };
+                    draw_highlight_vertex_circle(vertex, 1, 0.7f);
+                    // Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.hit_mesh, result.hit_vertex_buffer, result.hit_vertex);
+                } else {
+                    assert(result.hit_face >= 0);
+
+                    if (!g.stale()) {
+                        for (auto& buf : g.map_buffers) { // @Lazy
+                            if (buf.mesh_ptr != result.hit_mesh) continue;
+
+                            float (&a)[3] = *(float (*)[3])&buf.vertices.data[buf.indices.data[result.hit_face * 3 + 0]];
+                            float (&b)[3] = *(float (*)[3])&buf.vertices.data[buf.indices.data[result.hit_face * 3 + 1]];
+                            float (&c)[3] = *(float (*)[3])&buf.vertices.data[buf.indices.data[result.hit_face * 3 + 2]];
+
+                            draw_highlight_vertex_circle(a, 0.5f, 0.75f);
+                            draw_highlight_vertex_circle(b, 0.5f, 0.75f);
+                            draw_highlight_vertex_circle(c, 0.5f, 0.75f);
+
+                            break;
+                        }
+                    }
+                }
             }
         }
         
