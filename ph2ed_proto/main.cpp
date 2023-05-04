@@ -5715,7 +5715,9 @@ static void frame(void *userdata) {
             };
 
             int i = 0;
-            if (!g.stale()) for (auto &geo : g.geometries) {
+            ImGui::BeginDisabled(g.stale());
+            defer { ImGui::EndDisabled(); };
+            for (auto& geo : g.geometries) {
                 defer { i++; };
                 ImGui::PushID("MAP Selection Nodes");
                 ImGui::PushID(&geo);
@@ -7007,7 +7009,7 @@ static void frame(void *userdata) {
 
             static uint32_t text_col = 0xff12aef2;
             ImGui::PushStyleColor(ImGuiCol_Text, text_col);
-            ImGui::SameLine(); ImGui::Text(" Note: Map in viewport may be brighter or darker than in-game");
+            ImGui::SameLine(); ImGui::Text(" Note: Level may look brighter or darker in-game");
             ImGui::PopStyleColor();
             // static bool editing = false;
             // ImGui::Checkbox("edit", &editing);
