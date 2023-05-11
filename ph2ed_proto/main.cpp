@@ -847,6 +847,26 @@ SPALL_FN double get_rdtsc_multiplier(void) {
     return multiplier;
 }
 
+struct Ray_Vs_World_Result {
+    bool hit = false;
+
+    float closest_t = INFINITY;
+    HMM_Vec3 hit_widget_pos = {};
+
+    struct {
+        MAP_Mesh *hit_mesh = nullptr;
+        int hit_vertex_buffer = -1;
+        int hit_face = -1;
+        int hit_vertex = -1;
+    } map;
+
+    struct {
+        int hit_group = -1;
+        int hit_face_index = -1;
+        int hit_vertex = -1;
+    } cld;
+};
+
 struct G : Map {
     Array<Map_History_Entry> undo_stack = {};
     Array<Map_History_Entry> redo_stack = {};
@@ -897,6 +917,10 @@ struct G : Map {
     float scroll_speed_timer = 0;
 
     Ray click_ray = {};
+    Ray mouse_ray = {};
+    bool clicked = false;
+    Ray_Vs_World_Result click_result = {};
+
     HMM_Vec3 widget_original_pos = {};
     int select_cld_group = -1;
     int select_cld_face = -1;
@@ -3373,7 +3397,7 @@ struct Ray_Vs_MAP_Result {
     int hit_vertex = -1;
     HMM_Vec3 hit_widget_pos = {};
 };
-static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
+static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
     ProfileFunction();
 
     Ray_Vs_MAP_Result result = {};
@@ -3400,7 +3424,7 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                 // HMM_Vec3 offset = -g.cld_origin() + vertex;
                 // float radius = widget_radius(g, offset) / SCALE;
                 HMM_Vec3 disp = { g.cam_pos.X - (vertex.X * SCALE), g.cam_pos.Y + (vertex.Y * SCALE), g.cam_pos.Z + (vertex.Z * SCALE), };
-                ray_vs_sphere_(sphere_raycast, ray_pos.XYZ, ray_dir.XYZ, vertex, (disp.X * cam_forward.X + disp.Y * cam_forward.Y + disp.Z * cam_forward.Z) * widget_radius_factor);
+                ray_vs_sphere_(sphere_raycast, ray_pos, ray_dir, vertex, (disp.X * cam_forward.X + disp.Y * cam_forward.Y + disp.Z * cam_forward.Z) * widget_radius_factor);
                 if (sphere_raycast.hit) {
                     if (sphere_raycast.t >= 0 && sphere_raycast.t < result.closest_t) {
                         result.hit = true;
@@ -3420,11 +3444,11 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                 HMM_Vec3 a = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[face * 3 + 0]];
                 HMM_Vec3 b = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[face * 3 + 1]];
                 HMM_Vec3 c = *(HMM_Vec3 *)&buf.vertices.data[buf.indices.data[face * 3 + 2]];
-                ray_vs_triangle_(raycast, ray_pos.XYZ, ray_dir.XYZ, a, b, c);
+                ray_vs_triangle_(raycast, ray_pos, ray_dir, a, b, c);
                 if (raycast.hit) {
                     if (raycast.t >= 0 && raycast.t < result.closest_t) {
                         HMM_Vec3 normal = HMM_Cross((c - a), (b - a));
-                        if (!g.cull_backfaces || HMM_Dot(normal, ray_dir.XYZ) > 0) {
+                        if (!g.cull_backfaces || HMM_Dot(normal, ray_dir) > 0) {
                             result.hit = true;
                             result.closest_t = raycast.t;
                             result.hit_mesh = &mesh;
@@ -3450,7 +3474,7 @@ struct Ray_Vs_CLD_Result {
     int hit_vertex = -1;
     HMM_Vec3 hit_widget_pos = {};
 };
-static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
+static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
     Ray_Vs_CLD_Result result = {};
     for (int group = 0; group < 4; group++) {
         PH2CLD_Face *faces = g.cld.group_0_faces;
@@ -3481,7 +3505,7 @@ static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                 HMM_Vec3 widget_pos = vertex;
                 float radius = widget_radius(g, offset) / SCALE;
 
-                auto raycast = ray_vs_sphere(ray_pos.XYZ, ray_dir.XYZ, widget_pos, radius);
+                auto raycast = ray_vs_sphere(ray_pos, ray_dir, widget_pos, radius);
                 if (raycast.hit && raycast.t >= 0) {
                     float bias = 0; // @Ugly
                     if ((g.select_cld_group == group) && (g.select_cld_face == face_index)) {
@@ -3515,11 +3539,11 @@ static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
                 HMM_Vec3 a = { face->vertices[0][0], face->vertices[0][1], face->vertices[0][2] };
                 HMM_Vec3 b = { face->vertices[1][0], face->vertices[1][1], face->vertices[1][2] };
                 HMM_Vec3 c = { face->vertices[2][0], face->vertices[2][1], face->vertices[2][2] };
-                auto raycast = ray_vs_triangle(ray_pos.XYZ, ray_dir.XYZ, a, b, c);
+                auto raycast = ray_vs_triangle(ray_pos, ray_dir, a, b, c);
                 if (!raycast.hit) {
                     if (face->quad) {
                         HMM_Vec3 d = { face->vertices[3][0], face->vertices[3][1], face->vertices[3][2] };
-                        raycast = ray_vs_triangle(ray_pos.XYZ, ray_dir.XYZ, a, c, d);
+                        raycast = ray_vs_triangle(ray_pos, ray_dir, a, c, d);
                     }
                 }
                 if (raycast.hit && raycast.t >= 0) {
@@ -3538,9 +3562,42 @@ static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec4 ray_pos, HMM_Vec4 ray_dir) {
     return result;
 }
 
-// static Ray_Vs_World_Result ray_vs_world() {
-// 
-// }
+
+static Ray_Vs_World_Result ray_vs_world(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
+    Ray_Vs_World_Result result = {};
+    {
+        Ray_Vs_MAP_Result raycast = ray_vs_map(g, ray_pos, ray_dir);
+
+        if (raycast.hit && raycast.closest_t < result.closest_t) {
+            result.hit = true;
+            result.closest_t = raycast.closest_t;
+            result.hit_widget_pos = raycast.hit_widget_pos;
+
+            result.cld = {};
+
+            result.map.hit_mesh = raycast.hit_mesh;
+            result.map.hit_vertex_buffer = raycast.hit_vertex_buffer;
+            result.map.hit_face = raycast.hit_face;
+            result.map.hit_vertex = raycast.hit_vertex;
+        }
+    }
+    if (g.cld.valid) {
+        Ray_Vs_CLD_Result raycast = ray_vs_cld(g, ray_pos, ray_dir);
+
+        if (raycast.hit && raycast.closest_t < result.closest_t) {
+            result.hit = true;
+            result.closest_t = raycast.closest_t;
+            result.hit_widget_pos = raycast.hit_widget_pos;
+
+            result.map = {};
+
+            result.cld.hit_group = raycast.hit_group;
+            result.cld.hit_face_index = raycast.hit_face_index;
+            result.cld.hit_vertex = raycast.hit_vertex;
+        }
+    }
+    return result;
+}
 
 static void event(const sapp_event *e_, void *userdata) {
     ProfileFunction();
@@ -3601,136 +3658,8 @@ static void event(const sapp_event *e_, void *userdata) {
     if (e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
         if (e.mouse_button == SAPP_MOUSEBUTTON_LEFT) {
             g.click_ray = screen_to_ray(g, { e.mouse_x, e.mouse_y });
-            const HMM_Vec3 origin = -g.cld_origin();
-            const HMM_Mat4 Tinv = HMM_Translate(-origin);
-            const HMM_Mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
-            const HMM_Mat4 Minv = Tinv * Sinv;
-            const HMM_Vec4 ray_pos = Minv * HMM_Vec4{ g.click_ray.pos.X, g.click_ray.pos.Y, g.click_ray.pos.Z, 1 };
-            const HMM_Vec4 ray_dir = HMM_Norm(Minv * HMM_Vec4{ g.click_ray.dir.X, g.click_ray.dir.Y, g.click_ray.dir.Z, 0 });
-
-            //Log("Pos = %f, %f, %f, %f", ray_pos.X, ray_pos.Y, ray_pos.Z, ray_pos.W);
-            //Log("Dir = %f, %f, %f, %f", ray_dir.X, ray_dir.Y, ray_dir.Z, ray_dir.W);
-
-            struct Ray_Vs_World_Result {
-                bool hit = false;
-
-                float closest_t = INFINITY;
-                HMM_Vec3 hit_widget_pos = {};
-
-                struct {
-                    MAP_Mesh *hit_mesh = nullptr;
-                    int hit_vertex_buffer = -1;
-                    int hit_face = -1;
-                    int hit_vertex = -1;
-                } map;
-
-                struct {
-                    int hit_group = -1;
-                    int hit_face_index = -1;
-                    int hit_vertex = -1;
-                } cld;
-            };
-            Ray_Vs_World_Result result = {};
-
-            result.map = {};
-
-            {
-                Ray_Vs_MAP_Result raycast = ray_vs_map(g, ray_pos, ray_dir);
-
-                if (raycast.hit && raycast.closest_t < result.closest_t) {
-                    result.hit = true;
-                    result.closest_t = raycast.closest_t;
-                    result.hit_widget_pos = raycast.hit_widget_pos;
-
-                    result.cld = {};
-
-                    result.map.hit_mesh = raycast.hit_mesh;
-                    result.map.hit_vertex_buffer = raycast.hit_vertex_buffer;
-                    result.map.hit_face = raycast.hit_face;
-                    result.map.hit_vertex = raycast.hit_vertex;
-                }
-            }
-            if (g.cld.valid) {
-                Ray_Vs_CLD_Result raycast = ray_vs_cld(g, ray_pos, ray_dir);
-
-                if (raycast.hit && raycast.closest_t < result.closest_t) {
-                    result.hit = true;
-                    result.closest_t = raycast.closest_t;
-                    result.hit_widget_pos = raycast.hit_widget_pos;
-
-                    result.map = {};
-
-                    result.cld.hit_group = raycast.hit_group;
-                    result.cld.hit_face_index = raycast.hit_face_index;
-                    result.cld.hit_vertex = raycast.hit_vertex;
-                }
-            }
-
-
-            if (result.hit) {
-                if (result.map.hit_mesh) {
-                    for (MAP_Geometry_Buffer& buf : g.map_buffers) {
-                        buf.selected = (buf.mesh_ptr == result.map.hit_mesh);
-                    }
-
-                    assert(result.map.hit_vertex_buffer >= 0);
-                    assert(result.map.hit_vertex_buffer < 4);
-
-                    if (result.map.hit_vertex >= 0) {
-                        assert(result.map.hit_face < 0);
-
-                        g.widget_original_pos = result.hit_widget_pos;
-                        g.control_state = ControlState::Dragging;
-
-                        Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_vertex);
-                    } else {
-                        assert(result.map.hit_face >= 0);
-
-                        g.control_state = ControlState::Normal;
-
-                        Log("Hit MAP face: Mesh %p, vertex buffer %d, face %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_face);
-                    }
-                } else {
-                    for (MAP_Geometry_Buffer& buf : g.map_buffers) {
-                        buf.selected = false;
-                    }
-
-                    assert(result.cld.hit_group >= 0);
-                    assert(result.cld.hit_group < 4);
-                    assert(result.cld.hit_face_index >= 0);
-                    g.select_cld_group = result.cld.hit_group;
-                    g.select_cld_face = result.cld.hit_face_index;
-                    if (result.cld.hit_vertex == -1) {
-                        g.control_state = ControlState::Normal;
-                        g.drag_cld_group = -1;
-                        g.drag_cld_face = -1;
-                        g.drag_cld_vertex = -1;
-
-                        Log("Hit CLD face: Group %d, Face %d", result.cld.hit_group, result.cld.hit_face_index);
-                    } else {
-                        g.widget_original_pos = result.hit_widget_pos;
-                        assert(result.cld.hit_vertex >= 0);
-                        assert(result.cld.hit_vertex < 4);
-
-                        g.control_state = ControlState::Dragging;
-                        g.drag_cld_group = result.cld.hit_group;
-                        g.drag_cld_face = result.cld.hit_face_index;
-                        g.drag_cld_vertex = result.cld.hit_vertex;
-
-                        Log("Hit CLD vertex: Group %d, Face %d, vertex %d", result.cld.hit_group, result.cld.hit_face_index, result.cld.hit_vertex);
-                    }
-                }
-            } else {
-                g.drag_cld_group = -1;
-                g.drag_cld_face = -1;
-                g.drag_cld_vertex = -1;
-                g.select_cld_group = -1;
-                g.select_cld_face = -1;
-
-                for (MAP_Geometry_Buffer& buf : g.map_buffers) {
-                    buf.selected = false;
-                }
-            }
+            g.clicked = true;
+            g.click_result = {};
         }
         if (e.mouse_button == SAPP_MOUSEBUTTON_RIGHT) {
             g.control_state = ControlState::Orbiting;
@@ -3739,6 +3668,9 @@ static void event(const sapp_event *e_, void *userdata) {
     if (e.type == SAPP_EVENTTYPE_MOUSE_MOVE) {
         g.mouse_x = e.mouse_x;
         g.mouse_y = e.mouse_y;
+
+        g.mouse_ray = screen_to_ray(g, { e.mouse_x, e.mouse_y });
+
         if (g.control_state == ControlState::Orbiting) {
             g.yaw += -e.mouse_dx * 3 * (0.022f * (TAU32 / 360));
             g.pitch += -e.mouse_dy * 3 * (0.022f * (TAU32 / 360));
@@ -7110,6 +7042,88 @@ static void frame(void *userdata) {
         g.view_h = -1;
     }
 
+    {
+        Ray ray = g.clicked ? g.click_ray : g.mouse_ray; // @Yuck
+
+        const HMM_Vec3 origin = -g.cld_origin();
+        const HMM_Mat4 Tinv = HMM_Translate(-origin);
+        const HMM_Mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
+        const HMM_Mat4 Minv = Tinv * Sinv;
+        const HMM_Vec3 ray_pos = (Minv * HMM_Vec4{ ray.pos.X, ray.pos.Y, ray.pos.Z, 1 }).XYZ;
+        const HMM_Vec3 ray_dir = (HMM_Norm(Minv * HMM_Vec4{ ray.dir.X, ray.dir.Y, ray.dir.Z, 0 })).XYZ;
+
+        g.click_result = ray_vs_world(g, ray_pos, ray_dir);
+    }
+    if (g.clicked) {
+        g.clicked = false;
+        auto result = g.click_result;
+
+        if (result.hit) {
+            if (result.map.hit_mesh) {
+                for (MAP_Geometry_Buffer& buf : g.map_buffers) {
+                    buf.selected = (buf.mesh_ptr == result.map.hit_mesh);
+                }
+
+                assert(result.map.hit_vertex_buffer >= 0);
+                assert(result.map.hit_vertex_buffer < 4);
+
+                if (result.map.hit_vertex >= 0) {
+                    assert(result.map.hit_face < 0);
+
+                    g.widget_original_pos = result.hit_widget_pos;
+                    g.control_state = ControlState::Dragging;
+
+                    Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_vertex);
+                } else {
+                    assert(result.map.hit_face >= 0);
+
+                    g.control_state = ControlState::Normal;
+
+                    Log("Hit MAP face: Mesh %p, vertex buffer %d, face %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_face);
+                }
+            } else {
+                for (MAP_Geometry_Buffer& buf : g.map_buffers) {
+                    buf.selected = false;
+                }
+
+                assert(result.cld.hit_group >= 0);
+                assert(result.cld.hit_group < 4);
+                assert(result.cld.hit_face_index >= 0);
+                g.select_cld_group = result.cld.hit_group;
+                g.select_cld_face = result.cld.hit_face_index;
+                if (result.cld.hit_vertex == -1) {
+                    g.control_state = ControlState::Normal;
+                    g.drag_cld_group = -1;
+                    g.drag_cld_face = -1;
+                    g.drag_cld_vertex = -1;
+
+                    Log("Hit CLD face: Group %d, Face %d", result.cld.hit_group, result.cld.hit_face_index);
+                } else {
+                    g.widget_original_pos = result.hit_widget_pos;
+                    assert(result.cld.hit_vertex >= 0);
+                    assert(result.cld.hit_vertex < 4);
+
+                    g.control_state = ControlState::Dragging;
+                    g.drag_cld_group = result.cld.hit_group;
+                    g.drag_cld_face = result.cld.hit_face_index;
+                    g.drag_cld_vertex = result.cld.hit_vertex;
+
+                    Log("Hit CLD vertex: Group %d, Face %d, vertex %d", result.cld.hit_group, result.cld.hit_face_index, result.cld.hit_vertex);
+                }
+            }
+        } else {
+            g.drag_cld_group = -1;
+            g.drag_cld_face = -1;
+            g.drag_cld_vertex = -1;
+            g.select_cld_group = -1;
+            g.select_cld_face = -1;
+
+            for (MAP_Geometry_Buffer& buf : g.map_buffers) {
+                buf.selected = false;
+            }
+        }
+    }
+
     auto make_history_entry = [&] (uint64_t map_hash) -> Map_History_Entry {
         ProfileFunction();
 
@@ -7514,33 +7528,31 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
             const HMM_Mat4 Tinv = HMM_Translate(-origin);
             const HMM_Mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
             const HMM_Mat4 Minv = Tinv * Sinv;
-            const HMM_Vec4 ray_pos = Minv * HMM_Vec4{ mouse_ray.pos.X, mouse_ray.pos.Y, mouse_ray.pos.Z, 1 };
-            const HMM_Vec4 ray_dir = HMM_Norm(Minv * HMM_Vec4{ mouse_ray.dir.X, mouse_ray.dir.Y, mouse_ray.dir.Z, 0 });
+            const HMM_Vec3 ray_pos = (Minv * HMM_Vec4{ mouse_ray.pos.X, mouse_ray.pos.Y, mouse_ray.pos.Z, 1 }).XYZ;
+            const HMM_Vec3 ray_dir = (HMM_Norm(Minv * HMM_Vec4{ mouse_ray.dir.X, mouse_ray.dir.Y, mouse_ray.dir.Z, 0 })).XYZ;
 
-            Ray_Vs_MAP_Result result = ray_vs_map(g, ray_pos, ray_dir);
+            Ray_Vs_World_Result result = g.click_result;
 
-            if (result.hit) {
-                if (result.hit_vertex >= 0) {
+            if (!g.stale() && result.hit && result.map.hit_mesh) {
+                if (result.map.hit_vertex >= 0) {
                     float vertex[3] = { result.hit_widget_pos.X, result.hit_widget_pos.Y, result.hit_widget_pos.Z };
                     draw_highlight_vertex_circle(vertex, 1, 0.7f);
                     // Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.hit_mesh, result.hit_vertex_buffer, result.hit_vertex);
                 } else {
-                    assert(result.hit_face >= 0);
+                    assert(result.map.hit_face >= 0);
 
-                    if (!g.stale()) {
-                        for (auto& buf : g.map_buffers) { // @Lazy
-                            if (buf.mesh_ptr != result.hit_mesh) continue;
+                    for (auto& buf : g.map_buffers) { // @Lazy
+                        if (buf.mesh_ptr != result.map.hit_mesh) continue;
 
-                            float (&a)[3] = *(float (*)[3])&buf.vertices.data[buf.indices.data[result.hit_face * 3 + 0]];
-                            float (&b)[3] = *(float (*)[3])&buf.vertices.data[buf.indices.data[result.hit_face * 3 + 1]];
-                            float (&c)[3] = *(float (*)[3])&buf.vertices.data[buf.indices.data[result.hit_face * 3 + 2]];
+                        float (&a)[3] = *(float (*)[3])&buf.vertices.data[buf.indices.data[result.map.hit_face * 3 + 0]];
+                        float (&b)[3] = *(float (*)[3])&buf.vertices.data[buf.indices.data[result.map.hit_face * 3 + 1]];
+                        float (&c)[3] = *(float (*)[3])&buf.vertices.data[buf.indices.data[result.map.hit_face * 3 + 2]];
 
-                            draw_highlight_vertex_circle(a, 0.5f, 0.75f);
-                            draw_highlight_vertex_circle(b, 0.5f, 0.75f);
-                            draw_highlight_vertex_circle(c, 0.5f, 0.75f);
+                        draw_highlight_vertex_circle(a, 0.5f, 0.75f);
+                        draw_highlight_vertex_circle(b, 0.5f, 0.75f);
+                        draw_highlight_vertex_circle(c, 0.5f, 0.75f);
 
-                            break;
-                        }
+                        break;
                     }
                 }
             }
