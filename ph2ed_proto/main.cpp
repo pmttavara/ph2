@@ -3404,6 +3404,8 @@ struct Ray_Vs_MAP_Result {
 static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
     ProfileFunction();
 
+    assert(!g.stale());
+
     Ray_Vs_MAP_Result result = {};
     HMM_Vec4 cam_forward = { 0, 0, -1, 0 };
     {
@@ -3480,6 +3482,9 @@ struct Ray_Vs_CLD_Result {
 };
 static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
     Ray_Vs_CLD_Result result = {};
+
+    assert(!g.stale());
+
     for (int group = 0; group < 4; group++) {
         PH2CLD_Face *faces = g.cld.group_0_faces;
         size_t num_faces = g.cld.group_0_faces_count;
@@ -7147,7 +7152,8 @@ static void frame(void *userdata) {
         g.view_h = -1;
     }
 
-    if (g.control_state != ControlState::Dragging) {
+    g.click_result = {};
+    if (!g.stale() && g.control_state != ControlState::Dragging) {
         Ray ray = g.clicked ? g.click_ray : g.mouse_ray; // @Yuck
 
         const HMM_Vec3 origin = -g.cld_origin();
@@ -7159,16 +7165,32 @@ static void frame(void *userdata) {
 
         g.click_result = ray_vs_world(g, ray_pos, ray_dir);
     }
-    if (g.control_state != ControlState::Dragging && g.clicked) {
+    if (!g.stale() && g.control_state != ControlState::Dragging && g.clicked) {
         g.clicked = false;
         auto result = g.click_result;
 
+        g.control_state = ControlState::Normal;
+        if (!result.hit || result.map.hit_vertex < 0) {
+            g.drag_map_mesh = nullptr;
+            g.drag_map_buffer = -1;
+            g.drag_map_vertex = -1;
+            for (MAP_Geometry_Buffer& buf : g.map_buffers) {
+                buf.selected = false;
+            }
+        }
+
+        if (!result.hit || result.cld.hit_vertex < 0) {
+            g.drag_cld_group = -1;
+            g.drag_cld_face = -1;
+            g.drag_cld_vertex = -1;
+        }
+        if (!result.hit || result.cld.hit_face_index < 0) {
+            g.select_cld_group = -1;
+            g.select_cld_face = -1;
+        }
+
         if (result.hit) {
             if (result.map.hit_mesh) {
-                for (MAP_Geometry_Buffer& buf : g.map_buffers) {
-                    buf.selected = (buf.mesh_ptr == result.map.hit_mesh);
-                }
-
                 assert(result.map.hit_vertex_buffer >= 0);
                 assert(result.map.hit_vertex_buffer < 4);
 
@@ -7185,10 +7207,11 @@ static void frame(void *userdata) {
                 } else {
                     assert(result.map.hit_face >= 0);
 
-                    g.control_state = ControlState::Normal;
-                    g.drag_map_mesh = nullptr;
-                    g.drag_map_buffer = -1;
-                    g.drag_map_vertex = -1;
+                    for (MAP_Geometry_Buffer& buf : g.map_buffers) {
+                        if (buf.mesh_ptr == result.map.hit_mesh) {
+                            buf.selected = true;
+                        }
+                    }
 
                     Log("Hit MAP face: Mesh %p, vertex buffer %d, face %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_face);
                 }
@@ -7202,16 +7225,9 @@ static void frame(void *userdata) {
                 assert(result.cld.hit_face_index >= 0);
                 g.select_cld_group = result.cld.hit_group;
                 g.select_cld_face = result.cld.hit_face_index;
-                if (result.cld.hit_vertex == -1) {
-                    g.control_state = ControlState::Normal;
-                    g.drag_cld_group = -1;
-                    g.drag_cld_face = -1;
-                    g.drag_cld_vertex = -1;
 
-                    Log("Hit CLD face: Group %d, Face %d", result.cld.hit_group, result.cld.hit_face_index);
-                } else {
+                if (result.cld.hit_vertex >= 0) {
                     g.widget_original_pos = result.hit_widget_pos;
-                    assert(result.cld.hit_vertex >= 0);
                     assert(result.cld.hit_vertex < 4);
 
                     g.control_state = ControlState::Dragging;
@@ -7221,20 +7237,6 @@ static void frame(void *userdata) {
 
                     Log("Hit CLD vertex: Group %d, Face %d, vertex %d", result.cld.hit_group, result.cld.hit_face_index, result.cld.hit_vertex);
                 }
-            }
-        } else {
-            g.drag_map_mesh = nullptr;
-            g.drag_map_buffer = -1;
-            g.drag_map_vertex = -1;
-
-            g.drag_cld_group = -1;
-            g.drag_cld_face = -1;
-            g.drag_cld_vertex = -1;
-            g.select_cld_group = -1;
-            g.select_cld_face = -1;
-
-            for (MAP_Geometry_Buffer& buf : g.map_buffers) {
-                buf.selected = false;
             }
         }
     }
