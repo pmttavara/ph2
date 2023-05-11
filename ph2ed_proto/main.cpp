@@ -4525,10 +4525,42 @@ static void frame(void *userdata) {
         ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 250.0f);
         ImGui::Text("%.2f MB head, %.2f MB used", The_Arena_Allocator::arena_head / (1024.0 * 1024.0), The_Arena_Allocator::bytes_used / (1024.0 * 1024.0));
     }
+
+    bool do_control_o_load = false;
     if (g.control_state != ControlState::Normal); // drop CTRL-S etc when orbiting/dragging
     else if (g.control_o) {
+        bool has_unsaved_changes = true;
+        if (has_unsaved_changes) {
+            ImGui::OpenPopup("Open File - Unsaved Changes");
+        } else {
+            do_control_o_load = true;
+        }
+    } else if (g.control_shift_s) {
+        requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
+                                                               "All Files\0" "*.*\0",
+                                                              L"Save MAP", false);
+    } else if (g.control_s) {
+        requested_save_filename = strdup(g.opened_map_filename);
+    }
+    if (ImGui::BeginPopupModal("Open File - Unsaved Changes")) {
+        ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
+        if (ImGui::Button("Save")) {
+            // @Todo: save
+            // @Todo: do_control_o_load = true;
+        }
+        ImGui::SameLine(); if (ImGui::Button("Don't Save")) {
+            do_control_o_load = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine(); if (ImGui::Button("Cancel")) {
+            ImGui::CloseCurrentPopup();
+        }   
+        ImGui::EndPopup();
+    }
+
+    if (do_control_o_load) {
         char *load = win_import_or_export_dialog(L"Silent Hill 2 Files (*.map; *.cld)\0" "*.map;*.cld;*.map.bak\0",
-                                                 L"Open", true);
+                                                    L"Open", true);
         defer {
             free(load);
         };
@@ -4551,12 +4583,6 @@ static void frame(void *userdata) {
                 }
             }
         }
-    } else if (g.control_shift_s) {
-        requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
-                                                               "All Files\0" "*.*\0",
-                                                              L"Save MAP", false);
-    } else if (g.control_s) {
-        requested_save_filename = strdup(g.opened_map_filename);
     }
     // God, this is dumb. Lol. But it works!!!
     g.control_s = false;
