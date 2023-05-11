@@ -13,16 +13,16 @@
 int num_array_resizes = 0;
 
 // Path to MVP:
+// - MAP mesh vertex dragging
+// - MAP mesh vertex snapping
+// - Better move UX
+
+// FINISHED on Path to MVP:
 // - MAP mesh vertex snapping
 //      - cast triangles
 //      - optimize
 //      - BVH
-//      - dragging
-//      - snapping
-
-// FINISHED on Path to MVP:
 // - Multimesh movement/deleting/editing
-// - Better move UX
 // - OBJ export
 // - Undo/redo
 // - If I save and reload a map with a custom texture, it's moshed - OMG!!!
@@ -3664,7 +3664,7 @@ static void event(const sapp_event *e_, void *userdata) {
             return;
         }
     }
-    if (e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
+    if (g.control_state == ControlState::Normal && e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
         if (e.mouse_button == SAPP_MOUSEBUTTON_LEFT) {
             g.click_ray = screen_to_ray(g, { e.mouse_x, e.mouse_y });
             g.clicked = true;
@@ -3736,6 +3736,8 @@ static void event(const sapp_event *e_, void *userdata) {
                         HMM_Vec3 target = raycast.point - drag_offset;
                         if (e.modifiers & SAPP_MODIFIER_ALT) {
 
+                            float distsq_min = INFINITY;
+
                             // for (auto &geo : g.geometries)
                             {
 
@@ -3772,8 +3774,10 @@ static void event(const sapp_event *e_, void *userdata) {
                                                 (vertex->Y - target.Y) * (vertex->Y - target.Y) +
                                                 (vertex->Z - target.Z) * (vertex->Z - target.Z);
                                             if (distsq < 150 * 150) {
-                                                target = *vertex;
-                                                break;
+                                                if (distsq_min > distsq) {
+                                                    distsq_min = distsq;
+                                                    target = *vertex;
+                                                }
                                             }
                                         }
                                     }
@@ -3845,6 +3849,7 @@ static void event(const sapp_event *e_, void *userdata) {
                         HMM_Vec3 drag_offset = click_raycast.point - g.widget_original_pos;
                         HMM_Vec3 target = raycast.point - drag_offset;
                         if (e.modifiers & SAPP_MODIFIER_ALT) {
+                            float dist_min = INFINITY;
                             for (int group = 0; group < 4; group++) {
                                 PH2CLD_Face *faces = g.cld.group_0_faces;
                                 size_t num_faces = g.cld.group_0_faces_count;
@@ -3869,8 +3874,10 @@ static void event(const sapp_event *e_, void *userdata) {
                                         HMM_Vec3 disp = vertex - target;
                                         float dist = HMM_Len(disp);
                                         if (dist < 150) {
-                                            target = vertex;
-                                            break;
+                                            if (dist_min > dist) {
+                                                dist_min = dist;
+                                                target = vertex;
+                                            }
                                         }
                                     }
                                 }
@@ -3913,7 +3920,7 @@ static void event(const sapp_event *e_, void *userdata) {
     if (g.pitch < -TAU32 / 4) {
         g.pitch = -TAU32 / 4;
     }
-    if (e.type == SAPP_EVENTTYPE_MOUSE_SCROLL) {
+    if (g.control_state == ControlState::Orbiting && e.type == SAPP_EVENTTYPE_MOUSE_SCROLL) {
         HMM_Vec4 translate = { 0, 0, -e.scroll_y * 0.1f, 0 };
         g.scroll_speed_timer = 0.5f;
         g.scroll_speed += 0.5f;
@@ -4564,7 +4571,7 @@ static void frame(void *userdata) {
         g.scroll_speed_timer = 0;
         g.scroll_speed = 0;
     }
-    if (g.control_state == ControlState::Orbiting || g.control_state == ControlState::Dragging) {
+    if (g.control_state == ControlState::Orbiting) {
         float rightwards = ((float)KEY('D') - (float)KEY('A')) * dt;
         float forwards   = ((float)KEY('S') - (float)KEY('W')) * dt;
         HMM_Vec4 translate = {rightwards, 0, forwards, 0};
