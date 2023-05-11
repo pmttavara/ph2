@@ -928,6 +928,10 @@ struct G : Map {
     int drag_cld_face = -1;
     int drag_cld_vertex = -1;
 
+    MAP_Mesh *drag_map_mesh = nullptr;
+    int drag_map_buffer = -1;
+    int drag_map_vertex = -1;
+
     PH2CLD_Collision_Data cld = {};
     HMM_Vec3 cld_origin() {
         return {}; // HMM_Vec3 { cld.origin[0], 0, cld.origin[1] };
@@ -972,7 +976,7 @@ struct G : Map {
     }
     void staleify_map() {
         map_must_update = true;
-        map_buffers_count = 0;
+        // map_buffers_count = 0;
     }
     bool stale() {
         return cld_must_update || map_must_update;
@@ -3676,16 +3680,117 @@ static void event(const sapp_event *e_, void *userdata) {
             g.pitch += -e.mouse_dy * 3 * (0.022f * (TAU32 / 360));
         }
         if (g.control_state == ControlState::Dragging) {
+            
+            if (g.drag_map_mesh && g.drag_map_buffer >= 0 && g.drag_map_vertex >= 0) {
+                HMM_Vec2 prev_mouse_pos = { e.mouse_x - e.mouse_dx, e.mouse_y - e.mouse_dy };
+                HMM_Vec2 this_mouse_pos = { e.mouse_x, e.mouse_y };
+                
+                MAP_Mesh &mesh = *g.drag_map_mesh;
+                MAP_Mesh_Vertex_Buffer &buf = mesh.vertex_buffers[g.drag_map_buffer];
+
+                auto &vertex_floats = *(float (*)[3])&buf.data[buf.bytes_per_vertex * g.drag_map_vertex];
+                HMM_Vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+                
+                HMM_Mat4 Minv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
+
+                HMM_Vec3 offset = vertex;
+                offset.X *= SCALE;
+                offset.Y *= -SCALE;
+                offset.Z *= -SCALE;
+
+                HMM_Vec3 widget_pos = vertex;
+
+                {
+                    Ray click_ray = g.click_ray;
+                    Ray this_ray = screen_to_ray(g, this_mouse_pos);
+                    HMM_Vec4 click_ray_pos = { 0, 0, 0, 1 };
+                    click_ray_pos.XYZ = click_ray.pos;
+                    HMM_Vec4 click_ray_dir = {};
+                    click_ray_dir.XYZ = click_ray.dir;
+                    HMM_Vec4 this_ray_pos = { 0, 0, 0, 1 };
+                    this_ray_pos.XYZ = this_ray.pos;
+                    HMM_Vec4 this_ray_dir = {};
+                    this_ray_dir.XYZ = this_ray.dir;
+
+                    click_ray_pos = Minv * click_ray_pos;
+                    click_ray_dir = HMM_Norm(Minv * click_ray_dir);
+
+                    this_ray_pos = Minv * this_ray_pos;
+                    this_ray_dir = HMM_Norm(Minv * this_ray_dir);
+
+                    bool aligned_with_camera = true;
+                    if (aligned_with_camera) {
+                        // Remember you gotta put the plane in the coordinate space of the map file!
+                        HMM_Vec3 plane_normal = ((Minv * camera_rot(g)) * HMM_Vec4 { 0, 0, -1, 0 }).XYZ;
+                        auto click_raycast = ray_vs_plane(click_ray_pos.XYZ, click_ray_dir.XYZ, widget_pos, plane_normal);
+                        auto raycast = ray_vs_plane(this_ray_pos.XYZ, this_ray_dir.XYZ, widget_pos, plane_normal);
+
+                        assert(click_raycast.hit); // How could it not hit if it's aligned to the camera?
+                        assert(raycast.hit);
+                        HMM_Vec3 drag_offset = click_raycast.point - g.widget_original_pos;
+                        HMM_Vec3 target = raycast.point - drag_offset;
+                        if (e.modifiers & SAPP_MODIFIER_ALT) {
+
+                            // for (auto &geo : g.geometries)
+                            {
+
+                                // LinkedList<MAP_Mesh, The_Arena_Allocator> *lists[3] = { &geo.opaque_meshes, &geo.transparent_meshes, &geo.decal_meshes };
+
+                                for (MAP_Geometry_Buffer &buf : g.map_buffers) {
+                                    // if (&buf - g.map_buffers >= g.map_buffers_count) {
+                                    //     break;
+                                    // }
+                                    // if (!buf.shown) continue;
+
+                                    if (!buf.mesh_ptr) continue;
+
+                                    auto &other_mesh = *buf.mesh_ptr;
+
+                                    for (int vertex_buffer_index = 0;
+                                        vertex_buffer_index < other_mesh.vertex_buffers.count;
+                                        ++vertex_buffer_index) {
+                                        auto &vbuf = other_mesh.vertex_buffers[vertex_buffer_index];
+
+                                        for (int vertex_index = 0;
+                                            vertex_index < vbuf.num_vertices;
+                                            ++vertex_index) {
+                                            if (&other_mesh == g.drag_map_mesh &&
+                                                g.drag_map_buffer == vertex_buffer_index &&
+                                                g.drag_map_vertex == vertex_index) {
+                                                continue;
+                                            }
+
+                                            HMM_Vec3 *vertex = (HMM_Vec3 *)&vbuf.data.data[vbuf.bytes_per_vertex * vertex_index];
+
+                                            float distsq =
+                                                (vertex->X - target.X) * (vertex->X - target.X) +
+                                                (vertex->Y - target.Y) * (vertex->Y - target.Y) +
+                                                (vertex->Z - target.Z) * (vertex->Z - target.Z);
+                                            if (distsq < 150 * 150) {
+                                                target = *vertex;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        vertex_floats[0] = target.X;
+                        vertex_floats[1] = target.Y;
+                        vertex_floats[2] = target.Z;
+                        g.staleify_map();
+                    }
+                }
+            }
 
             if (g.cld.valid && g.drag_cld_face >= 0 && g.drag_cld_group >= 0 && g.drag_cld_vertex >= 0) {
                 HMM_Vec2 prev_mouse_pos = { e.mouse_x - e.mouse_dx, e.mouse_y - e.mouse_dy };
                 HMM_Vec2 this_mouse_pos = { e.mouse_x, e.mouse_y };
                 
                 PH2CLD_Face *faces = g.cld.group_0_faces;
-                size_t num_faces = g.cld.group_0_faces_count;
-                if (g.drag_cld_group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
-                if (g.drag_cld_group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
-                if (g.drag_cld_group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
+                if (g.drag_cld_group == 1) { faces = g.cld.group_1_faces; }
+                if (g.drag_cld_group == 2) { faces = g.cld.group_2_faces; }
+                if (g.drag_cld_group == 3) { faces = g.cld.group_3_faces; }
 
                 PH2CLD_Face *face = &faces[g.drag_cld_face];
                 
@@ -5719,7 +5824,7 @@ static void frame(void *userdata) {
             };
 
             int i = 0;
-            ImGui::BeginDisabled(g.stale());
+            ImGui::BeginDisabled(g.stale() || g.control_state == ControlState::Dragging);
             defer { ImGui::EndDisabled(); };
             for (auto& geo : g.geometries) {
                 defer { i++; };
@@ -7042,7 +7147,7 @@ static void frame(void *userdata) {
         g.view_h = -1;
     }
 
-    {
+    if (g.control_state != ControlState::Dragging) {
         Ray ray = g.clicked ? g.click_ray : g.mouse_ray; // @Yuck
 
         const HMM_Vec3 origin = -g.cld_origin();
@@ -7054,7 +7159,7 @@ static void frame(void *userdata) {
 
         g.click_result = ray_vs_world(g, ray_pos, ray_dir);
     }
-    if (g.clicked) {
+    if (g.control_state != ControlState::Dragging && g.clicked) {
         g.clicked = false;
         auto result = g.click_result;
 
@@ -7072,12 +7177,18 @@ static void frame(void *userdata) {
 
                     g.widget_original_pos = result.hit_widget_pos;
                     g.control_state = ControlState::Dragging;
+                    g.drag_map_mesh = result.map.hit_mesh;
+                    g.drag_map_buffer = result.map.hit_vertex_buffer;
+                    g.drag_map_vertex = result.map.hit_vertex;
 
                     Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_vertex);
                 } else {
                     assert(result.map.hit_face >= 0);
 
                     g.control_state = ControlState::Normal;
+                    g.drag_map_mesh = nullptr;
+                    g.drag_map_buffer = -1;
+                    g.drag_map_vertex = -1;
 
                     Log("Hit MAP face: Mesh %p, vertex buffer %d, face %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_face);
                 }
@@ -7112,6 +7223,10 @@ static void frame(void *userdata) {
                 }
             }
         } else {
+            g.drag_map_mesh = nullptr;
+            g.drag_map_buffer = -1;
+            g.drag_map_vertex = -1;
+
             g.drag_cld_group = -1;
             g.drag_cld_face = -1;
             g.drag_cld_vertex = -1;
@@ -7151,7 +7266,9 @@ static void frame(void *userdata) {
 
     uint64_t map_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
     if (g.undo_stack.count < 1 ||
-        (!ImGui::GetIO().WantCaptureKeyboard && map_hash != g.undo_stack[g.undo_stack.count - 1].hash)) {
+        (g.control_state != ControlState::Dragging &&
+         !ImGui::GetIO().WantCaptureKeyboard &&
+         map_hash != g.undo_stack[g.undo_stack.count - 1].hash)) {
         Log("Undo/redo frame! Hash: %llu", map_hash);
 
         g.undo_stack.push(make_history_entry(map_hash));
