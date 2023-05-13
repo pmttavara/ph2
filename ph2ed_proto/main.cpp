@@ -895,6 +895,12 @@ struct G : Map {
     bool show_console = true;
     bool show_edit_widget = true;
 
+    bool flip_y_on_import = false;
+    bool flip_z_on_import = false;
+
+    bool flip_y_on_export = false;
+    bool flip_z_on_export = false;
+
     float view_x = 0; // in PIXELS!
     float view_y = 0;
     float view_w = 1;
@@ -4437,6 +4443,8 @@ static void frame(void *userdata) {
         free(obj_export_name);
     };
 
+    bool start_import_obj_model_popup = false;
+    bool start_export_selected_as_obj_popup = false;
     if (ImGui::BeginMainMenuBar()) {
         defer { ImGui::EndMainMenuBar(); };
         if (ImGui::BeginMenu("File")) {
@@ -4453,9 +4461,7 @@ static void frame(void *userdata) {
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Import OBJ Model...")) {
-                obj_file_buf = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
-                                                            "All Files\0" "*.*\0",
-                                                           L"Open OBJ", true);
+                start_import_obj_model_popup = true;
             }
             if (ImGui::MenuItem("Import DDS Texture...")) {
                 dds_file_buf = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds\0"
@@ -4472,9 +4478,7 @@ static void frame(void *userdata) {
                 }
             }
             if (ImGui::MenuItem("Export Selected as OBJ...", nullptr, nullptr, any_selected)) {
-                obj_export_name = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
-                                                               "All Files\0" "*.*\0",
-                                                              L"Save OBJ", false);
+                start_export_selected_as_obj_popup = true;
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
@@ -4542,7 +4546,8 @@ static void frame(void *userdata) {
     } else if (g.control_s) {
         requested_save_filename = strdup(g.opened_map_filename);
     }
-    if (ImGui::BeginPopupModal("Open File - Unsaved Changes")) {
+    bool asdfasdfasfdasfasdfasdfasdfasdfasdfasdfasdfsadfasdf = true;
+    if (ImGui::BeginPopupModal("Open File - Unsaved Changes", &asdfasdfasfdasfasdfasdfasdfasdfasdfasdfasdfsadfasdf)) {
         ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
         if (ImGui::Button("Save")) {
             // @Todo: save
@@ -4554,9 +4559,48 @@ static void frame(void *userdata) {
         }
         ImGui::SameLine(); if (ImGui::Button("Cancel")) {
             ImGui::CloseCurrentPopup();
-        }   
+        }
         ImGui::EndPopup();
     }
+    if (start_import_obj_model_popup) {
+        ImGui::OpenPopup("OBJ Import Options");
+    }
+    if (ImGui::BeginPopupModal("OBJ Import Options", &asdfasdfasfdasfasdfasdfasdfasdfasdfasdfasdfsadfasdf)) {
+        ImGui::Checkbox("Flip Y on Import", &g.flip_y_on_import);
+        ImGui::SameLine(); ImGui::Checkbox("Flip Z on Import", &g.flip_z_on_import);
+        if (ImGui::Button("Open...")) {
+            obj_file_buf = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
+                                                        "All Files\0" "*.*\0",
+                                                        L"Open OBJ", true);
+            if (obj_file_buf) {
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::SameLine(); if (ImGui::Button("Cancel")) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if (start_export_selected_as_obj_popup) {
+        ImGui::OpenPopup("OBJ Export Options");
+    }
+    if (ImGui::BeginPopupModal("OBJ Export Options", &asdfasdfasfdasfasdfasdfasdfasdfasdfasdfasdfsadfasdf)) {
+        ImGui::Checkbox("Flip Y on Export", &g.flip_y_on_export);
+        ImGui::SameLine(); ImGui::Checkbox("Flip Z on Export", &g.flip_z_on_export);
+        if (ImGui::Button("Save...")) {
+            obj_export_name = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
+                                                           "All Files\0" "*.*\0",
+                                                          L"Save OBJ", false);
+            if (obj_export_name) {
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::SameLine(); if (ImGui::Button("Cancel")) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
 
     if (do_control_o_load) {
         char *load = win_import_or_export_dialog(L"Silent Hill 2 Files (*.map; *.cld)\0" "*.map;*.cld;*.map.bak\0",
@@ -4642,6 +4686,8 @@ static void frame(void *userdata) {
                 Array<uint32_t> obj_colours = {}; defer { obj_colours.release(); };
 
                 bool should_import_colours = true;
+                float y_flipper = g.flip_y_on_import ? -1.0f : +1.0f;
+                float z_flipper = g.flip_z_on_import ? -1.0f : +1.0f;
 
                 Array<PH2MAP__Vertex24> materialless_unstripped_verts = {}; defer { materialless_unstripped_verts.release(); };
                 Array<MAP_OBJ_Import_Material> import_materials = {};
@@ -4774,8 +4820,8 @@ static void frame(void *userdata) {
                         // Log("Position: (%s, %s, %s)", args[0], args[1], args[2]);
                         auto &pos = *obj_positions.push();
                         pos.X = (float)atof(args[0]);
-                        pos.Y = (float)atof(args[1]);
-                        pos.Z = (float)atof(args[2]);
+                        pos.Y = (float)atof(args[1]) * y_flipper;
+                        pos.Z = (float)atof(args[2]) * z_flipper;
                         HMM_Vec4 colour = {1, 1, 1, 1};
                         if (matches == 7) {
                             colour.Z = (float)atof(args[3]);
@@ -4807,8 +4853,8 @@ static void frame(void *userdata) {
                         // Log("Normal: (%s, %s, %s)", args[0], args[1], args[2]);
                         auto &normal = *obj_normals.push();
                         normal.X = (float)atof(args[0]);
-                        normal.Y = (float)atof(args[1]);
-                        normal.Z = (float)atof(args[2]);
+                        normal.Y = (float)atof(args[1]) * y_flipper;
+                        normal.Z = (float)atof(args[2]) * z_flipper;
                     } else if (strcmp("f", directive) == 0) {
                         assert(obj_positions.count <= obj_colours.count);
                         // Triangle/Quad
@@ -4861,19 +4907,19 @@ static void frame(void *userdata) {
                             PH2MAP__Vertex24 vert_a = verts_to_push[a];
                             PH2MAP__Vertex24 vert_b = verts_to_push[b];
                             PH2MAP__Vertex24 vert_c = verts_to_push[c];
-                            // Infer face winding by comparing cross product to normal
-                            HMM_Vec3 v0 = { vert_a.position[0], vert_a.position[1], vert_a.position[2] };
-                            HMM_Vec3 v1 = { vert_b.position[0], vert_b.position[1], vert_b.position[2] };
-                            HMM_Vec3 v2 = { vert_c.position[0], vert_c.position[1], vert_c.position[2] };
+                            // // Infer face winding by comparing cross product to normal
+                            // HMM_Vec3 v0 = { vert_a.position[0], vert_a.position[1], vert_a.position[2] };
+                            // HMM_Vec3 v1 = { vert_b.position[0], vert_b.position[1], vert_b.position[2] };
+                            // HMM_Vec3 v2 = { vert_c.position[0], vert_c.position[1], vert_c.position[2] };
 
-                            HMM_Vec3 n0 = { vert_a.normal[0], vert_a.normal[1], vert_a.normal[2] };
-                            HMM_Vec3 n1 = { vert_b.normal[0], vert_b.normal[1], vert_b.normal[2] };
-                            HMM_Vec3 n2 = { vert_c.normal[0], vert_c.normal[1], vert_c.normal[2] };
+                            // HMM_Vec3 n0 = { vert_a.normal[0], vert_a.normal[1], vert_a.normal[2] };
+                            // HMM_Vec3 n1 = { vert_b.normal[0], vert_b.normal[1], vert_b.normal[2] };
+                            // HMM_Vec3 n2 = { vert_c.normal[0], vert_c.normal[1], vert_c.normal[2] };
 
-                            HMM_Vec3 wound_normal = HMM_Cross((v1 - v0), (v2 - v0));
-                            HMM_Vec3 given_normal = HMM_Norm(n0 + n1 + n2);
+                            // HMM_Vec3 wound_normal = HMM_Cross((v1 - v0), (v2 - v0));
+                            // HMM_Vec3 given_normal = HMM_Norm(n0 + n1 + n2);
 
-                            float dot = HMM_Dot(wound_normal, given_normal);
+                            // float dot = HMM_Dot(wound_normal, given_normal);
 
                             // bool is_wound_right = (dot >= 0);
                             // if (is_wound_right) {
@@ -5431,6 +5477,20 @@ static void frame(void *userdata) {
         ImGui::EndTooltip();
     };
 
+    auto deselect_all_buffers_and_check_for_multi_select = [&] (auto &&check) -> bool {
+        bool was_multi = false;
+        for (auto &b : g.map_buffers) {
+            if (&b - g.map_buffers >= g.map_buffers_count) {
+                break;
+            }
+            was_multi |= check(b);
+        }
+
+        for (auto &b : g.map_buffers) b.selected = false;
+
+        return was_multi;
+    };
+
     if (g.show_editor) {
         ImGui::Begin("Editor", &g.show_editor, ImGuiWindowFlags_NoCollapse);
         defer {
@@ -5658,20 +5718,6 @@ static void frame(void *userdata) {
                         break;
                     }
                 }
-            };
-
-            auto deselect_all_buffers_and_check_for_multi_select = [&] (auto &&check) -> bool {
-                bool was_multi = false;
-                for (auto &b : g.map_buffers) {
-                    if (&b - g.map_buffers >= g.map_buffers_count) {
-                        break;
-                    }
-                    was_multi |= check(b);
-                }
-
-                for (auto &b : g.map_buffers) b.selected = false;
-
-                return was_multi;
             };
 
             auto map_buffer_ui = [&] (MAP_Geometry_Buffer &buf) {
@@ -7203,14 +7249,42 @@ static void frame(void *userdata) {
         auto result = g.click_result;
 
         g.control_state = ControlState::Normal;
+
         if (!result.hit || result.map.hit_vertex < 0) {
+            // Hit no MAP vertex; stop dragging
             g.drag_map_mesh = nullptr;
             g.drag_map_buffer = -1;
             g.drag_map_vertex = -1;
-            for (MAP_Geometry_Buffer& buf : g.map_buffers) {
-                buf.selected = false;
+        }
+        if (!result.hit || !result.map.hit_mesh) {
+            // Hit no MAP mesh; deselect everything
+            for (MAP_Geometry_Buffer &b : g.map_buffers) {
+                b.selected = false;
             }
         }
+        if (result.hit && result.map.hit_mesh && result.map.hit_vertex < 0) {
+            // Hit a MAP triangle; standard multi-selection stuff
+            bool orig = false;
+            for (MAP_Geometry_Buffer &b : g.map_buffers) {
+                if (b.mesh_ptr == result.map.hit_mesh) {
+                    orig = b.selected;
+                }
+            }
+            bool was_multi = false;
+            if (!ImGui::GetIO().KeyShift) {
+                was_multi = deselect_all_buffers_and_check_for_multi_select([&](MAP_Geometry_Buffer &b) -> bool {
+                    bool inside = (b.mesh_ptr == result.map.hit_mesh);
+                    return (!inside && b.selected);
+                });
+            }
+            bool selected = was_multi || !orig;
+            for (MAP_Geometry_Buffer &buf : g.map_buffers) {
+                if (buf.mesh_ptr == result.map.hit_mesh) {
+                    buf.selected = selected;
+                }
+            }
+        }
+
 
         if (!result.hit || result.cld.hit_vertex < 0) {
             g.drag_cld_group = -1;
@@ -7240,19 +7314,9 @@ static void frame(void *userdata) {
                 } else {
                     assert(result.map.hit_face >= 0);
 
-                    for (MAP_Geometry_Buffer& buf : g.map_buffers) {
-                        if (buf.mesh_ptr == result.map.hit_mesh) {
-                            buf.selected = true;
-                        }
-                    }
-
                     Log("Hit MAP face: Mesh %p, vertex buffer %d, face %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_face);
                 }
             } else {
-                for (MAP_Geometry_Buffer& buf : g.map_buffers) {
-                    buf.selected = false;
-                }
-
                 assert(result.cld.hit_group >= 0);
                 assert(result.cld.hit_group < 4);
                 assert(result.cld.hit_face_index >= 0);
@@ -7690,7 +7754,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                     float vertex[3] = { result.hit_widget_pos.X, result.hit_widget_pos.Y, result.hit_widget_pos.Z };
                     draw_highlight_vertex_circle(vertex, 1, 0.7f);
                     // Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.hit_mesh, result.hit_vertex_buffer, result.hit_vertex);
-                } else {
+                } else if (0) {
                     assert(result.map.hit_face >= 0);
 
                     for (auto& buf : g.map_buffers) { // @Lazy
