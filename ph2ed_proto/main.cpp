@@ -1044,6 +1044,16 @@ struct G : Map {
         *this = {};
     }
 };
+
+static bool cld_face_visible(G &g, PH2CLD_Face *face) {
+    for (int subgroup = 0; subgroup < 16; subgroup++) {
+        if ((face->subgroups & (1 << subgroup)) && g.subgroup_visible[subgroup]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void cld_upload(G &g) {
     ProfileFunction();
 
@@ -1074,15 +1084,10 @@ static void cld_upload(G &g) {
         auto end = floats + max_floats;
         for (size_t i = 0; i < num_faces; i++) {
             PH2CLD_Face face = faces[i];
-            bool skip_face = false;
-            for (int subgroup = 0; subgroup < 16; subgroup++) {
-                if ((face.subgroups & (1 << subgroup)) && !g.subgroup_visible[subgroup]) {
-                    skip_face = true;
-                }
-            }
-            if (skip_face) {
+            if (!cld_face_visible(g, &face)) {
                 continue;
             }
+
             auto push_vertex = [&] (float (&vertex)[3]) {
                 *write_pointer++ = vertex[0];
                 *write_pointer++ = vertex[1];
@@ -1107,16 +1112,21 @@ static void cld_upload(G &g) {
         assert(g.cld_face_buffers[group].num_vertices % 3 == 0);
     }
 }
+static void cld_unload(G &g) {
+    ProfileFunction();
+
+    PH2CLD_free_collision_data(g.cld);
+    g.cld = {};
+}
 static void cld_load(G &g, const char *filename) {
     ProfileFunction();
 
     Log("CLD filename is \"%s\"", filename);
-    PH2CLD_free_collision_data(g.cld);
+    cld_unload(g);
     g.cld = PH2CLD_get_collision_data_from_file(filename);
     if (!g.cld.valid) {
         LogErr("Failed loading CLD file \"%s\"!", filename);
     }
-    cld_upload(g);
     g.staleify_cld();
 }
 #define Read(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(&(x), ptr, sizeof(x)) && (ptr += sizeof(x)))
@@ -2296,7 +2306,9 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         filename = absolute_filename; // Sometimes @Leak of old filename? Don't care tbh
     }
 
+    cld_unload(g);
     map_unload(g, is_non_numbered_dependency);
+    g.staleify_cld();
 
     if (!is_non_numbered_dependency) { // Semi-garbage code.
         auto non_numbered = get_non_numbered_dependency_filename(filename);
@@ -3488,6 +3500,7 @@ struct Ray_Vs_CLD_Result {
     int hit_vertex = -1;
     HMM_Vec3 hit_widget_pos = {};
 };
+
 static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
     Ray_Vs_CLD_Result result = {};
 
@@ -3501,6 +3514,10 @@ static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
         if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
         for (int face_index = 0; face_index < num_faces; face_index++) {
             PH2CLD_Face *face = &faces[face_index];
+            if (!cld_face_visible(g, face)) {
+                continue;
+            }
+
             int vertices_to_raycast = 3;
             if (face->quad) {
                 vertices_to_raycast = 4;
@@ -3548,6 +3565,10 @@ static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
         if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
         for (int face_index = 0; face_index < num_faces; face_index++) {
             PH2CLD_Face *face = &faces[face_index];
+            if (!cld_face_visible(g, face)) {
+                continue;
+            }
+
             int vertices_to_raycast = 3;
             if (face->quad) {
                 vertices_to_raycast = 4;
@@ -5649,38 +5670,37 @@ static void frame(void *userdata) {
         }
         if (ImGui::CollapsingHeader("CLD Subgroups", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::PushID("CLD Subgroup Visibility Buttons");
-            ImGui::Indent();
             defer {
-                ImGui::Unindent();
                 ImGui::PopID();
             };
             bool all_subgroups_on = true;
             for (int i = 0; i < 16; i++) {
-                if (i) ImGui::SameLine();
-                ImGui::PushID(i);
-                if (ImGui::Checkbox("###CLD Subgroup Visible", &g.subgroup_visible[i])) {
-                    g.staleify_cld();
-                }
                 if (!g.subgroup_visible[i]) {
                     all_subgroups_on = false;
                 }
-                ImGui::PopID();
             }
-            ImGui::SameLine();
             if (!all_subgroups_on) {
-                if (ImGui::Button("All")) {
+                if (ImGui::Button("Show All")) {
                     for (int i = 0; i < 16; i++) {
                         g.subgroup_visible[i] = true;
                     }
                     g.staleify_cld();
                 }
             } else {
-                if (ImGui::Button("None")) {
+                if (ImGui::Button("Hide All")) {
                     for (int i = 0; i < 16; i++) {
                         g.subgroup_visible[i] = false;
                     }
                     g.staleify_cld();
                 }
+            }
+            for (int i = 0; i < 16; i++) {
+                if (i) ImGui::SameLine();
+                ImGui::PushID(i);
+                if (ImGui::Checkbox("###CLD Subgroup Visible", &g.subgroup_visible[i])) {
+                    g.staleify_cld();
+                }
+                ImGui::PopID();
             }
         }
         ImGui::Separator();
@@ -6243,6 +6263,11 @@ static void frame(void *userdata) {
 
                 face = &faces[g.select_cld_face];
                 is_quad = face->quad;
+
+                if (!cld_face_visible(g, face)) {
+                    g.select_cld_group = -1;
+                    g.select_cld_face = -1;
+                }
             }
             {
                 if (!face) {
