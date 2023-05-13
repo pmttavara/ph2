@@ -3262,14 +3262,17 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
     }
     {
         sg_buffer_desc d = {};
-        size_t MAP_MAX_VERTICES_PER_GEOMETRY = 320000;
-        size_t MAP_BUFFER_SIZE = MAP_MAX_VERTICES_PER_GEOMETRY * sizeof(MAP_Geometry_Vertex);
+        size_t MAP_MAX_VERTICES_PER_MESH = 65536 * 4; // 64K in each vertex section
+        size_t MAP_MAX_INDICES_PER_MESH = 100000; // empirical max in stock maps was ~72000 iirc
+        size_t VERTEX_BUFFER_SIZE = MAP_MAX_VERTICES_PER_MESH * sizeof(MAP_Geometry_Vertex);
+        size_t INDEX_BUFFER_SIZE = MAP_MAX_INDICES_PER_MESH * sizeof(uint32_t);
         d.usage = SG_USAGE_DYNAMIC;
-        d.size = MAP_BUFFER_SIZE;
         for (auto &buffer : g.map_buffers) {
             d.type = SG_BUFFERTYPE_VERTEXBUFFER;
+            d.size = VERTEX_BUFFER_SIZE;
             buffer.vertex_buffer = sg_make_buffer(d);
             d.type = SG_BUFFERTYPE_INDEXBUFFER;
+            d.size = INDEX_BUFFER_SIZE;
             buffer.index_buffer = sg_make_buffer(d);
         }
     }
