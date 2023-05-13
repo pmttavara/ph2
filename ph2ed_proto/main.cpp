@@ -4423,6 +4423,22 @@ static void frame(void *userdata) {
         g.dt_history[sapp_frame_count() % countof(g.dt_history)] = dt;
     }
     simgui_new_frame({ sapp_width(), sapp_height(), dt, sapp_dpi_scale() });
+
+    g.click_result = {};
+    if (!g.stale() && g.control_state != ControlState::Dragging) {
+        Ray ray = g.clicked ? g.click_ray : g.mouse_ray; // @Yuck
+
+        const HMM_Vec3 origin = -g.cld_origin();
+        const HMM_Mat4 Tinv = HMM_Translate(-origin);
+        const HMM_Mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
+        const HMM_Mat4 Minv = Tinv * Sinv;
+        const HMM_Vec3 ray_pos = (Minv * HMM_Vec4{ ray.pos.X, ray.pos.Y, ray.pos.Z, 1 }).XYZ;
+        const HMM_Vec3 ray_dir = (HMM_Norm(Minv * HMM_Vec4{ ray.dir.X, ray.dir.Y, ray.dir.Z, 0 })).XYZ;
+
+        g.click_result = ray_vs_world(g, ray_pos, ray_dir);
+    }
+
+
     char *obj_file_buf = nullptr;
     defer {
         free(obj_file_buf);
@@ -5979,6 +5995,18 @@ static void frame(void *userdata) {
                 bool bogged = is_geo_bogged(g, geo, &bogged_reason, &bogged_reason_n);
                 ImGui::PushStyleColor(ImGuiCol_Text, bogged ? bogged_flash_colour(g) : ImGui::GetStyle().Colors[ImGuiCol_Text]);
 
+                if (g.clicked && g.click_result.hit && g.click_result.map.hit_mesh) {
+                    for (MAP_Geometry_Buffer &b : g.map_buffers) {
+                        if (b.mesh_ptr == g.click_result.map.hit_mesh) {
+                            if (!b.selected) {
+                                if (b.geometry_ptr == &geo) {
+                                    ImGui::SetNextItemOpen(true);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
                 ImGui::SameLine(); bool ret = /*empty ? (ImGui::Text(b), false) : */ImGui::TreeNodeEx(b, flags);
                 defer { if (ret) ImGui::TreePop(); };
 
@@ -7231,19 +7259,6 @@ static void frame(void *userdata) {
         g.view_h = -1;
     }
 
-    g.click_result = {};
-    if (!g.stale() && g.control_state != ControlState::Dragging) {
-        Ray ray = g.clicked ? g.click_ray : g.mouse_ray; // @Yuck
-
-        const HMM_Vec3 origin = -g.cld_origin();
-        const HMM_Mat4 Tinv = HMM_Translate(-origin);
-        const HMM_Mat4 Sinv = HMM_Scale( { 1 / SCALE, 1 / -SCALE, 1 / -SCALE });
-        const HMM_Mat4 Minv = Tinv * Sinv;
-        const HMM_Vec3 ray_pos = (Minv * HMM_Vec4{ ray.pos.X, ray.pos.Y, ray.pos.Z, 1 }).XYZ;
-        const HMM_Vec3 ray_dir = (HMM_Norm(Minv * HMM_Vec4{ ray.dir.X, ray.dir.Y, ray.dir.Z, 0 })).XYZ;
-
-        g.click_result = ray_vs_world(g, ray_pos, ray_dir);
-    }
     if (!g.stale() && g.control_state != ControlState::Dragging && g.clicked) {
         g.clicked = false;
         auto result = g.click_result;
