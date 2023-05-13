@@ -895,9 +895,11 @@ struct G : Map {
     bool show_console = true;
     bool show_edit_widget = true;
 
+    bool flip_x_on_import = false;
     bool flip_y_on_import = false;
     bool flip_z_on_import = false;
 
+    bool flip_x_on_export = false;
     bool flip_y_on_export = false;
     bool flip_z_on_export = false;
 
@@ -4562,8 +4564,8 @@ static void frame(void *userdata) {
     } else if (g.control_s) {
         requested_save_filename = strdup(g.opened_map_filename);
     }
-    bool asdfasdfasfdasfasdfasdfasdfasdfasdfasdfasdfsadfasdf = true;
-    if (ImGui::BeginPopupModal("Open File - Unsaved Changes", &asdfasdfasfdasfasdfasdfasdfasdfasdfasdfasdfsadfasdf)) {
+    bool dummy_popup_bool = true;
+    if (ImGui::BeginPopupModal("Open File - Unsaved Changes", &dummy_popup_bool)) {
         ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
         if (ImGui::Button("Save")) {
             // @Todo: save
@@ -4581,9 +4583,10 @@ static void frame(void *userdata) {
     if (start_import_obj_model_popup) {
         ImGui::OpenPopup("OBJ Import Options");
     }
-    if (ImGui::BeginPopupModal("OBJ Import Options", &asdfasdfasfdasfasdfasdfasdfasdfasdfasdfasdfsadfasdf)) {
+    if (ImGui::BeginPopupModal("OBJ Import Options", &dummy_popup_bool)) {
+        ImGui::Checkbox("Flip X on Import", &g.flip_x_on_import);
         ImGui::Checkbox("Flip Y on Import", &g.flip_y_on_import);
-        ImGui::SameLine(); ImGui::Checkbox("Flip Z on Import", &g.flip_z_on_import);
+        ImGui::Checkbox("Flip Z on Import", &g.flip_z_on_import);
         if (ImGui::Button("Open...")) {
             obj_file_buf = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                         "All Files\0" "*.*\0",
@@ -4600,9 +4603,10 @@ static void frame(void *userdata) {
     if (start_export_selected_as_obj_popup) {
         ImGui::OpenPopup("OBJ Export Options");
     }
-    if (ImGui::BeginPopupModal("OBJ Export Options", &asdfasdfasfdasfasdfasdfasdfasdfasdfasdfasdfsadfasdf)) {
+    if (ImGui::BeginPopupModal("OBJ Export Options", &dummy_popup_bool)) {
+        ImGui::Checkbox("Flip X on Import", &g.flip_x_on_export);
         ImGui::Checkbox("Flip Y on Export", &g.flip_y_on_export);
-        ImGui::SameLine(); ImGui::Checkbox("Flip Z on Export", &g.flip_z_on_export);
+        ImGui::Checkbox("Flip Z on Export", &g.flip_z_on_export);
         if (ImGui::Button("Save...")) {
             obj_export_name = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                            "All Files\0" "*.*\0",
@@ -4702,6 +4706,7 @@ static void frame(void *userdata) {
                 Array<uint32_t> obj_colours = {}; defer { obj_colours.release(); };
 
                 bool should_import_colours = true;
+                float x_flipper = g.flip_x_on_import ? -1.0f : +1.0f;
                 float y_flipper = g.flip_y_on_import ? -1.0f : +1.0f;
                 float z_flipper = g.flip_z_on_import ? -1.0f : +1.0f;
 
@@ -4835,7 +4840,7 @@ static void frame(void *userdata) {
                         assert(matches == 4 || matches == 7);
                         // Log("Position: (%s, %s, %s)", args[0], args[1], args[2]);
                         auto &pos = *obj_positions.push();
-                        pos.X = (float)atof(args[0]);
+                        pos.X = (float)atof(args[0]) * x_flipper;
                         pos.Y = (float)atof(args[1]) * y_flipper;
                         pos.Z = (float)atof(args[2]) * z_flipper;
                         HMM_Vec4 colour = {1, 1, 1, 1};
@@ -4868,7 +4873,7 @@ static void frame(void *userdata) {
                         assert(matches == 4);
                         // Log("Normal: (%s, %s, %s)", args[0], args[1], args[2]);
                         auto &normal = *obj_normals.push();
-                        normal.X = (float)atof(args[0]);
+                        normal.X = (float)atof(args[0]) * x_flipper;
                         normal.Y = (float)atof(args[1]) * y_flipper;
                         normal.Z = (float)atof(args[2]) * z_flipper;
                     } else if (strcmp("f", directive) == 0) {
@@ -5235,14 +5240,17 @@ static void frame(void *userdata) {
             vertices_per_selected_buffer.release();
         };
 
+        float x_flipper = g.flip_x_on_export ? -1.0f : +1.0f;
+        float y_flipper = g.flip_y_on_export ? -1.0f : +1.0f;
+        float z_flipper = g.flip_z_on_export ? -1.0f : +1.0f;
         for (auto &buf : g.map_buffers) {
             if (!buf.selected || &buf - g.map_buffers >= g.map_buffers_count) continue;
             vertices_per_selected_buffer.push((int)buf.vertices.count);
             for (auto &v : buf.vertices) {
                 auto c = PH2MAP_u32_to_bgra(v.color);
-                fprintf(obj, "v %f %f %f %f %f %f\n", v.position[0], v.position[1], v.position[2], c.Z, c.Y, c.X);
+                fprintf(obj, "v %f %f %f %f %f %f\n", v.position[0] * x_flipper, v.position[1] * y_flipper, v.position[2] * z_flipper, c.Z, c.Y, c.X);
                 fprintf(obj, "vt %f %f\n", v.uv[0], 1 - v.uv[1]); // @Note: gotta flip from D3D convention to OpenGL convention so Blender import works. (@Todo: Is this actually true?)
-                fprintf(obj, "vn %f %f %f\n", v.normal[0], v.normal[1], v.normal[2]);
+                fprintf(obj, "vn %f %f %f\n", v.normal[0] * x_flipper, v.normal[1] * y_flipper, v.normal[2] * z_flipper);
             }
         }
         fprintf(obj, "\n");
