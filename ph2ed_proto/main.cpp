@@ -5308,6 +5308,8 @@ static void frame(void *userdata) {
         int textures_referenced = 0;
         int unique_textures_referenced = 0;
 
+        fprintf(obj, "o PH2MAP_object\n");
+
         int index_base = 0;
         int selected_buffer_index = 0;
         for (MAP_Geometry_Buffer &buf : g.map_buffers) {
@@ -5351,11 +5353,11 @@ static void frame(void *userdata) {
                 else if (buf.source == MAP_Geometry_Buffer_Source::Transparent) { source = "Transparent"; }
                 else if (buf.source == MAP_Geometry_Buffer_Source::Decal) { source = "Decal"; }
 
-                fprintf(obj, "o Geometry_%d_%s_Mesh_%d\n", geo_index, source, mesh_index);
+                // fprintf(obj, "o Geometry_%d_%s_Mesh_%d\n", geo_index, source, mesh_index);
                 int indices_start = 0;
                 int mesh_part_group_index = 0;
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
-                    fprintf(obj, " g Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
+                    fprintf(obj, " g Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d PH2MAP_group\n", geo_index, source, mesh_index, mesh_part_group_index);
 
                     int mat_index = mpg.material_index;
 
