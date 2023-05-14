@@ -2471,7 +2471,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
                         static bool specularities[301];
                         if (!specularities[(int)material.specularity]) {
                             specularities[(int)material.specularity] = true;
-                            Log("Specularity %f", material.specularity);
+                            // Log("Specularity %f", material.specularity);
                         }
 
                         if (material.mode == 0) { // 0 - Emissive
@@ -7363,11 +7363,11 @@ static void frame(void *userdata) {
                     g.drag_map_buffer = result.map.hit_vertex_buffer;
                     g.drag_map_vertex = result.map.hit_vertex;
 
-                    Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_vertex);
+                    // Log("Hit MAP vertex: Mesh %p, vertex buffer %d, vertex %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_vertex);
                 } else {
                     assert(result.map.hit_face >= 0);
 
-                    Log("Hit MAP face: Mesh %p, vertex buffer %d, face %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_face);
+                    // Log("Hit MAP face: Mesh %p, vertex buffer %d, face %d", result.map.hit_mesh, result.map.hit_vertex_buffer, result.map.hit_face);
                 }
             } else {
                 assert(result.cld.hit_group >= 0);
@@ -7385,7 +7385,7 @@ static void frame(void *userdata) {
                     g.drag_cld_face = result.cld.hit_face_index;
                     g.drag_cld_vertex = result.cld.hit_vertex;
 
-                    Log("Hit CLD vertex: Group %d, Face %d, vertex %d", result.cld.hit_group, result.cld.hit_face_index, result.cld.hit_vertex);
+                    // Log("Hit CLD vertex: Group %d, Face %d, vertex %d", result.cld.hit_group, result.cld.hit_face_index, result.cld.hit_vertex);
                 }
             }
         }
