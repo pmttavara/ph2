@@ -5662,9 +5662,9 @@ static void frame(void *userdata) {
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
                     if (first_group) {
                         first_group = false;
-                        fprintf(obj, "g PH2MAP_object:Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d PH2MAP_group\n", geo_index, source, mesh_index, mesh_part_group_index);
+                        fprintf(obj, "g master_group1:Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d group1\n", geo_index, source, mesh_index, mesh_part_group_index);
                     } else {
-                        fprintf(obj, "g PH2MAP_group PH2MAP_object:Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
+                        fprintf(obj, "g group1 master_group1:Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
                     }
 
                     int mat_index = mpg.material_index;
@@ -6027,15 +6027,7 @@ static void frame(void *userdata) {
         ImGui::Separator();
 #endif
         if (ImGui::CollapsingHeader("MAP Geometries", ImGuiTreeNodeFlags_DefaultOpen)) {
-            bool disabled = (g.map_buffers_count <= 0);
-            if (disabled) {
-                ImGui::BeginDisabled();
-            }
-            defer {
-                if (disabled) {
-                    ImGui::EndDisabled();
-                }
-            };
+            ImGui::BeginDisabled(g.map_buffers_count <= 0);
             bool all_buffers_shown = g.map_buffers_count > 0;
             bool all_buffers_selected = g.map_buffers_count > 0;
             for (int i = 0; i < g.map_buffers_count; i++) {
@@ -6067,6 +6059,7 @@ static void frame(void *userdata) {
                 g.select_cld_face = -1;
                 g.overall_center_needs_recalc = true; // @Note: Bleh.
             }
+            ImGui::EndDisabled();
 
             auto visit_mesh_buffer = [&] (MAP_Mesh &mesh, auto &&lambda) -> void {
                 for (auto &b : g.map_buffers) {
