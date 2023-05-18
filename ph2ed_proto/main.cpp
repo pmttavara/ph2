@@ -21,6 +21,7 @@ int num_array_resizes = 0;
 //      - optimize
 //      - BVH
 // - Multimesh movement/deleting/editing
+// - Mesh Management (Rearranging meshes)
 // - OBJ export
 // - Undo/redo
 // - Better move UX
@@ -6322,7 +6323,7 @@ static void frame(void *userdata) {
                     ImGui::EndDisabled();
                 }
 
-                char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d)", i, geo.id);
+                char b[512]; snprintf(b, sizeof b, "Geo #%d (ID %d)###Geo", i, geo.id);
                 ImGui::SameLine();
                 auto flags = ImGuiTreeNodeFlags_OpenOnArrow |
                     ImGuiTreeNodeFlags_OpenOnDoubleClick |
@@ -6388,16 +6389,54 @@ static void frame(void *userdata) {
                     g.overall_center_needs_recalc = true; // @Note: Bleh.
                 }
                 {
+                    auto prev = geo.prev;
+                    auto next = geo.next;
+
                     ImGui::SameLine();
-                    // ImGui::BeginDisabled(empty);
-                    if (ImGui::SmallButton("Delete") /*&& empty*/) {
+                    ImGui::BeginDisabled(prev == g.geometries.sentinel);
+                    bool go_up = ImGui::SmallButton("^");
+                    ImGui::EndDisabled();
+
+                    if (go_up) {
+                        g.geometries.remove_ordered(&geo);
+                        node_insert_before(prev, &geo);
+                        for (auto &buf : g.map_buffers) {
+                            buf.selected = false;
+                        }
+                        g.overall_center_needs_recalc = true; // @Note: Bleh.
+                        break;
+                    }
+
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(next == g.geometries.sentinel);
+                    bool go_down = ImGui::SmallButton("v");
+                    ImGui::EndDisabled();
+
+                    if (go_down) {
+                        g.geometries.remove_ordered(&geo);
+                        node_insert_after(next, &geo);
+                        for (auto &buf : g.map_buffers) {
+                            buf.selected = false;
+                        }
+                        g.overall_center_needs_recalc = true; // @Note: Bleh.
+                        break;
+                    }
+
+                    ImGui::SameLine(); if (ImGui::SmallButton("Delete")) {
                         g.geometries.remove_ordered(&geo);
                         geo.release();
                         break;
                     }
-                    // ImGui::EndDisabled();
                 }
                 if (!ret) { continue; }
+
+                {
+                    int id = geo.id;
+                    ImGui::InputInt("ID", &id);
+                    geo.id = id;
+                }
+
+                bool break_all = false;
 
                 for (auto &meshes : the_mesh_arrays) {
                     ImGui::PushID(meshes);
@@ -6506,6 +6545,46 @@ static void frame(void *userdata) {
                             }
                             node_insert_before(meshes->sentinel, mesh);
                         };
+                        {
+                            auto prev = mesh.prev;
+                            auto next = mesh.next;
+
+                            ImGui::SameLine();
+                            ImGui::BeginDisabled(prev == meshes->sentinel);
+                            bool go_up = ImGui::SmallButton("^");
+                            ImGui::EndDisabled();
+
+                            if (go_up) {
+                                meshes->remove_ordered(&mesh);
+                                node_insert_before(prev, &mesh);
+                                for (auto &buf : g.map_buffers) {
+                                    buf.selected = false;
+                                }
+                                g.overall_center_needs_recalc = true; // @Note: Bleh.
+                                break;
+                            }
+
+                            ImGui::SameLine();
+                            ImGui::BeginDisabled(next == meshes->sentinel);
+                            bool go_down = ImGui::SmallButton("v");
+                            ImGui::EndDisabled();
+
+                            if (go_down) {
+                                meshes->remove_ordered(&mesh);
+                                node_insert_after(next, &mesh);
+                                for (auto &buf : g.map_buffers) {
+                                    buf.selected = false;
+                                }
+                                g.overall_center_needs_recalc = true; // @Note: Bleh.
+                                break;
+                            }
+
+                            ImGui::SameLine(); if (ImGui::SmallButton("Delete")) {
+                                meshes->remove_ordered(&mesh);
+                                mesh.release();
+                                break;
+                            }
+                        }
                         if (meshes == &geo.opaque_meshes) {
                             ImGui::SameLine(); if (ImGui::SmallButton("-> Transparent")) {
                                 meshes->remove_ordered(&mesh);
@@ -6542,6 +6621,42 @@ static void frame(void *userdata) {
                                 break;
                             }
                         }
+                        {
+                            auto prev = (MAP_Geometry *)geo.prev;
+                            auto next = (MAP_Geometry *)geo.next;
+
+                            ImGui::SameLine();
+                            ImGui::BeginDisabled(prev == g.geometries.sentinel);
+                            bool up = ImGui::SmallButton("^ Geo");
+                            ImGui::EndDisabled();
+
+                            if (up) {
+                                meshes->remove_ordered(&mesh);
+                                auto other_geo = prev;
+                                auto other_meshes = &other_geo->opaque_meshes;
+                                if (meshes == &geo.transparent_meshes) other_meshes = &other_geo->transparent_meshes;
+                                if (meshes == &geo.decal_meshes) other_meshes = &other_geo->decal_meshes;
+                                add_to(other_meshes, &mesh);
+                                break_all = true;
+                                break;
+                            }
+
+                            ImGui::SameLine();
+                            ImGui::BeginDisabled(next == g.geometries.sentinel);
+                            bool down = ImGui::SmallButton("v Geo");
+                            ImGui::EndDisabled();
+
+                            if (down) {
+                                meshes->remove_ordered(&mesh);
+                                auto other_geo = next;
+                                auto other_meshes = &other_geo->opaque_meshes;
+                                if (meshes == &geo.transparent_meshes) other_meshes = &other_geo->transparent_meshes;
+                                if (meshes == &geo.decal_meshes) other_meshes = &other_geo->decal_meshes;
+                                add_to(other_meshes, &mesh);
+                                break_all = true;
+                                break;
+                            }
+                        }
 
                         if (!ret) { continue; }
 
@@ -6555,6 +6670,11 @@ static void frame(void *userdata) {
                             map_buffer_ui(b);
                         });
                     }
+                }
+
+                if (break_all) {
+                    g.map_buffers_count = 0; // @Hack, lol.
+                    break;
                 }
             }
         }
