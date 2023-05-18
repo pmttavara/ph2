@@ -13,11 +13,9 @@
 int num_array_resizes = 0;
 
 // Path to MVP:
-// - MAP mesh vertex dragging
-// - MAP mesh vertex snapping
-// - Better move UX
 
 // FINISHED on Path to MVP:
+// - MAP mesh vertex dragging
 // - MAP mesh vertex snapping
 //      - cast triangles
 //      - optimize
@@ -25,6 +23,7 @@ int num_array_resizes = 0;
 // - Multimesh movement/deleting/editing
 // - OBJ export
 // - Undo/redo
+// - Better move UX
 // - If I save and reload a map with a custom texture, it's moshed - OMG!!!
 //    -> Specific to when I edited and re-saved the DDS from Paint.NET. Punt!
 //    -> Fixed!
@@ -908,6 +907,8 @@ struct G : Map {
     bool flip_x_on_export = false;
     bool flip_y_on_export = false;
     bool flip_z_on_export = false;
+
+    bool export_materials = true;
 
     float view_x = 0; // in PIXELS!
     float view_y = 0;
@@ -4913,6 +4914,7 @@ static void frame(void *userdata) {
         ImGui::Checkbox("Flip X on Import", &g.flip_x_on_export);
         ImGui::Checkbox("Flip Y on Export", &g.flip_y_on_export);
         ImGui::Checkbox("Flip Z on Export", &g.flip_z_on_export);
+        ImGui::Checkbox("Export Materials/Textures", &g.export_materials);
         if (ImGui::Button("Save...")) {
             obj_export_name = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                            "All Files\0" "*.*\0",
@@ -5519,19 +5521,25 @@ static void frame(void *userdata) {
         defer {
             fclose(obj);
         };
-        FILE *mtl = PH2CLD__fopen(mtl_export_name, "w");
-        if (!mtl) {
-            MsgErr("OBJ Export Error", "Couldn't open file \"%s\"!!", mtl_export_name);
-            return;
+        auto mtl_out = [&](auto &&... args) { if (g.export_materials) fprintf(args...); };
+        FILE *mtl = nullptr;
+        if (g.export_materials) {
+            mtl = PH2CLD__fopen(mtl_export_name, "w");
+            if (!mtl) {
+                MsgErr("OBJ Export Error", "Couldn't open file \"%s\"!!", mtl_export_name);
+                return;
+            }
         }
         defer {
-            fclose(mtl);
+            if (mtl) {
+                fclose(mtl);
+            }
         };
 
         fprintf(obj, "# .MAP mesh export from Psilent pHill 2 Editor (" URL ")\n");
-        fprintf(mtl, "# .MAP mesh export from Psilent pHill 2 Editor (" URL ")\n");
+        mtl_out(mtl, "# .MAP mesh export from Psilent pHill 2 Editor (" URL ")\n");
         fprintf(obj, "# Exported from filename: %s\n", g.opened_map_filename);
-        fprintf(mtl, "# Exported from filename: %s\n", g.opened_map_filename);
+        mtl_out(mtl, "# Exported from filename: %s\n", g.opened_map_filename);
         char time_buf[sizeof("YYYY-MM-DD HH:MM:SS UTC")];
         {
             time_t t = time(nullptr);
@@ -5539,11 +5547,11 @@ static void frame(void *userdata) {
             assert(result);
         }
         fprintf(obj, "# Exported at %s\n", time_buf);
-        fprintf(mtl, "# Exported at %s\n", time_buf);
+        mtl_out(mtl, "# Exported at %s\n", time_buf);
 
         fprintf(obj, "\n");
-        fprintf(obj, "mtllib %s\n", mtl_export_name);
-        fprintf(obj, "\n");
+        mtl_out(obj, "mtllib %s\n", mtl_export_name);
+        mtl_out(obj, "\n");
 
         Array<int> vertices_per_selected_buffer = {};
         defer {
@@ -5645,9 +5653,9 @@ static void frame(void *userdata) {
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
                     if (first_group) {
                         first_group = false;
-                        fprintf(obj, " g PH2MAP_object:Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d PH2MAP_group\n", geo_index, source, mesh_index, mesh_part_group_index);
+                        fprintf(obj, "g PH2MAP_object:Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d PH2MAP_group\n", geo_index, source, mesh_index, mesh_part_group_index);
                     } else {
-                        fprintf(obj, " g PH2MAP_group PH2MAP_object:Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
+                        fprintf(obj, "g PH2MAP_group PH2MAP_object:Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
                     }
 
                     int mat_index = mpg.material_index;
@@ -5668,7 +5676,7 @@ static void frame(void *userdata) {
                                 assert(map_tex->texture_ptr);
                             }
 
-                            fprintf(obj, "  usemtl PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2\n",
+                            mtl_out(obj, "usemtl PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2\n",
                                     (((uint16_t)mat_index) & 0xFFFF),
                                     (((uint8_t)mat.mode) & 0xF),
                                     (((uint32_t)mat.diffuse_color) & 0xFFFFFFFF),
@@ -5678,10 +5686,10 @@ static void frame(void *userdata) {
                                     (((uint8_t)!!(map_tex && map_tex->texture_ptr)) & 0xF),
                                     (((uint8_t)(map_tex ? map_tex->texture_ptr->material : 0)) & 0xF));
                         } else {
-                            fprintf(obj, "  # Note: This mesh part group referenced a material that couldn't be found in the file's material list at the time (index was %d, but there were only %d materials).\n", mat_index, materials_count);
+                            mtl_out(obj, "# Note: This mesh part group referenced a material that couldn't be found in the file's material list at the time (index was %d, but there were only %d materials).\n", mat_index, materials_count);
                         }
                     } else {
-                        fprintf(obj, "  # Note: This mesh part group tried to reference a material that is out of bounds (index was %d, minimum is 0, maximum is 65535).\n", mat_index);
+                        mtl_out(obj, "# Note: This mesh part group tried to reference a material that is out of bounds (index was %d, minimum is 0, maximum is 65535).\n", mat_index);
                     }
                     defer { mesh_part_group_index++; };
                     int num_indices = buf.vertices_per_mesh_part_group[mesh_part_group_index];
@@ -5690,19 +5698,18 @@ static void frame(void *userdata) {
                         int a = index_base + buf.indices[indices_start + i] + 1;
                         int b = index_base + buf.indices[indices_start + i + 1] + 1;
                         int c = index_base + buf.indices[indices_start + i + 2] + 1;
-                        fprintf(obj, "  f %d/%d/%d %d/%d/%d %d/%d/%d\n", a, a, a, b, b, b, c, c, c);
+                        fprintf(obj, "f %d/%d/%d %d/%d/%d %d/%d/%d\n", a, a, a, b, b, b, c, c, c);
                     }
                     indices_start += num_indices;
                     fprintf(obj, "\n");
                 }
-                fprintf(obj, "\n");
 
                 index_base += vertices_per_selected_buffer[selected_buffer_index];
             }
         }
 
-        fprintf(mtl, "# Used with file: %s\n", obj_export_name);
-        fprintf(mtl, "\n");
+        mtl_out(mtl, "# Used with file: %s\n", obj_export_name);
+        mtl_out(mtl, "\n");
 
         int mat_index = 0;
         for (MAP_Material &mat : g.materials) {
@@ -5731,14 +5738,16 @@ static void frame(void *userdata) {
                     texture_id_touched[tex->id] = true;
                     unique_textures_referenced++;
 
-                    bool export_success = export_dds(*tex, tex_export_name);
-                    if (!export_success) {
-                        return;
+                    if (g.export_materials) {
+                        bool export_success = export_dds(*tex, tex_export_name);
+                        if (!export_success) {
+                            return;
+                        }
                     }
                 }
             }
 
-            fprintf(mtl, "newmtl PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2\n",
+            mtl_out(mtl, "newmtl PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2\n",
                     (((uint16_t)mat_index) & 0xFFFF),
                     (((uint8_t)mat.mode) & 0xF),
                     (((uint32_t)mat.diffuse_color) & 0xFFFFFFFF),
@@ -5747,36 +5756,38 @@ static void frame(void *userdata) {
                     (((uint16_t)mat.texture_id) & 0xFFFF),
                     (((uint8_t)!!(map_tex && map_tex->texture_ptr)) & 0xF),
                     (((uint8_t)(map_tex ? map_tex->texture_ptr->material : 0)) & 0xF));
-            fprintf(mtl, "  Ka 0.0 0.0 0.0\n");
+            mtl_out(mtl, "  Ka 0.0 0.0 0.0\n");
             {
                 auto c = PH2MAP_u32_to_bgra(mat.diffuse_color);
-                fprintf(mtl, "  Kd %f %f %f\n", c.Z, c.Y, c.X);
+                mtl_out(mtl, "  Kd %f %f %f\n", c.Z, c.Y, c.X);
             }
             {
                 auto c = PH2MAP_u32_to_bgra(mat.specular_color);
                 float spec_intensity = mat.specularity / 50.0f; // @Todo: ????????????
                 c *= spec_intensity;
-                fprintf(mtl, "  Ks %f %f %f\n", c.Z, c.Y, c.X);
+                mtl_out(mtl, "  Ks %f %f %f\n", c.Z, c.Y, c.X);
             }
             // fprintf(mtl, "  d 1.0\n");
 
             if (map_tex) {
-                fprintf(mtl, "  map_Kd %s\n", tex_export_name);
+                mtl_out(mtl, "  map_Kd %s\n", tex_export_name);
                 assert(map_tex->texture_ptr);
                 if (map_tex->texture_ptr->format != MAP_Texture_Format_BC1) {
-                    fprintf(mtl, "  map_d -imfchan m %s\n", tex_export_name);
+                    mtl_out(mtl, "  map_d -imfchan m %s\n", tex_export_name);
                 }
             } else {
-                fprintf(mtl, "  # Note: This material references a texture that couldn't be found in the file's texture list at the time (Texture ID was %d).\n", mat.texture_id);
+                mtl_out(mtl, "  # Note: This material references a texture that couldn't be found in the file's texture list at the time (Texture ID was %d).\n", mat.texture_id);
             }
 
-            fprintf(mtl, "\n");
+            mtl_out(mtl, "\n");
         }
 
         assert(mat_index == materials_count); // Ensure we checked all materials.
 
-        Log("Material deduplicator: %d unique materials referenced out of %d total.", unique_materials_referenced, materials_referenced);
-        Log("Texture deduplicator: %d unique textures referenced out of %d total.", unique_textures_referenced, textures_referenced);
+        if (g.export_materials) {
+            Log("Material deduplicator: %d unique materials referenced out of %d total.", unique_materials_referenced, materials_referenced);
+            Log("Texture deduplicator: %d unique textures referenced out of %d total.", unique_textures_referenced, textures_referenced);
+        }
 
         MsgInfo("OBJ Export", "Exported!");
     };
@@ -5965,7 +5976,7 @@ static void frame(void *userdata) {
                 }
             }
         }
-        if (ImGui::CollapsingHeader("CLD Subgroups", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if ((0, 0) && ImGui::CollapsingHeader("CLD Subgroups", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::PushID("CLD Subgroup Visibility Buttons");
             defer {
                 ImGui::PopID();
@@ -5999,8 +6010,8 @@ static void frame(void *userdata) {
                 }
                 ImGui::PopID();
             }
+            ImGui::Separator();
         }
-        ImGui::Separator();
 #ifndef NDEBUG
         ImGui::Text("%lld undo frames", g.undo_stack.count);
         ImGui::Text("%lld redo frames", g.redo_stack.count);
