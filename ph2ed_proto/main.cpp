@@ -4043,11 +4043,20 @@ bool is_mesh_part_group_bogged(G &g, MAP_Geometry_Buffer_Source source, MAP_Mesh
     if (section.bytes_per_vertex == 0x20) { vertex_format = "XNU";  modes = "1, 2, or 6"; }
     if (section.bytes_per_vertex == 0x24) { vertex_format = "XNCU"; modes = "4"; }
 
+    const char *required_format = "<unknown>";
+    if (material->mode == 0) { required_format = "XU"; }
+    if (material->mode == 1) { required_format = "XNU"; }
+    if (material->mode == 2) { required_format = "XNU"; }
+    if (material->mode == 3) { required_format = "XCU"; }
+    if (material->mode == 4) { required_format = "XNCU"; }
+    if (material->mode == 6) { required_format = "XNU"; }
+
     *reason_n += snprintf(*reason + *reason_n, sizeof(*reason) - *reason_n,
-                          "%s #%d group %d: %s vertices use mode %s. Material %d has mode %d.\n",
+                          "%s #%d group %d: %s vertices use mode %s. Material %d has mode %d, which uses %s format.\n",
                           source_str, mesh_index, mpg_index,
                           vertex_format, modes,
-                          (int)mesh_part_group.material_index, (int)material->mode);
+                          (int)mesh_part_group.material_index, (int)material->mode,
+                          required_format);
     (*reason)[*reason_n] = '\0';
     return true;
 }
