@@ -4476,6 +4476,235 @@ static void parse_mtl(FILE *mtl, Array<MAP_OBJ_Import_Material> &materials) {
     }
 }
 
+bool save_map(G &g, char *requested_save_filename) {
+    assert(requested_save_filename);
+    Array<uint8_t> filedata = {};
+    defer {
+        filedata.release();
+    };
+    map_write_to_memory(g, &filedata);
+    bool success = false;
+    {
+        time_t backup_time = time(nullptr); // default to current-time if we can't determine the mtime
+        struct _stat st = {};
+        if (!_stat(requested_save_filename, &st)) {
+            if (st.st_mtime) {
+                backup_time = st.st_mtime;
+            }
+        }
+        char buf[sizeof("YYYY-MM-DD_HH-MM-SS")];
+        char *bak_filename = nullptr;
+        // @Hack ughhhhhh @@@ @@@ @@@ I just don't want to add a new scope here (IMO these should be returns from a func, not nested ifs)
+        if (strftime(buf, sizeof(buf), "%Y-%m-%d_%H-%M-%S", gmtime(&backup_time))) {
+            bak_filename = mprintf("%s.%s.map.bak.zip", requested_save_filename, buf);
+        }
+        if (bak_filename) {
+            uint16_t *filename16 = utf8_to_utf16(requested_save_filename);
+            if (filename16) {
+                // If the file exists, we start with the presumption that we need to back it up.
+                bool backup = file_exists(filename16);
+                // However, if there are already backups, and the most recent one is identical to the original file, we don't need to back it up.
+                auto check_latest_backup = [&] {
+                    HANDLE orig_win = CreateFileW((LPWSTR)filename16, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    if (orig_win == INVALID_HANDLE_VALUE) return false;
+                    defer { CloseHandle(orig_win); };
+                    LARGE_INTEGER orig_len = {};
+                    if (!GetFileSizeEx(orig_win, &orig_len)) return false;
+                    uint64_t n = (uint64_t)orig_len.QuadPart;
+                    char *glob = mprintf("%s.*.map.bak.zip", requested_save_filename);
+                    if (!glob) return false;
+                    defer { free(glob); };
+                    uint16_t *glob16 = utf8_to_utf16(glob);
+                    if (!glob16) return false;
+                    defer { free(glob16); };
+                    struct _wfinddata64_t newest_valid_backup = {};
+                    {
+                        struct _wfinddata64_t filedata = {};
+                        intptr_t directory = _wfindfirst64((wchar_t *)glob16, &filedata);
+                        if (directory < 0) return false;
+                        defer { _findclose(directory); };
+                        uint64_t newest_date = 0;
+                        while (_wfindnext64(directory, &filedata) >= 0) {
+                            int periods_found = 0;
+                            auto dot = wcslen(filedata.name) + 1;
+                            while (periods_found < 4 && dot-- > 0) {
+                                if (filedata.name[dot] == '/' || filedata.name[dot] == '\\') {
+                                    break; // directory found before all the dots.
+                                } else if (filedata.name[dot] == '.') {
+                                    ++periods_found;
+                                }
+                            }
+                            if (periods_found == 4) {
+                                uint64_t y = 0, m = 1, d = 1, h = 1, min = 1, s = 1;
+                                int matches = swscanf((wchar_t *)(filedata.name + dot), L".%llu-%llu-%llu_%llu-%llu-%llu.map.bak.zip",
+                                    &y, &m, &d, &h, &min, &s);
+                                if (matches == 6) {
+                                    if (y < (1ull << (63 - 40)) && m <= 12 && d <= 31 && h <= 23 && min <= 59 && s <= 60) {
+                                        uint64_t lexicographic = (y << 40) | (m << 32) | (d << 24) | (h << 16) | (min << 8) | s;
+                                        if (newest_date <= lexicographic) {
+                                            newest_date = lexicographic;
+                                            newest_valid_backup = filedata;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (errno != ENOENT) return false;
+                    auto slash = (uint16_t *)max(wcsrchr((wchar_t *)filename16, '/'), wcsrchr((wchar_t *)filename16, '\\'));
+                    char *bak_filepath = mprintf("%.*ls%ls", slash ? (int)(slash - filename16 + 1) : 0, filename16, newest_valid_backup.name);
+                    if (!bak_filepath) return false;
+                    defer { free(bak_filepath); };
+                    struct zip_t *zip = zip_open(bak_filepath, 0, 'r');
+                    if (!zip) return false;
+                    defer { zip_close(zip); };
+                    auto newest_valid_backup_name8 = utf16_to_utf8((uint16_t *)newest_valid_backup.name);
+                    if (!newest_valid_backup_name8) return false;
+                    defer { free(newest_valid_backup_name8); };
+                    char *dotzip = strrchr(newest_valid_backup_name8, '.');
+                    assert(dotzip && dotzip[0] == '.');
+                    dotzip[0] = 0; // @Hack
+                    if (zip_entry_open(zip, newest_valid_backup_name8)) return false;
+                    dotzip[0] = '.';
+                    defer { zip_entry_close(zip); };
+                    if (n != zip_entry_size(zip)) return false;
+                    FILE *f = PH2CLD__fopen(requested_save_filename, "rb");
+                    if (!f) return false;
+                    defer { fclose(f); };
+                    // @Speed: Youchie!
+                    auto bufa = (char *)malloc(n * 2);
+                    auto bufb = bufa + n;
+                    defer { free(bufa); };
+                    if (fread(bufa, 1, n, f) != n) return false;
+                    if ((uint64_t)zip_entry_noallocread(zip, bufb, n) != n) return false;
+                    bool equal = (memcmp(bufa, bufb, n) == 0);
+                    if (!equal) return false;
+                    // Transfer ownership of the backup name string
+                    free(bak_filename);
+                    bak_filename = newest_valid_backup_name8;
+                    newest_valid_backup_name8 = nullptr;
+                    Log("Relying on existing backup \"%s\".", bak_filename);
+                    return true;
+                };
+                if (check_latest_backup()) {
+                    backup = false;
+                }
+                uint16_t *bak_filename16 = utf8_to_utf16(bak_filename);
+                if (bak_filename16) {
+                    // If the original file existed, we'll try to backup, and backup_succeded will reflect success.
+                    // If the file didn't exist, we can't back anything up, so backup_succeeded will be 'true' in
+                    // order to drive the editor to save the file without complaining about lacking a backup.
+                    // @Todo: Copy the initial saved level so it can always be written out as a backup.
+                    bool backup_succeeded = true;
+                    auto try_backup = [&] {
+                        struct zip_t *zip = zip_open(bak_filename, ZIP_DEFAULT_COMPRESSION_LEVEL, 'w');
+                        if (!zip) return false;
+                        bool delete_zip = true;
+                        defer { if (delete_zip) DeleteFileW((LPWSTR)bak_filename16); }; // @Errdefer
+                        defer { zip_close(zip); };
+                        char *filename_pathless = max(max(strrchr(bak_filename, '/'), strrchr(bak_filename, '\\')) + 1, bak_filename);
+                        char *dotzip = strrchr(filename_pathless, '.');
+                        assert(dotzip && dotzip[0] == '.');
+                        dotzip[0] = 0; // @Hack
+                        if (zip_entry_open(zip, filename_pathless)) return false;
+                        dotzip[0] = '.';
+                        if (zip_entry_fwrite(zip, requested_save_filename)) return false;
+                        if (zip_entry_close(zip)) return false;
+                        delete_zip = false;
+                        Log("Created new backup \"%s\".", filename_pathless);
+                        return true;
+                    };
+                    if (backup) {
+                        backup_succeeded = try_backup();
+                    }
+                    bool should_save = false;
+                    if (backup_succeeded) {
+                        should_save = true;
+                    } else {
+                        if (MessageBoxA(0,
+                            "A backup of this file couldn't be written to disk.\n\nDo you want to save, and overwrite the file, without any backup?",
+                            "Save Backup Failed",
+                            MB_YESNO | MB_ICONWARNING | MB_TASKMODAL) == IDYES) {
+                            should_save = true;
+                        }
+                    }
+                    if (should_save) {
+                        FILE *f = _wfopen((wchar_t *)filename16, L"wb");
+                        if (f) {
+                            if (fwrite(filedata.data, 1, filedata.count, f) == (int)filedata.count) {
+                                Log("Saved to \"%s\".", requested_save_filename);
+                                success = true;
+                            } else {
+                                Log("Couldn't write file data!!!");
+                            }
+                            fclose(f);
+                        } else {
+                            Log("Couldn't open %s for writing", requested_save_filename);
+                        }
+                        auto restore_from_backup = [&] {
+                            struct zip_t *zip = zip_open(bak_filename, 0, 'r');
+                            if (!zip) return false;
+                            defer { zip_close(zip); };
+                            char *filename_pathless = max(max(strrchr(bak_filename, '/'), strrchr(bak_filename, '\\')) + 1, bak_filename);
+                            char *dotzip = strrchr(filename_pathless, '.');
+                            assert(dotzip && dotzip[0] == '.');
+                            dotzip[0] = 0; // @Hack
+                            if (zip_entry_open(zip, filename_pathless)) return false;
+                            dotzip[0] = '.';
+                            if (zip_entry_fread(zip, requested_save_filename)) return false;
+                            if (zip_entry_close(zip)) return false;
+                            return true;
+                        };
+                        if (success) {
+                            g.saved_file_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
+                        } else {
+                            if (MessageBoxA(0,
+                                "The file couldn't be written to disk.\n\nDo you want to attempt to restore from a backup?",
+                                "Save Failed",
+                                MB_YESNO | MB_ICONERROR | MB_TASKMODAL) == IDYES) {
+                                // Attempt to recover file contents by overwriting with the backup.
+                                if (restore_from_backup()) {
+                                    // If we had written a backup just now, prompt to delete it.
+                                    if (backup_succeeded) {
+                                        if (MessageBoxA(0,
+                                            "The file was restored from a freshly made backup.\nDo you want to delete this redundant backup?",
+                                            "Restore Succeded",
+                                            MB_YESNO | MB_ICONWARNING | MB_TASKMODAL) == IDYES) {
+                                            if (DeleteFileW((LPCWSTR)bak_filename16)) {
+                                                MsgInfo("Backup Deleted", "The backup was deleted.");
+                                            } else {
+                                                MsgErr("Backup Deletion Failed", "The backup couldn't be deleted. Sorry!");
+                                            }
+                                        }
+                                    } else {
+                                        MsgInfo("Restore Succeded", "The file was restored from:\n\"%s\".", bak_filename);
+                                    }
+                                } else {
+                                    MsgErr("Restore Failed", "The file couldn't be restored from a backup. Sorry!");
+                                }
+                            } else {
+                                Log("User declined to restore from backup.");
+                            }
+                        }
+                    } else {
+                        Log("Couldn't create backup and user declined to overwrite.");
+                    }
+                    free(bak_filename16);
+                } else {
+                    Log("Couldn't convert backup filename to utf16!!!");
+                }
+                free(filename16);
+            } else {
+                Log("Couldn't convert filename to utf16!!!");
+            }
+            free(bak_filename);
+        } else {
+            Log("Couldn't build backup filename!!!");
+        }
+    }
+    return success;
+}
+
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd);
 static void frame(void *userdata) {
     ProfileFunction();
@@ -4522,10 +4751,6 @@ static void frame(void *userdata) {
     char *dds_file_buf = nullptr;
     defer {
         free(dds_file_buf);
-    };
-    char *requested_save_filename = nullptr;
-    defer {
-        free(requested_save_filename);
     };
     char *obj_export_name = nullptr;
     defer {
@@ -4629,18 +4854,28 @@ static void frame(void *userdata) {
             do_control_o_load = true;
         }
     } else if (g.control_shift_s) {
-        requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
-                                                               "All Files\0" "*.*\0",
-                                                              L"Save MAP", false);
+        char *requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
+                                                                     "All Files\0" "*.*\0",
+                                                                    L"Save MAP", false);
+        if (requested_save_filename) {
+            if (save_map(g, requested_save_filename)) {
+                free(g.opened_map_filename);
+                g.opened_map_filename = requested_save_filename;
+            } else {
+                free(requested_save_filename);
+            }
+        }
     } else if (g.control_s) {
-        requested_save_filename = strdup(g.opened_map_filename);
+        save_map(g, g.opened_map_filename);
     }
     bool dummy_popup_bool = true;
     if (ImGui::BeginPopupModal("Open File - Unsaved Changes", &dummy_popup_bool)) {
         ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
         if (ImGui::Button("Save")) {
-            // @Todo: save
-            // @Todo: do_control_o_load = true;
+            if (save_map(g, g.opened_map_filename)) {
+                do_control_o_load = true;
+                ImGui::CloseCurrentPopup();
+            }
         }
         ImGui::SameLine(); if (ImGui::Button("Don't Save")) {
             do_control_o_load = true;
@@ -6588,240 +6823,6 @@ static void frame(void *userdata) {
         }
     }
 
-    {
-        if (requested_save_filename) {
-            Array<uint8_t> filedata = {};
-            defer {
-                filedata.release();
-            };
-            map_write_to_memory(g, &filedata);
-            bool success = false;
-            if (requested_save_filename) {
-                time_t backup_time = time(nullptr); // default to current-time if we can't determine the mtime
-                struct _stat st = {};
-                if (!_stat(requested_save_filename, &st)) {
-                    if (st.st_mtime) {
-                        backup_time = st.st_mtime;
-                    }
-                }
-                char buf[sizeof("YYYY-MM-DD_HH-MM-SS")];
-                char *bak_filename = nullptr;
-                // @Hack ughhhhhh @@@ @@@ @@@ I just don't want to add a new scope here (IMO these should be returns from a func, not nested ifs)
-                if (strftime(buf, sizeof(buf), "%Y-%m-%d_%H-%M-%S", gmtime(&backup_time))) {
-                    bak_filename = mprintf("%s.%s.map.bak.zip", requested_save_filename, buf);
-                }
-                if (bak_filename) {
-                    uint16_t *filename16 = utf8_to_utf16(requested_save_filename);
-                    if (filename16) {
-                        // If the file exists, we start with the presumption that we need to back it up.
-                        bool backup = file_exists(filename16);
-                        // However, if there are already backups, and the most recent one is identical to the original file, we don't need to back it up.
-                        auto check_latest_backup = [&] {
-                            HANDLE orig_win = CreateFileW((LPWSTR)filename16, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-                            if (orig_win == INVALID_HANDLE_VALUE) return false;
-                            defer { CloseHandle(orig_win); };
-                            LARGE_INTEGER orig_len = {};
-                            if (!GetFileSizeEx(orig_win, &orig_len)) return false;
-                            uint64_t n = (uint64_t)orig_len.QuadPart;
-                            char *glob = mprintf("%s.*.map.bak.zip", requested_save_filename);
-                            if (!glob) return false;
-                            defer { free(glob); };
-                            uint16_t *glob16 = utf8_to_utf16(glob);
-                            if (!glob16) return false;
-                            defer { free(glob16); };
-                            struct _wfinddata64_t newest_valid_backup = {};
-                            {
-                                struct _wfinddata64_t filedata = {};
-                                intptr_t directory = _wfindfirst64((wchar_t *)glob16, &filedata);
-                                if (directory < 0) return false;
-                                defer { _findclose(directory); };
-                                uint64_t newest_date = 0;
-                                while (_wfindnext64(directory, &filedata) >= 0) {
-                                    int periods_found = 0;
-                                    auto dot = wcslen(filedata.name) + 1;
-                                    while (periods_found < 4 && dot-- > 0) {
-                                        if (filedata.name[dot] == '/' || filedata.name[dot] == '\\') {
-                                            break; // directory found before all the dots.
-                                        } else if (filedata.name[dot] == '.') {
-                                            ++periods_found;
-                                        }
-                                    }
-                                    if (periods_found == 4) {
-                                        uint64_t y = 0, m = 1, d = 1, h = 1, min = 1, s = 1;
-                                        int matches = swscanf((wchar_t *)(filedata.name + dot), L".%llu-%llu-%llu_%llu-%llu-%llu.map.bak.zip",
-                                            &y, &m, &d, &h, &min, &s);
-                                        if (matches == 6) {
-                                            if (y < (1ull << (63 - 40)) && m <= 12 && d <= 31 && h <= 23 && min <= 59 && s <= 60) {
-                                                uint64_t lexicographic = (y << 40) | (m << 32) | (d << 24) | (h << 16) | (min << 8) | s;
-                                                if (newest_date <= lexicographic) {
-                                                    newest_date = lexicographic;
-                                                    newest_valid_backup = filedata;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if (errno != ENOENT) return false;
-                            auto slash = (uint16_t *)max(wcsrchr((wchar_t *)filename16, '/'), wcsrchr((wchar_t *)filename16, '\\'));
-                            char *bak_filepath = mprintf("%.*ls%ls", slash ? (int)(slash - filename16 + 1) : 0, filename16, newest_valid_backup.name);
-                            if (!bak_filepath) return false;
-                            defer { free(bak_filepath); };
-                            struct zip_t *zip = zip_open(bak_filepath, 0, 'r');
-                            if (!zip) return false;
-                            defer { zip_close(zip); };
-                            auto newest_valid_backup_name8 = utf16_to_utf8((uint16_t *)newest_valid_backup.name);
-                            if (!newest_valid_backup_name8) return false;
-                            defer { free(newest_valid_backup_name8); };
-                            char *dotzip = strrchr(newest_valid_backup_name8, '.');
-                            assert(dotzip && dotzip[0] == '.');
-                            dotzip[0] = 0; // @Hack
-                            if (zip_entry_open(zip, newest_valid_backup_name8)) return false;
-                            dotzip[0] = '.';
-                            defer { zip_entry_close(zip); };
-                            if (n != zip_entry_size(zip)) return false;
-                            FILE *f = PH2CLD__fopen(requested_save_filename, "rb");
-                            if (!f) return false;
-                            defer { fclose(f); };
-                            // @Speed: Youchie!
-                            auto bufa = (char *)malloc(n * 2);
-                            auto bufb = bufa + n;
-                            defer { free(bufa); };
-                            if (fread(bufa, 1, n, f) != n) return false;
-                            if ((uint64_t)zip_entry_noallocread(zip, bufb, n) != n) return false;
-                            bool equal = (memcmp(bufa, bufb, n) == 0);
-                            if (!equal) return false;
-                            // Transfer ownership of the backup name string
-                            free(bak_filename);
-                            bak_filename = newest_valid_backup_name8;
-                            newest_valid_backup_name8 = nullptr;
-                            Log("Relying on existing backup \"%s\".", bak_filename);
-                            return true;
-                        };
-                        if (check_latest_backup()) {
-                            backup = false;
-                        }
-                        uint16_t *bak_filename16 = utf8_to_utf16(bak_filename);
-                        if (bak_filename16) {
-                            // If the original file existed, we'll try to backup, and backup_succeded will reflect success.
-                            // If the file didn't exist, we can't back anything up, so backup_succeeded will be 'true' in
-                            // order to drive the editor to save the file without complaining about lacking a backup.
-                            // @Todo: Copy the initial saved level so it can always be written out as a backup.
-                            bool backup_succeeded = true;
-                            auto try_backup = [&] {
-                                struct zip_t *zip = zip_open(bak_filename, ZIP_DEFAULT_COMPRESSION_LEVEL, 'w');
-                                if (!zip) return false;
-                                bool delete_zip = true;
-                                defer { if (delete_zip) DeleteFileW((LPWSTR)bak_filename16); }; // @Errdefer
-                                defer { zip_close(zip); };
-                                char *filename_pathless = max(max(strrchr(bak_filename, '/'), strrchr(bak_filename, '\\')) + 1, bak_filename);
-                                char *dotzip = strrchr(filename_pathless, '.');
-                                assert(dotzip && dotzip[0] == '.');
-                                dotzip[0] = 0; // @Hack
-                                if (zip_entry_open(zip, filename_pathless)) return false;
-                                dotzip[0] = '.';
-                                if (zip_entry_fwrite(zip, requested_save_filename)) return false;
-                                if (zip_entry_close(zip)) return false;
-                                delete_zip = false;
-                                Log("Created new backup \"%s\".", filename_pathless);
-                                return true;
-                            };
-                            if (backup) {
-                                backup_succeeded = try_backup();
-                            }
-                            bool should_save = false;
-                            if (backup_succeeded) {
-                                should_save = true;
-                            } else {
-                                if (MessageBoxA(0,
-                                    "A backup of this file couldn't be written to disk.\n\nDo you want to save, and overwrite the file, without any backup?",
-                                    "Save Backup Failed",
-                                    MB_YESNO | MB_ICONWARNING | MB_TASKMODAL) == IDYES) {
-                                    should_save = true;
-                                }
-                            }
-                            if (should_save) {
-                                FILE *f = _wfopen((wchar_t *)filename16, L"wb");
-                                if (f) {
-                                    if (fwrite(filedata.data, 1, filedata.count, f) == (int)filedata.count) {
-                                        Log("Saved to \"%s\".", requested_save_filename);
-                                        success = true;
-                                        // Semi awful: commandeer the requested save filename
-                                        free(g.opened_map_filename);
-                                        g.opened_map_filename = requested_save_filename;
-                                        requested_save_filename = nullptr;
-                                    } else {
-                                        Log("Couldn't write file data!!!");
-                                    }
-                                    fclose(f);
-                                } else {
-                                    Log("Couldn't open %s for writing", requested_save_filename);
-                                }
-                                auto restore_from_backup = [&] {
-                                    struct zip_t *zip = zip_open(bak_filename, 0, 'r');
-                                    if (!zip) return false;
-                                    defer { zip_close(zip); };
-                                    char *filename_pathless = max(max(strrchr(bak_filename, '/'), strrchr(bak_filename, '\\')) + 1, bak_filename);
-                                    char *dotzip = strrchr(filename_pathless, '.');
-                                    assert(dotzip && dotzip[0] == '.');
-                                    dotzip[0] = 0; // @Hack
-                                    if (zip_entry_open(zip, filename_pathless)) return false;
-                                    dotzip[0] = '.';
-                                    if (zip_entry_fread(zip, requested_save_filename)) return false;
-                                    if (zip_entry_close(zip)) return false;
-                                    return true;
-                                };
-                                if (success) {
-                                    g.saved_file_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
-                                } else {
-                                    if (MessageBoxA(0,
-                                        "The file couldn't be written to disk.\n\nDo you want to attempt to restore from a backup?",
-                                        "Save Failed",
-                                        MB_YESNO | MB_ICONERROR | MB_TASKMODAL) == IDYES) {
-                                        // Attempt to recover file contents by overwriting with the backup.
-                                        if (restore_from_backup()) {
-                                            // If we had written a backup just now, prompt to delete it.
-                                            if (backup_succeeded) {
-                                                if (MessageBoxA(0,
-                                                    "The file was restored from a freshly made backup.\nDo you want to delete this redundant backup?",
-                                                    "Restore Succeded",
-                                                    MB_YESNO | MB_ICONWARNING | MB_TASKMODAL) == IDYES) {
-                                                    if (DeleteFileW((LPCWSTR)bak_filename16)) {
-                                                        MsgInfo("Backup Deleted", "The backup was deleted.");
-                                                    } else {
-                                                        MsgErr("Backup Deletion Failed", "The backup couldn't be deleted. Sorry!");
-                                                    }
-                                                }
-                                            } else {
-                                                MsgInfo("Restore Succeded", "The file was restored from:\n\"%s\".", bak_filename);
-                                            }
-                                        } else {
-                                            MsgErr("Restore Failed", "The file couldn't be restored from a backup. Sorry!");
-                                        }
-                                    } else {
-                                        Log("User declined to restore from backup.");
-                                    }
-                                }
-                            } else {
-                                Log("Couldn't create backup and user declined to overwrite.");
-                            }
-                            free(bak_filename16);
-                        } else {
-                            Log("Couldn't convert backup filename to utf16!!!");
-                        }
-                        free(filename16);
-                    } else {
-                        Log("Couldn't convert filename to utf16!!!");
-                    }
-                    free(bak_filename);
-                } else {
-                    Log("Couldn't build backup filename!!!");
-                }
-            } else {
-                Log("No file loaded!!!");
-            }
-        }
-    }
     if (g.map_must_update) {
         g.ui_selected_texture_subfile = nullptr;
         g.ui_selected_texture = nullptr;
