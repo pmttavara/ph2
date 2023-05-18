@@ -6130,62 +6130,67 @@ static void frame(void *userdata) {
                             continue;
                         }
 
-                        if (vertex_format_combo == 2 && new_vertex_format_combo == 3) {
-                            Array<PH2MAP__Vertex20> original = {};
-                            defer {
-                                original.release();
-                            };
-                            original.resize(section.num_vertices);
-                            assert(sizeof(original[0]) == section.bytes_per_vertex);
-                            assert(original.count * sizeof(original[0]) == section.num_vertices * section.bytes_per_vertex);
-                            memcpy(original.data, section.data.data, section.num_vertices * section.bytes_per_vertex);
+                        Array<PH2MAP__Vertex24> upconverted = {};
+                        defer {
+                            upconverted.release();
+                        };
+                        upconverted.resize(section.num_vertices);
+                        for (int i = 0; i < section.num_vertices; ++i) {
+                            const char *ptr = section.data.data + i * section.bytes_per_vertex;
+                            const char *end = section.data.data + (i + 1) * section.bytes_per_vertex;
+                            Read(ptr, upconverted[i].position[0]);
+                            Read(ptr, upconverted[i].position[1]);
+                            Read(ptr, upconverted[i].position[2]);
 
-                            section.bytes_per_vertex = 0x24;
-                            section.data.resize(section.num_vertices * section.bytes_per_vertex);
-                            for (int i = 0; i < section.num_vertices; ++i) {
-                                *(PH2MAP__Vertex24 *)&(section.data[i * section.bytes_per_vertex]) = {
-                                    original[i].position[0], original[i].position[1], original[i].position[2],
-                                    original[i].normal[0], original[i].normal[1], original[i].normal[2],
-                                    0xffffffff,
-                                    original[i].uv[0], original[i].uv[1]
-                                };
+                            if (section.bytes_per_vertex >= 0x20) {
+                                Read(ptr, upconverted[i].normal[0]);
+                                Read(ptr, upconverted[i].normal[1]);
+                                Read(ptr, upconverted[i].normal[2]);
+                            } else {
+                                upconverted[i].normal[0] = 0; 
+                                upconverted[i].normal[1] = -1;
+                                upconverted[i].normal[2] = 0;
                             }
-                        } else if (vertex_format_combo == 3 && new_vertex_format_combo == 2) {
-                            Array<PH2MAP__Vertex24> original = {};
-                            defer {
-                                original.release();
-                            };
-                            original.resize(section.num_vertices);
-                            assert(sizeof(original[0]) == section.bytes_per_vertex);
-                            assert(original.count * sizeof(original[0]) == section.num_vertices * section.bytes_per_vertex);
-                            memcpy(original.data, section.data.data, section.num_vertices * section.bytes_per_vertex);
 
-                            section.bytes_per_vertex = 0x20;
-                            section.data.resize(section.num_vertices * section.bytes_per_vertex);
-                            for (int i = 0; i < section.num_vertices; ++i) {
-                                *(PH2MAP__Vertex20 *)&(section.data[i * section.bytes_per_vertex]) = {
-                                    original[i].position[0], original[i].position[1], original[i].position[2],
-                                    original[i].normal[0], original[i].normal[1], original[i].normal[2],
-                                    original[i].uv[0], original[i].uv[1]
-                                };
+                            if (section.bytes_per_vertex == 0x18 || section.bytes_per_vertex == 0x24) {
+                                Read(ptr, upconverted[i].color);
+                            } else {
+                                upconverted[i].color = 0xffffffff;
                             }
-                        } else if (vertex_format_combo == 2 && new_vertex_format_combo == 0) {
-                            Array<PH2MAP__Vertex20> original = {};
-                            defer {
-                                original.release();
-                            };
-                            original.resize(section.num_vertices);
-                            assert(sizeof(original[0]) == section.bytes_per_vertex);
-                            assert(original.count * sizeof(original[0]) == section.num_vertices * section.bytes_per_vertex);
-                            memcpy(original.data, section.data.data, section.num_vertices * section.bytes_per_vertex);
 
-                            section.bytes_per_vertex = 0x14;
-                            section.data.resize(section.num_vertices * section.bytes_per_vertex);
+                            Read(ptr, upconverted[i].uv[0]);
+                            Read(ptr, upconverted[i].uv[1]);
+                        }
+
+                        if (new_vertex_format_combo == 0) { section.bytes_per_vertex = 0x14; }
+                        if (new_vertex_format_combo == 1) { section.bytes_per_vertex = 0x18; }
+                        if (new_vertex_format_combo == 2) { section.bytes_per_vertex = 0x20; }
+                        if (new_vertex_format_combo == 3) { section.bytes_per_vertex = 0x24; }
+
+                        {
+                            Array<uint8_t> *result = (Array<uint8_t> *)&section.data;
+                            section.data.clear();
+                            section.data.reserve(section.num_vertices * section.bytes_per_vertex);
+
                             for (int i = 0; i < section.num_vertices; ++i) {
-                                *(PH2MAP__Vertex14 *)&(section.data[i * section.bytes_per_vertex]) = {
-                                    original[i].position[0], original[i].position[1], original[i].position[2],
-                                    original[i].uv[0], original[i].uv[1]
-                                };
+                                const char *ptr = section.data.data + i * section.bytes_per_vertex;
+                                const char *end = section.data.data + (i + 1) * section.bytes_per_vertex;
+                                Write(upconverted[i].position[0]);
+                                Write(upconverted[i].position[1]);
+                                Write(upconverted[i].position[2]);
+
+                                if (section.bytes_per_vertex >= 0x20) {
+                                    Write(upconverted[i].normal[0]);
+                                    Write(upconverted[i].normal[1]);
+                                    Write(upconverted[i].normal[2]);
+                                }
+
+                                if (section.bytes_per_vertex == 0x18 || section.bytes_per_vertex == 0x24) {
+                                    Write(upconverted[i].color);
+                                }
+
+                                Write(upconverted[i].uv[0]);
+                                Write(upconverted[i].uv[1]);
                             }
                         }
                     }
