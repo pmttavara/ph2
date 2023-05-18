@@ -2250,6 +2250,7 @@ static void map_unload(G &g, bool release_only_geometry = false) {
         buf.shown = true;
         buf.selected = false;
     }
+    g.overall_center_needs_recalc = true; // @Note: Bleh.
 
 }
 
@@ -2944,7 +2945,7 @@ static void imgui_do_console(G &g) {
     if (ImGui::InputTextWithHint("###console input", "help", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
         // Process buf
         LogC(IM_COL32_WHITE, "> %s", buf);
-        if (memcmp("cld_load ", buf, sizeof("cld_load ") - 1) == 0) {
+        if (0 && memcmp("cld_load ", buf, sizeof("cld_load ") - 1) == 0) {
             char *p = buf + sizeof("cld_load ") - 1;
             while (isspace(*p)) p++;
             cld_load(g, p);
@@ -3285,7 +3286,7 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
 #ifndef NDEBUG
     {
         map_load(g, "map/ob01 (2).map");
-        cld_load(g, "../cld/cld/ob01.cld");
+        // cld_load(g, "../cld/cld/ob01.cld");
         // map_load(g, "map/ap64.map");
         // test_all_maps(g);
         // sapp_request_quit();
@@ -4698,7 +4699,7 @@ static void frame(void *userdata) {
             char *slash = max(strrchr(load, '/'), strrchr(load, '\\'));
             char *dot = strrchr(load, '.');
             if (dot > slash) {
-                if (strcmp(dot, ".cld") == 0) {
+                if (0 && strcmp(dot, ".cld") == 0) {
                     cld_load(g, load);
                 } else if (strcmp(dot, ".map") == 0) {
                     map_load(g, load);
@@ -4707,7 +4708,8 @@ static void frame(void *userdata) {
                     if (n >= mapbaklen && strcmp(load + n - mapbaklen, ".map.bak") == 0) {
                         map_load(g, load);
                     } else {
-                        MsgErr("File Load Error", "The file \"%s\"\ndoesn't have the file extension .CLD or .MAP.\nThe editor can only open files ending in .CLD or .MAP. Sorry!!", load);
+                        // MsgErr("File Load Error", "The file \"%s\"\ndoesn't have the file extension .CLD or .MAP.\nThe editor can only open files ending in .CLD or .MAP. Sorry!!", load);
+                        MsgErr("File Load Error", "The file \"%s\"\ndoesn't have the file extension .MAP.\nThe editor can only open files ending in .MAP. Sorry!!", load);
                     }
                 }
             }
@@ -5586,6 +5588,7 @@ static void frame(void *userdata) {
         }
 
         for (auto &b : g.map_buffers) b.selected = false;
+        g.overall_center_needs_recalc = true; // @Note: Bleh.
 
         return was_multi;
     };
@@ -5802,8 +5805,7 @@ static void frame(void *userdata) {
                 }
                 g.select_cld_group = -1; // @Cleanup: cld selection clear function?
                 g.select_cld_face = -1;
-                // @Note: Bleh!!!
-                g.overall_center_needs_recalc = true;
+                g.overall_center_needs_recalc = true; // @Note: Bleh.
             }
 
             auto visit_mesh_buffer = [&] (MAP_Mesh &mesh, auto &&lambda) -> void {
@@ -6125,8 +6127,7 @@ static void frame(void *userdata) {
                     }
                     g.select_cld_group = -1;
                     g.select_cld_face = -1;
-                    // @Note: Bleh.
-                    g.overall_center_needs_recalc = true;
+                    g.overall_center_needs_recalc = true; // @Note: Bleh.
                 }
                 {
                     ImGui::SameLine();
@@ -6237,8 +6238,7 @@ static void frame(void *userdata) {
                             });
                             g.select_cld_group = -1;
                             g.select_cld_face = -1;
-                            // @Note: Bleh.
-                            g.overall_center_needs_recalc = true;
+                            g.overall_center_needs_recalc = true; // @Note: Bleh.
                         }
                         defer { if (ret) ImGui::TreePop(); };
 
@@ -6385,9 +6385,6 @@ static void frame(void *userdata) {
             bool scale = false;
             ImGui::Text("By:");
             ImGui::SameLine(); ImGui::DragFloat3("###Displacement", &g.displacement.X, 10);
-            ImGui::SameLine(); if (ImGui::Button("Cancel###Displacement")) {
-                g.displacement = {};
-            }
             ImGui::NewLine();
             ImGui::Text("Scale:");
             ImGui::SameLine(); if (ImGui::Button("- X")) { g.scaling_factor = { - 1, + 1, + 1 }; }
@@ -6398,12 +6395,13 @@ static void frame(void *userdata) {
             ImGui::SameLine(); if (ImGui::Button("Z*2")) { g.scaling_factor = { + 1, + 1, + 2 }; }
             ImGui::Text("By:");
             ImGui::SameLine(); ImGui::DragFloat3("###Scaling", &g.scaling_factor.X, 0.01f);
-            ImGui::SameLine(); if (ImGui::Button("Cancel###Scaling")) {
-                g.scaling_factor = { 1, 1, 1 };
-            }
-            if (ImGui::Button("Apply###Displacement and Scaling")) {
-                move = true;
-                scale = true;
+            if (!ImGui::GetIO().WantCaptureKeyboard) {
+                if (g.displacement.X != 0 || g.displacement.Y != 0 || g.displacement.Z != 0) {
+                    move = true;
+                }
+                if (g.scaling_factor.X != 1 || g.scaling_factor.Y != 1 || g.scaling_factor.Z != 1) {
+                    scale = true;
+                }
             }
             ImGui::NewLine();
 
@@ -6539,7 +6537,7 @@ static void frame(void *userdata) {
                         buf.selected = false;
                     }
                 }
-                g.overall_center_needs_recalc = true;
+                g.overall_center_needs_recalc = true; // @Note: Bleh.
             }
             for (auto &geo : g.geometries) {
                 auto prune_empty_meshes = [&] (LinkedList<MAP_Mesh, The_Arena_Allocator> &meshes) {
@@ -7363,6 +7361,7 @@ static void frame(void *userdata) {
             for (MAP_Geometry_Buffer &b : g.map_buffers) {
                 b.selected = false;
             }
+            g.overall_center_needs_recalc = true; // @Note: Bleh.
         }
         if (result.hit && result.map.hit_mesh && result.map.hit_vertex < 0) {
             // Hit a MAP triangle; standard multi-selection stuff
@@ -7385,6 +7384,7 @@ static void frame(void *userdata) {
                     buf.selected = selected;
                 }
             }
+            g.overall_center_needs_recalc = true; // @Note: Bleh.
         }
 
 
@@ -7472,7 +7472,7 @@ static void frame(void *userdata) {
         (g.control_state != ControlState::Dragging &&
          !ImGui::GetIO().WantCaptureKeyboard &&
          map_hash != g.undo_stack[g.undo_stack.count - 1].hash)) {
-        Log("Undo/redo frame! Hash: %llu", map_hash);
+        // Log("Undo/redo frame! Hash: %llu", map_hash);
 
         g.undo_stack.push(make_history_entry(map_hash));
 
