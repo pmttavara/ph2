@@ -890,6 +890,7 @@ struct G : Map {
     HMM_Vec3 overall_center = {0, 0, 0};
     // @Note: This is really kinda meh in how it works. But it should be ok for now.
     bool overall_center_needs_recalc = true;
+    bool go_to_center_of_everything = false; // after map load
 
     bool show_editor = true;
     bool show_viewport = true;
@@ -1123,6 +1124,7 @@ static void cld_unload(G &g) {
 
     PH2CLD_free_collision_data(g.cld);
     g.cld = {};
+    g.staleify_cld();
 }
 static void cld_load(G &g, const char *filename) {
     ProfileFunction();
@@ -1133,7 +1135,6 @@ static void cld_load(G &g, const char *filename) {
     if (!g.cld.valid) {
         LogErr("Failed loading CLD file \"%s\"!", filename);
     }
-    g.staleify_cld();
 }
 #define Read(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(&(x), ptr, sizeof(x)) && (ptr += sizeof(x)))
 struct PH2MAP__Header {
@@ -2315,7 +2316,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
 
     cld_unload(g);
     map_unload(g, is_non_numbered_dependency);
-    g.staleify_cld();
 
     if (!is_non_numbered_dependency) { // Semi-garbage code.
         auto non_numbered = get_non_numbered_dependency_filename(filename);
@@ -2758,6 +2758,9 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     }
 
     g.solo_material = -1;
+
+    g.go_to_center_of_everything = true;
+    // g.saved_file_hash = 
 }
 static void map_upload(G &g) {
     ProfileFunction();
@@ -2945,7 +2948,7 @@ static void imgui_do_console(G &g) {
     if (ImGui::InputTextWithHint("###console input", "help", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
         // Process buf
         LogC(IM_COL32_WHITE, "> %s", buf);
-        if (0 && memcmp("cld_load ", buf, sizeof("cld_load ") - 1) == 0) {
+        if ((0, 0) && memcmp("cld_load ", buf, sizeof("cld_load ") - 1) == 0) {
             char *p = buf + sizeof("cld_load ") - 1;
             while (isspace(*p)) p++;
             cld_load(g, p);
@@ -3778,7 +3781,7 @@ static void event(const sapp_event *e_, void *userdata) {
                         assert(raycast.hit);
                         HMM_Vec3 drag_offset = click_raycast.point - g.widget_original_pos;
                         HMM_Vec3 target = raycast.point - drag_offset;
-                        if (e.modifiers & SAPP_MODIFIER_ALT) {
+                        if ((e.modifiers & SAPP_MODIFIER_ALT) || KEY('V')) {
 
                             float distsq_min = INFINITY;
 
@@ -3909,7 +3912,7 @@ static void event(const sapp_event *e_, void *userdata) {
                         assert(raycast.hit);
                         HMM_Vec3 drag_offset = click_raycast.point - g.widget_original_pos;
                         HMM_Vec3 target = raycast.point - drag_offset;
-                        if (e.modifiers & SAPP_MODIFIER_ALT) {
+                        if ((e.modifiers & SAPP_MODIFIER_ALT) || KEY('V')) {
                             float distsq_min = INFINITY;
 
                             float snap_thresh_distsq = widget_radius(g, g.widget_original_pos) * 1000.0f;
@@ -4699,7 +4702,7 @@ static void frame(void *userdata) {
             char *slash = max(strrchr(load, '/'), strrchr(load, '\\'));
             char *dot = strrchr(load, '.');
             if (dot > slash) {
-                if (0 && strcmp(dot, ".cld") == 0) {
+                if ((0, 0) && strcmp(dot, ".cld") == 0) {
                     cld_load(g, load);
                 } else if (strcmp(dot, ".map") == 0) {
                     map_load(g, load);
@@ -6405,6 +6408,14 @@ static void frame(void *userdata) {
             }
             ImGui::NewLine();
 
+            go_to |= g.go_to_center_of_everything;
+            g.overall_center_needs_recalc |= g.go_to_center_of_everything;
+
+            del &= !g.go_to_center_of_everything;
+            duplicate &= !g.go_to_center_of_everything;
+            move &= !g.go_to_center_of_everything;
+            scale &= !g.go_to_center_of_everything;
+
             if (g.overall_center_needs_recalc) {
                 g.overall_center = {}; // @Lazy
             }
@@ -6492,67 +6503,85 @@ static void frame(void *userdata) {
                     // Log("Duped!");
                 }
             };
-            for (auto &buf : g.map_buffers) {
-                if (buf.selected) {
-                    process_mesh(buf, false, false, false, g.overall_center_needs_recalc);
+            if (!g.stale()) {
+                if (g.overall_center_needs_recalc) {
+                    for (auto &buf : g.map_buffers) {
+                        if (&buf - g.map_buffers >= g.map_buffers_count) {
+                            break;
+                        }
+                        if (buf.selected || g.go_to_center_of_everything) {
+                            process_mesh(buf, false, false, false, true);
+                        }
+                    }
                 }
-            }
-            if (overall_center_sum) {
-                g.overall_center /= (float)overall_center_sum;
-            }
-            for (auto &buf : g.map_buffers) {
-                if (buf.selected) {
-                    process_mesh(buf, duplicate, move, scale, false);
+                if (overall_center_sum) {
+                    g.overall_center /= (float)overall_center_sum;
                 }
-            }
-            if (go_to) {
-                g.cam_pos = g.overall_center;
-                g.cam_pos.X *= 1 * SCALE;
-                g.cam_pos.Y *= -1 * SCALE;
-                g.cam_pos.Z *= -1 * SCALE;
-            }
-            if (g.overall_center_needs_recalc) { // By here, we'll have calced the center
-                g.overall_center_needs_recalc = false;
-            }
-            if (move) {
-                g.overall_center += g.displacement;
-            }
-            if (move || scale) { // By here, we'll have performed ops.
-                g.scaling_factor = { 1, 1, 1 };
-                g.displacement = {};
-            }
-
-            auto clear_out_mesh_for_deletion = [&] (MAP_Geometry_Buffer &buf) {
-                auto &meshes = get_meshes(buf);
-                MAP_Mesh &mesh = *buf.mesh_ptr;
-                mesh.release(); // @Lazy.
-            };
-            if (del) {
                 for (auto &buf : g.map_buffers) {
                     if (&buf - g.map_buffers >= g.map_buffers_count) {
                         break;
                     }
-                    if (buf.selected) {
-                        clear_out_mesh_for_deletion(buf);
-                        buf.selected = false;
+                    if (buf.selected && !g.go_to_center_of_everything) {
+                        process_mesh(buf, duplicate, move, scale, false);
                     }
                 }
-                g.overall_center_needs_recalc = true; // @Note: Bleh.
-            }
-            for (auto &geo : g.geometries) {
-                auto prune_empty_meshes = [&] (LinkedList<MAP_Mesh, The_Arena_Allocator> &meshes) {
-                    for (auto mesh = meshes.begin(); mesh != meshes.end();) {
-                        auto next = mesh.node->next;
-                        if ((*mesh).mesh_part_groups.empty()) {
-                            mesh->release();
-                            meshes.remove_ordered(mesh.node);
-                        }
-                        mesh.node = (MAP_Mesh *)next;
+
+                if (g.overall_center_needs_recalc) { // By here, we'll have calced the center
+                    g.overall_center_needs_recalc = false;
+                }
+                g.overall_center_needs_recalc |= g.go_to_center_of_everything; // if things were selected after a going-to of everything, recalc the selected centre
+
+                if (go_to) {
+                    g.cam_pos = g.overall_center;
+                    g.cam_pos.X *= 1 * SCALE;
+                    g.cam_pos.Y *= -1 * SCALE;
+                    g.cam_pos.Z *= -1 * SCALE;
+                    if (g.go_to_center_of_everything) {
+                        g.go_to_center_of_everything = false;
                     }
+                }
+
+                if (move) {
+                    g.overall_center += g.displacement;
+                }
+
+                if (move || scale) { // By here, we'll have performed ops.
+                    g.scaling_factor = { 1, 1, 1 };
+                    g.displacement = {};
+                }
+
+                auto clear_out_mesh_for_deletion = [&] (MAP_Geometry_Buffer &buf) {
+                    auto &meshes = get_meshes(buf);
+                    MAP_Mesh &mesh = *buf.mesh_ptr;
+                    mesh.release(); // @Lazy.
                 };
-                prune_empty_meshes(geo.opaque_meshes);
-                prune_empty_meshes(geo.transparent_meshes);
-                prune_empty_meshes(geo.decal_meshes);
+                if (del) {
+                    for (auto &buf : g.map_buffers) {
+                        if (&buf - g.map_buffers >= g.map_buffers_count) {
+                            break;
+                        }
+                        if (buf.selected) {
+                            clear_out_mesh_for_deletion(buf);
+                            buf.selected = false;
+                        }
+                    }
+                    g.overall_center_needs_recalc = true; // @Note: Bleh.
+                }
+                for (auto &geo : g.geometries) {
+                    auto prune_empty_meshes = [&] (LinkedList<MAP_Mesh, The_Arena_Allocator> &meshes) {
+                        for (auto mesh = meshes.begin(); mesh != meshes.end();) {
+                            auto next = mesh.node->next;
+                            if ((*mesh).mesh_part_groups.empty()) {
+                                mesh->release();
+                                meshes.remove_ordered(mesh.node);
+                            }
+                            mesh.node = (MAP_Mesh *)next;
+                        }
+                    };
+                    prune_empty_meshes(geo.opaque_meshes);
+                    prune_empty_meshes(geo.transparent_meshes);
+                    prune_empty_meshes(geo.decal_meshes);
+                }
             }
         }
     }
