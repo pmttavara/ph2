@@ -874,6 +874,8 @@ struct G : Map {
     Array<Map_History_Entry> undo_stack = {};
     Array<Map_History_Entry> redo_stack = {};
 
+    uint64_t saved_file_hash = 0;
+
     double last_time = 0;
     double t = 0;
     float dt_history[1024] = {};
@@ -2760,7 +2762,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     g.solo_material = -1;
 
     g.go_to_center_of_everything = true;
-    // g.saved_file_hash = 
+    g.saved_file_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
 }
 static void map_upload(G &g) {
     ProfileFunction();
@@ -4620,7 +4622,7 @@ static void frame(void *userdata) {
     bool do_control_o_load = false;
     if (g.control_state != ControlState::Normal); // drop CTRL-S etc when orbiting/dragging
     else if (g.control_o) {
-        bool has_unsaved_changes = true;
+        bool has_unsaved_changes = (g.saved_file_hash != meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head));
         if (has_unsaved_changes) {
             ImGui::OpenPopup("Open File - Unsaved Changes");
         } else {
@@ -6769,7 +6771,9 @@ static void frame(void *userdata) {
                                     if (zip_entry_close(zip)) return false;
                                     return true;
                                 };
-                                if (!success) {
+                                if (success) {
+                                    g.saved_file_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
+                                } else {
                                     if (MessageBoxA(0,
                                         "The file couldn't be written to disk.\n\nDo you want to attempt to restore from a backup?",
                                         "Save Failed",
@@ -6816,13 +6820,6 @@ static void frame(void *userdata) {
             } else {
                 Log("No file loaded!!!");
             }
-        }
-    }
-    {
-        auto s = mprintf("Psilent pHill 2 Editor%s%s", g.opened_map_filename ? " - " : "", g.opened_map_filename ? g.opened_map_filename : "");
-        if (s) {
-            sapp_set_window_title(s);
-            free(s);
         }
     }
     if (g.map_must_update) {
@@ -7512,6 +7509,15 @@ static void frame(void *userdata) {
 
         g.staleify_map();
     }
+
+    {
+        auto s = mprintf("%sPsilent pHill 2 Editor%s%s", map_hash == g.saved_file_hash ? "" : "* ", g.opened_map_filename ? " - " : "", g.opened_map_filename ? g.opened_map_filename : "");
+        if (s) {
+            sapp_set_window_title(s);
+            free(s);
+        }
+    }
+
 
     if (g.control_state != ControlState::Normal);
     else if (g.control_z) {
