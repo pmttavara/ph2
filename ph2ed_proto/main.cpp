@@ -892,7 +892,7 @@ struct G : Map {
     HMM_Vec3 overall_center = {0, 0, 0};
     // @Note: This is really kinda meh in how it works. But it should be ok for now.
     bool overall_center_needs_recalc = true;
-    bool go_to_center_of_everything = false; // after map load
+    bool reset_camera = false; // after map load and clicking "Reset Camera"
 
     bool show_editor = true;
     bool show_viewport = true;
@@ -2763,7 +2763,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
 
     g.solo_material = -1;
 
-    g.go_to_center_of_everything = true;
+    g.reset_camera = true;
     g.saved_file_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
 }
 static void map_upload(G &g) {
@@ -6787,13 +6787,13 @@ static void frame(void *userdata) {
             }
             ImGui::NewLine();
 
-            go_to |= g.go_to_center_of_everything;
-            g.overall_center_needs_recalc |= g.go_to_center_of_everything;
+            go_to |= g.reset_camera;
+            g.overall_center_needs_recalc |= g.reset_camera;
 
-            del &= !g.go_to_center_of_everything;
-            duplicate &= !g.go_to_center_of_everything;
-            move &= !g.go_to_center_of_everything;
-            scale &= !g.go_to_center_of_everything;
+            del &= !g.reset_camera;
+            duplicate &= !g.reset_camera;
+            move &= !g.reset_camera;
+            scale &= !g.reset_camera;
 
             if (g.overall_center_needs_recalc) {
                 g.overall_center = {}; // @Lazy
@@ -6888,7 +6888,7 @@ static void frame(void *userdata) {
                         if (&buf - g.map_buffers >= g.map_buffers_count) {
                             break;
                         }
-                        if (buf.selected || g.go_to_center_of_everything) {
+                        if (buf.selected || g.reset_camera) {
                             process_mesh(buf, false, false, false, true);
                         }
                     }
@@ -6900,7 +6900,7 @@ static void frame(void *userdata) {
                     if (&buf - g.map_buffers >= g.map_buffers_count) {
                         break;
                     }
-                    if (buf.selected && !g.go_to_center_of_everything) {
+                    if (buf.selected && !g.reset_camera) {
                         process_mesh(buf, duplicate, move, scale, false);
                     }
                 }
@@ -6908,15 +6908,20 @@ static void frame(void *userdata) {
                 if (g.overall_center_needs_recalc) { // By here, we'll have calced the center
                     g.overall_center_needs_recalc = false;
                 }
-                g.overall_center_needs_recalc |= g.go_to_center_of_everything; // if things were selected after a going-to of everything, recalc the selected centre
+                g.overall_center_needs_recalc |= g.reset_camera; // if things were selected after a camera reset, recalc the selected centre
 
                 if (go_to) {
                     g.cam_pos = g.overall_center;
                     g.cam_pos.X *= 1 * SCALE;
                     g.cam_pos.Y *= -1 * SCALE;
                     g.cam_pos.Z *= -1 * SCALE;
-                    if (g.go_to_center_of_everything) {
-                        g.go_to_center_of_everything = false;
+                    if (g.reset_camera) {
+                        g.pitch = 0;
+                        g.yaw = 0;
+                        g.fov = FOV_DEFAULT;
+                        g.bg_col = BG_COL_DEFAULT;
+                        g.solo_material = -1;
+                        g.reset_camera = false;
                     }
                 }
 
@@ -7465,12 +7470,7 @@ static void frame(void *userdata) {
             ImGui::SliderAngle("Camera FOV", &g.fov, FOV_MIN * (360 / TAU32), FOV_MAX * (360 / TAU32));
             ImGui::NextColumn();
             if (ImGui::Button("Reset Camera")) {
-                g.cam_pos = {};
-                g.pitch = 0;
-                g.yaw = 0;
-                g.fov = FOV_DEFAULT;
-                g.bg_col = BG_COL_DEFAULT;
-                g.solo_material = -1;
+                g.reset_camera = true;
             }
             ImGui::SameLine(); ImGui::Text("(%.0f, %.0f, %.0f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
             ImGui::NextColumn();
