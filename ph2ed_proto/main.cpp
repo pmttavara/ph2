@@ -5730,7 +5730,7 @@ static void frame(void *userdata) {
                 double_break:;
                 MAP_Mesh &mesh = *buf.mesh_ptr;
 
-                const char *source = "";
+                const char *source = "X";
                 if (buf.source == MAP_Geometry_Buffer_Source::Opaque) { source = "Opaque"; }
                 else if (buf.source == MAP_Geometry_Buffer_Source::Transparent) { source = "Transparent"; }
                 else if (buf.source == MAP_Geometry_Buffer_Source::Decal) { source = "Decal"; }
@@ -5741,9 +5741,9 @@ static void frame(void *userdata) {
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
                     if (first_group) {
                         first_group = false;
-                        fprintf(obj, "g master_group1:Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d group1\n", geo_index, source, mesh_index, mesh_part_group_index);
+                        fprintf(obj, "g G%d_%cM%d_MPG%d PH2Grp\n", geo_index, source[0], mesh_index, mesh_part_group_index);
                     } else {
-                        fprintf(obj, "g group1 master_group1:Geometry_%d_%s_Mesh_%d_MeshPartGroup_%d\n", geo_index, source, mesh_index, mesh_part_group_index);
+                        fprintf(obj, "g PH2Grp G%d_%cM%d_MPG%d\n", geo_index, source[0], mesh_index, mesh_part_group_index);
                     }
 
                     int mat_index = mpg.material_index;
