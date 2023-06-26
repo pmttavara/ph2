@@ -911,6 +911,7 @@ struct G : Map {
     bool flip_z_on_export = false;
 
     bool export_materials = true;
+    bool export_materials_alpha_channel_texture = true;
 
     float view_x = 0; // in PIXELS!
     float view_y = 0;
@@ -4914,7 +4915,7 @@ static void frame(void *userdata) {
         save_map(g, g.opened_map_filename);
     }
     bool popup_bool = true;
-    if (ImGui::BeginPopupModal("Open File - Unsaved Changes", &popup_bool)) {
+    if (ImGui::BeginPopupModal("Open File - Unsaved Changes", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
         if (ImGui::Button("Save")) {
             if (save_map(g, g.opened_map_filename)) {
@@ -4934,7 +4935,7 @@ static void frame(void *userdata) {
     if (g.want_exit) {
         ImGui::OpenPopup("Exit - Unsaved Changes");
     }
-    if (ImGui::BeginPopupModal("Exit - Unsaved Changes", &popup_bool)) {
+    if (ImGui::BeginPopupModal("Exit - Unsaved Changes", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
         if (ImGui::Button("Save")) {
             if (save_map(g, g.opened_map_filename)) {
@@ -4959,7 +4960,7 @@ static void frame(void *userdata) {
     if (start_import_obj_model_popup) {
         ImGui::OpenPopup("OBJ Import Options");
     }
-    if (ImGui::BeginPopupModal("OBJ Import Options", &popup_bool)) {
+    if (ImGui::BeginPopupModal("OBJ Import Options", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Checkbox("Flip X on Import", &g.flip_x_on_import);
         ImGui::Checkbox("Flip Y on Import", &g.flip_y_on_import);
         ImGui::Checkbox("Flip Z on Import", &g.flip_z_on_import);
@@ -4979,11 +4980,26 @@ static void frame(void *userdata) {
     if (start_export_selected_as_obj_popup) {
         ImGui::OpenPopup("OBJ Export Options");
     }
-    if (ImGui::BeginPopupModal("OBJ Export Options", &popup_bool)) {
+    if (ImGui::BeginPopupModal("OBJ Export Options", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Checkbox("Flip X on Import", &g.flip_x_on_export);
         ImGui::Checkbox("Flip Y on Export", &g.flip_y_on_export);
         ImGui::Checkbox("Flip Z on Export", &g.flip_z_on_export);
-        ImGui::Checkbox("Export Materials/Textures", &g.export_materials);
+        if (ImGui::Checkbox("Export Materials/Textures", &g.export_materials)) {
+            g.export_materials_alpha_channel_texture = true;
+        }
+        if (g.export_materials) {
+            ImGui::Indent();
+            ImGui::Checkbox("Alpha Channel Texture References", &g.export_materials_alpha_channel_texture);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip("This enables the \"map_d -imfchan m <texture filename>\" directive for each material.\n"
+                                  "It's supported by some Blender OBJ importers, but it may crash some Maya OBJ importers.");
+            }
+            ImGui::Unindent();
+        } else {
+            g.export_materials_alpha_channel_texture = false;
+        }
         if (ImGui::Button("Save...")) {
             obj_export_name = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                            "All Files\0" "*.*\0",
@@ -5864,7 +5880,11 @@ static void frame(void *userdata) {
                 mtl_out(mtl, "  map_Kd %s\n", relativise(tex_export_name));
                 assert(map_tex->texture_ptr);
                 if (map_tex->texture_ptr->format != MAP_Texture_Format_BC1) {
-                    mtl_out(mtl, "  map_d -imfchan m %s\n", relativise(tex_export_name));
+                    if (g.export_materials_alpha_channel_texture) {
+                        mtl_out(mtl, "  map_d -imfchan m %s\n", relativise(tex_export_name));
+                    } else {
+                        mtl_out(mtl, "  #PH2_map_d -imfchan m %s\n", relativise(tex_export_name));
+                    }
                 }
             } else {
                 mtl_out(mtl, "  # Note: This material references a texture that couldn't be found in the file's texture list at the time (Texture ID was %d).\n", mat.texture_id);
