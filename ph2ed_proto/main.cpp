@@ -2926,7 +2926,7 @@ static void test_all_maps(G &g) {
 static void imgui_do_console(G &g) {
     ProfileFunction();
 
-    if (!g.show_console) {
+    if (sapp_is_fullscreen() || !g.show_console) {
         return;
     }
     ImGui::SetNextWindowPos(ImVec2 { sapp_width() * 0.66f, sapp_height() * 0.66f }, ImGuiCond_FirstUseEver);
@@ -4836,12 +4836,16 @@ static void frame(void *userdata) {
         }
         if (ImGui::BeginMenu("View")) {
             defer { ImGui::EndMenu(); };
-            ImGui::MenuItem("Editor", nullptr, &g.show_editor);
-            ImGui::MenuItem("Viewport", nullptr, &g.show_viewport);
-            ImGui::MenuItem("Edit Widget", nullptr, &g.show_edit_widget);
-            ImGui::MenuItem("Textures", nullptr, &g.show_textures);
-            ImGui::MenuItem("Materials", nullptr, &g.show_materials);
-            ImGui::MenuItem("Console", nullptr, &g.show_console);
+            bool is_fullscreen = sapp_is_fullscreen();
+            if (ImGui::MenuItem("Fullscreen", nullptr, &is_fullscreen)) {
+                sapp_toggle_fullscreen();
+            }
+            ImGui::MenuItem("Editor", nullptr, &g.show_editor, !sapp_is_fullscreen());
+            ImGui::MenuItem("Viewport", nullptr, &g.show_viewport, !sapp_is_fullscreen());
+            ImGui::MenuItem("Edit Widget", nullptr, &g.show_edit_widget, !sapp_is_fullscreen());
+            ImGui::MenuItem("Textures", nullptr, &g.show_textures, !sapp_is_fullscreen());
+            ImGui::MenuItem("Materials", nullptr, &g.show_materials, !sapp_is_fullscreen());
+            ImGui::MenuItem("Console", nullptr, &g.show_console, !sapp_is_fullscreen());
         }
         if (ImGui::BeginMenu("About")) {
             defer { ImGui::EndMenu(); };
@@ -5915,7 +5919,7 @@ static void frame(void *userdata) {
         return was_multi;
     };
 
-    if (g.show_editor) {
+    if (!sapp_is_fullscreen() && g.show_editor) {
         ImGui::Begin("Editor", &g.show_editor, ImGuiWindowFlags_NoCollapse);
         defer {
             ImGui::End();
@@ -6740,7 +6744,7 @@ static void frame(void *userdata) {
             }
         }
     }
-    if (g.show_edit_widget) {
+    if (!sapp_is_fullscreen() && g.show_edit_widget) {
         defer {
             ImGui::End();
         };
@@ -7031,7 +7035,7 @@ static void frame(void *userdata) {
         g.ui_selected_texture_subfile = nullptr;
         g.ui_selected_texture = nullptr;
     }
-    if (g.show_textures) {
+    if (!sapp_is_fullscreen() && g.show_textures) {
         ImGui::SetNextWindowPos(ImVec2 { 60, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(256, 256), ImGuiCond_FirstUseEver);
         ImGui::Begin("Textures", &g.show_textures, ImGuiWindowFlags_NoCollapse);
@@ -7264,7 +7268,7 @@ static void frame(void *userdata) {
         g.solo_material = -1;
     }
 
-    if (g.show_materials) {
+    if (!sapp_is_fullscreen() && g.show_materials) {
         ImGui::SetNextWindowPos(ImVec2 { 60 + 256 + 20, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(512, 256), ImGuiCond_FirstUseEver);
         ImGui::Begin("Materials", &g.show_materials, ImGuiWindowFlags_NoCollapse);
@@ -7512,9 +7516,26 @@ static void frame(void *userdata) {
             g.materials.push(mat);
         }
     }
-    if (g.show_viewport) {
-        ImGui::SetNextWindowPos(ImVec2 { sapp_width() * 0.5f, 20 }, ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(sapp_width() * 0.5f, sapp_height() * 0.5f - 20), ImGuiCond_FirstUseEver);
+    if (sapp_is_fullscreen() || g.show_viewport) {
+        const char *name = sapp_is_fullscreen() ? "Viewport##Fullscreen Mode" : "Viewport";
+        bool *p_show = sapp_is_fullscreen() ? nullptr : &g.show_viewport;
+        ImGuiWindowFlags flags = sapp_is_fullscreen() ?
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoScrollWithMouse |
+            ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoDocking :
+            ImGuiWindowFlags_NoCollapse;
+        if (sapp_is_fullscreen()) {
+            ImGui::SetNextWindowPos(ImVec2 { 0, 20 }, ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2 { (float)sapp_width(), (float)sapp_height() }, ImGuiCond_Always);
+        } else {
+            ImGui::SetNextWindowPos(ImVec2 { sapp_width() * 0.5f, 20 }, ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(sapp_width() * 0.5f, sapp_height() * 0.5f - 20), ImGuiCond_FirstUseEver);
+        }
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 1);
         ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 1);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, {0, 0, 0, 1});
@@ -7522,7 +7543,7 @@ static void frame(void *userdata) {
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor();
         };
-        if (ImGui::Begin("Viewport", &g.show_viewport, ImGuiWindowFlags_NoCollapse)) {
+        if (ImGui::Begin(name, p_show, flags)) {
             ImGui::Columns(3);
             ImGui::SliderAngle("Camera FOV", &g.fov, FOV_MIN * (360 / TAU32), FOV_MAX * (360 / TAU32));
             ImGui::NextColumn();
