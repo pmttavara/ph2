@@ -917,6 +917,8 @@ struct G : Map {
     float view_h = 1;
 
     // These are REALLY dumb. But they work.
+    bool want_exit = false;
+
     bool control_s = false;
     bool control_shift_s = false;
 
@@ -1055,6 +1057,10 @@ struct G : Map {
         *this = {};
     }
 };
+
+bool has_unsaved_changes(G &g) {
+    return (g.saved_file_hash != meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head));
+}
 
 static bool cld_face_visible(G &g, PH2CLD_Face *face) {
     for (int subgroup = 0; subgroup < 16; subgroup++) {
@@ -2250,6 +2256,7 @@ static void map_unload(G &g, bool release_only_geometry = false) {
         free(g.opened_map_filename);
         g.opened_map_filename = nullptr;
     }
+    g.saved_file_hash = meow_hash(nullptr, 0);
 
     for (auto &buf : g.map_buffers) {
         buf.shown = true;
@@ -2257,6 +2264,9 @@ static void map_unload(G &g, bool release_only_geometry = false) {
     }
     g.overall_center_needs_recalc = true; // @Note: Bleh.
 
+    if (!release_only_geometry) {
+        assert(!has_unsaved_changes(g));
+    }
 }
 
 static const char *get_non_numbered_dependency_filename(const char *filename) {
@@ -3660,8 +3670,10 @@ static void event(const sapp_event *e_, void *userdata) {
     G &g = *(G *)userdata;
     const sapp_event &e = *e_;
     if (e.type == SAPP_EVENTTYPE_QUIT_REQUESTED) {
-        // @Todo: check for unsaved changes and prompt to make sure the user wants to discard them.
-        // sapp_cancel_quit();
+        if (has_unsaved_changes(g)) {
+            g.want_exit = true;
+            sapp_cancel_quit();
+        }
     }
     if (e.type == SAPP_EVENTTYPE_UNFOCUSED) {
         g.control_state = ControlState::Normal;
@@ -4713,6 +4725,9 @@ bool save_map(G &g, char *requested_save_filename) {
             Log("Couldn't build backup filename!!!");
         }
     }
+    if (success) {
+        assert(!has_unsaved_changes(g));
+    }
     return success;
 }
 
@@ -4862,8 +4877,7 @@ static void frame(void *userdata) {
     bool do_control_o_load = false;
     if (g.control_state != ControlState::Normal); // drop CTRL-S etc when orbiting/dragging
     else if (g.control_o) {
-        bool has_unsaved_changes = (g.saved_file_hash != meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head));
-        if (has_unsaved_changes) {
+        if (has_unsaved_changes(g)) {
             ImGui::OpenPopup("Open File - Unsaved Changes");
         } else {
             do_control_o_load = true;
@@ -4883,8 +4897,8 @@ static void frame(void *userdata) {
     } else if (g.control_s) {
         save_map(g, g.opened_map_filename);
     }
-    bool dummy_popup_bool = true;
-    if (ImGui::BeginPopupModal("Open File - Unsaved Changes", &dummy_popup_bool)) {
+    bool popup_bool = true;
+    if (ImGui::BeginPopupModal("Open File - Unsaved Changes", &popup_bool)) {
         ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
         if (ImGui::Button("Save")) {
             if (save_map(g, g.opened_map_filename)) {
@@ -4901,10 +4915,35 @@ static void frame(void *userdata) {
         }
         ImGui::EndPopup();
     }
+    if (g.want_exit) {
+        ImGui::OpenPopup("Exit - Unsaved Changes");
+    }
+    if (ImGui::BeginPopupModal("Exit - Unsaved Changes", &popup_bool)) {
+        ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
+        if (ImGui::Button("Save")) {
+            if (save_map(g, g.opened_map_filename)) {
+                sapp_request_quit();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::SameLine(); if (ImGui::Button("Don't Save")) {
+            map_unload(g);
+            sapp_request_quit();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine(); if (ImGui::Button("Cancel")) {
+            g.want_exit = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if (!popup_bool) { // went false this frame by closing the popup
+        g.want_exit = false;
+    }
     if (start_import_obj_model_popup) {
         ImGui::OpenPopup("OBJ Import Options");
     }
-    if (ImGui::BeginPopupModal("OBJ Import Options", &dummy_popup_bool)) {
+    if (ImGui::BeginPopupModal("OBJ Import Options", &popup_bool)) {
         ImGui::Checkbox("Flip X on Import", &g.flip_x_on_import);
         ImGui::Checkbox("Flip Y on Import", &g.flip_y_on_import);
         ImGui::Checkbox("Flip Z on Import", &g.flip_z_on_import);
@@ -4924,7 +4963,7 @@ static void frame(void *userdata) {
     if (start_export_selected_as_obj_popup) {
         ImGui::OpenPopup("OBJ Export Options");
     }
-    if (ImGui::BeginPopupModal("OBJ Export Options", &dummy_popup_bool)) {
+    if (ImGui::BeginPopupModal("OBJ Export Options", &popup_bool)) {
         ImGui::Checkbox("Flip X on Import", &g.flip_x_on_export);
         ImGui::Checkbox("Flip Y on Export", &g.flip_y_on_export);
         ImGui::Checkbox("Flip Z on Export", &g.flip_z_on_export);
