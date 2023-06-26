@@ -7583,11 +7583,13 @@ static void frame(void *userdata) {
             g.drag_map_vertex = -1;
         }
         if (!result.hit || !result.map.hit_mesh) {
-            // Hit no MAP mesh; deselect everything
-            for (MAP_Geometry_Buffer &b : g.map_buffers) {
-                b.selected = false;
+            if (!ImGui::GetIO().KeyShift) {
+                // Hit no MAP mesh; deselect everything
+                for (MAP_Geometry_Buffer &b : g.map_buffers) {
+                    b.selected = false;
+                }
+                g.overall_center_needs_recalc = true; // @Note: Bleh.
             }
-            g.overall_center_needs_recalc = true; // @Note: Bleh.
         }
         if (result.hit && result.map.hit_mesh && result.map.hit_vertex < 0) {
             // Hit a MAP triangle; standard multi-selection stuff
