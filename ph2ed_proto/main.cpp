@@ -6755,6 +6755,12 @@ static void frame(void *userdata) {
             }
         }
     }
+
+    bool go_to = false;
+    bool del = false;
+    bool duplicate = false;
+    bool move = false;
+    bool scale = false;
     if (!sapp_is_fullscreen() && g.show_edit_widget) {
         defer {
             ImGui::End();
@@ -6823,11 +6829,11 @@ static void frame(void *userdata) {
             ImGui::Text("MAP Mesh Part Group");
             ImGui::Text("%d selected", num_map_bufs_selected);
 
-            bool go_to = ImGui::Button("Go To Center");
+            go_to = ImGui::Button("Go To Center");
             ImGui::NewLine();
-            bool del = ImGui::Button(num_map_bufs_selected > 1 ? "Delete All###Delete Mesh Part Groups" : "Delete###Delete Mesh Part Groups");
-            bool duplicate = ImGui::Button(num_map_bufs_selected > 1 ? "Duplicate All###Duplicate Mesh Part Groups" : "Duplicate###Duplicate Mesh Part Groups");
-            bool move = false;
+            del = ImGui::Button(num_map_bufs_selected > 1 ? "Delete All###Delete Mesh Part Groups" : "Delete###Delete Mesh Part Groups");
+            duplicate = ImGui::Button(num_map_bufs_selected > 1 ? "Duplicate All###Duplicate Mesh Part Groups" : "Duplicate###Duplicate Mesh Part Groups");
+            move = false;
             ImGui::NewLine();
             ImGui::Text("Move:");
             ImGui::SameLine(); if (ImGui::Button("+X")) { g.displacement = { +100, 0, 0 }; }
@@ -6836,7 +6842,7 @@ static void frame(void *userdata) {
             ImGui::SameLine(); if (ImGui::Button("-Y")) { g.displacement = { 0, -100, 0 }; }
             ImGui::SameLine(); if (ImGui::Button("+Z")) { g.displacement = { 0, 0, +100 }; }
             ImGui::SameLine(); if (ImGui::Button("-Z")) { g.displacement = { 0, 0, -100 }; }
-            bool scale = false;
+            scale = false;
             ImGui::Text("By:");
             ImGui::SameLine(); ImGui::DragFloat3("###Displacement", &g.displacement.X, 10);
             ImGui::NewLine();
@@ -6858,7 +6864,10 @@ static void frame(void *userdata) {
                 }
             }
             ImGui::NewLine();
-
+        }
+    }
+    {
+        {
             go_to |= g.reset_camera;
             g.overall_center_needs_recalc |= g.reset_camera;
 
