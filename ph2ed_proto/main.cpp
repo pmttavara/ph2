@@ -4402,7 +4402,7 @@ static bool parse_material_name(char *s, MAP_OBJ_Import_Material &result) {
     result = {};
 
     char *start = strstr(s, "PH2_");
-    char *end = strstr(s, "_PH2");
+    char *end = strstr(start, "_PH2");
 
     if (!start) {
         return false;
@@ -5125,7 +5125,7 @@ static void frame(void *userdata) {
                 Array<MAP_OBJ_Import_Material> import_materials = {};
                 defer {
                     for (MAP_OBJ_Import_Material &mat : import_materials) {
-                        mat.unstripped_verts.release();
+                        mat.release();
                     }
                 };
 
@@ -5758,12 +5758,7 @@ static void frame(void *userdata) {
                 int indices_start = 0;
                 int mesh_part_group_index = 0;
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
-                    if (first_group) {
-                        first_group = false;
-                        fprintf(obj, "g G%d_%cM%d_MPG%d PH2Grp\n", geo_index, source[0], mesh_index, mesh_part_group_index);
-                    } else {
-                        fprintf(obj, "g PH2Grp G%d_%cM%d_MPG%d\n", geo_index, source[0], mesh_index, mesh_part_group_index);
-                    }
+                    char mat_name_buf[512] = {};
 
                     int mat_index = mpg.material_index;
 
@@ -5783,21 +5778,35 @@ static void frame(void *userdata) {
                                 assert(map_tex->texture_ptr);
                             }
 
-                            mtl_out(obj, "usemtl PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2\n",
-                                    (((uint16_t)mat_index) & 0xFFFF),
-                                    (((uint8_t)mat.mode) & 0xF),
-                                    (((uint32_t)mat.diffuse_color) & 0xFFFFFFFF),
-                                    (((uint32_t)mat.specular_color) & 0xFFFFFFFF),
-                                    ((*(uint32_t *)&mat.specularity) & 0xFFFFFFFF),
-                                    (((uint16_t)mat.texture_id) & 0xFFFF),
-                                    (((uint8_t)!!(map_tex && map_tex->texture_ptr)) & 0xF),
-                                    (((uint8_t)(map_tex ? map_tex->texture_ptr->material : 0)) & 0xF));
+                            if (g.export_materials) {
+                                snprintf(mat_name_buf, sizeof(mat_name_buf), "PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2",
+                                         (((uint16_t)mat_index) & 0xFFFF),
+                                         (((uint8_t)mat.mode) & 0xF),
+                                         (((uint32_t)mat.diffuse_color) & 0xFFFFFFFF),
+                                         (((uint32_t)mat.specular_color) & 0xFFFFFFFF),
+                                         ((*(uint32_t *)&mat.specularity) & 0xFFFFFFFF),
+                                         (((uint16_t)mat.texture_id) & 0xFFFF),
+                                         (((uint8_t)!!(map_tex && map_tex->texture_ptr)) & 0xF),
+                                         (((uint8_t)(map_tex ? map_tex->texture_ptr->material : 0)) & 0xF));
+                            }
                         } else {
                             mtl_out(obj, "# Note: This mesh part group referenced a material that couldn't be found in the file's material list at the time (index was %d, but there were only %d materials).\n", mat_index, materials_count);
                         }
                     } else {
                         mtl_out(obj, "# Note: This mesh part group tried to reference a material that is out of bounds (index was %d, minimum is 0, maximum is 65535).\n", mat_index);
                     }
+
+                    if (first_group) {
+                        first_group = false;
+                        fprintf(obj, "g G%d_%cM%d_MPG%d%s%s PH2Grp\n", geo_index, source[0], mesh_index, mesh_part_group_index, mat_name_buf[0] ? "_" : "", mat_name_buf);
+                    } else {
+                        fprintf(obj, "g PH2Grp G%d_%cM%d_MPG%d%s%s\n", geo_index, source[0], mesh_index, mesh_part_group_index, mat_name_buf[0] ? "_" : "", mat_name_buf);
+                    }
+
+                    if (mat_name_buf[0]) {
+                        mtl_out(obj, "usemtl %s\n", mat_name_buf);
+                    }
+
                     defer { mesh_part_group_index++; };
                     int num_indices = buf.vertices_per_mesh_part_group[mesh_part_group_index];
                     assert(num_indices % 3 == 0);
