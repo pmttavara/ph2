@@ -5591,6 +5591,9 @@ static void frame(void *userdata) {
             }
         }
     auto export_to_obj = [&] {
+
+        auto relativise = [] (char *s) { return s ? max(s, max(strrchr(s, '/'), strrchr(s, '\\')) + 1) : s; };
+
         int obj_export_name_n = (int)strlen(obj_export_name);
         assert(obj_export_name_n >= 4);
         char *mtl_export_name = mprintf("%.*s.mtl", (obj_export_name_n - 4), obj_export_name);
@@ -5638,7 +5641,7 @@ static void frame(void *userdata) {
         mtl_out(mtl, "# Exported at %s\n", time_buf);
 
         fprintf(obj, "\n");
-        mtl_out(obj, "mtllib %s\n", mtl_export_name);
+        mtl_out(obj, "mtllib %s\n", relativise(mtl_export_name));
         mtl_out(obj, "\n");
 
         Array<int> vertices_per_selected_buffer = {};
@@ -5858,10 +5861,10 @@ static void frame(void *userdata) {
             // fprintf(mtl, "  d 1.0\n");
 
             if (map_tex) {
-                mtl_out(mtl, "  map_Kd %s\n", tex_export_name);
+                mtl_out(mtl, "  map_Kd %s\n", relativise(tex_export_name));
                 assert(map_tex->texture_ptr);
                 if (map_tex->texture_ptr->format != MAP_Texture_Format_BC1) {
-                    mtl_out(mtl, "  map_d -imfchan m %s\n", tex_export_name);
+                    mtl_out(mtl, "  map_d -imfchan m %s\n", relativise(tex_export_name));
                 }
             } else {
                 mtl_out(mtl, "  # Note: This material references a texture that couldn't be found in the file's texture list at the time (Texture ID was %d).\n", mat.texture_id);
