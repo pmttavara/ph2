@@ -39,14 +39,14 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <NMakeBuildCommandLine>.\build Release</NMakeBuildCommandLine>
+    <NMakeBuildCommandLine>echo .\build Release</NMakeBuildCommandLine>
     <NMakeOutput>($ProjectDir)\ph2ed_proto.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
     <IntDir>$(SolutionDir)</IntDir>
     <OutDir>$(SolutionDir)</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <NMakeBuildCommandLine>.\build Debug</NMakeBuildCommandLine>
+    <NMakeBuildCommandLine>echo .\build Debug</NMakeBuildCommandLine>
     <NMakeOutput>($ProjectDir)\ph2ed_proto.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
     <OutDir>$(SolutionDir)</OutDir>

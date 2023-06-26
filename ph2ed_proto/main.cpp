@@ -874,7 +874,7 @@ struct G : Map {
     Array<Map_History_Entry> undo_stack = {};
     Array<Map_History_Entry> redo_stack = {};
 
-    uint64_t saved_file_hash = 0;
+    uint64_t saved_file_hash = meow_hash(nullptr, 0);
 
     double last_time = 0;
     double t = 0;
@@ -3292,7 +3292,7 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
     }
 #ifndef NDEBUG
     {
-        map_load(g, "map/ob01 (2).map");
+        // map_load(g, "map/ob01 (2).map");
         // cld_load(g, "../cld/cld/ob01.cld");
         // map_load(g, "map/ap64.map");
         // test_all_maps(g);
@@ -4777,10 +4777,10 @@ static void frame(void *userdata) {
             if (ImGui::MenuItem("Open...", "Ctrl-O")) {
                 g.control_o = true;
             }
-            if (ImGui::MenuItem("Save MAP", "Ctrl-S")) {
+            if (ImGui::MenuItem("Save MAP", "Ctrl-S", nullptr, !!g.opened_map_filename)) {
                 g.control_s = true;
             }
-            if (ImGui::MenuItem("Save MAP As...", "Ctrl-Shift-S")) {
+            if (ImGui::MenuItem("Save MAP As...", "Ctrl-Shift-S", nullptr, !!g.opened_map_filename)) {
                 g.control_s = false;
                 g.control_shift_s = true;
             }
@@ -4855,6 +4855,10 @@ static void frame(void *userdata) {
         ImGui::Text("%.2f MB head, %.2f MB used", The_Arena_Allocator::arena_head / (1024.0 * 1024.0), The_Arena_Allocator::bytes_used / (1024.0 * 1024.0));
     }
 
+    if (!g.opened_map_filename) {
+        g.control_s = false;
+        g.control_shift_s = false;
+    }
     bool do_control_o_load = false;
     if (g.control_state != ControlState::Normal); // drop CTRL-S etc when orbiting/dragging
     else if (g.control_o) {
@@ -6023,9 +6027,9 @@ static void frame(void *userdata) {
             ImGui::Separator();
         }
 #ifndef NDEBUG
-        ImGui::Text("%lld undo frames", g.undo_stack.count);
-        ImGui::Text("%lld redo frames", g.redo_stack.count);
-        ImGui::Separator();
+        // ImGui::Text("%lld undo frames", g.undo_stack.count);
+        // ImGui::Text("%lld redo frames", g.redo_stack.count);
+        // ImGui::Separator();
 #endif
         if (ImGui::CollapsingHeader("MAP Geometries", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::BeginDisabled(g.map_buffers_count <= 0);
@@ -7676,12 +7680,12 @@ static void frame(void *userdata) {
     }
 
 #ifndef NDEBUG
-    if (The_Arena_Allocator::allocations_this_frame != 0) {
-        Log("%d allocations this frame", The_Arena_Allocator::allocations_this_frame);
-        Log("The_Arena_Allocator::arena_head is %llu", The_Arena_Allocator::arena_head);
-        The_Arena_Allocator::allocations_this_frame = 0;
-    }
+    // if (The_Arena_Allocator::allocations_this_frame != 0) {
+    //     Log("%d allocations this frame", The_Arena_Allocator::allocations_this_frame);
+    //     Log("The_Arena_Allocator::arena_head is %llu", The_Arena_Allocator::arena_head);
+    // }
 #endif
+    The_Arena_Allocator::allocations_this_frame = 0;
 
     if (g.cld_must_update) {
         bool can_update = true;
