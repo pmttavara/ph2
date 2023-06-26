@@ -2963,6 +2963,7 @@ static void imgui_do_console(G &g) {
     if (ImGui::InputTextWithHint("###console input", "help", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
         // Process buf
         LogC(IM_COL32_WHITE, "> %s", buf);
+        // @DisableCLD
         if ((0, 0) && memcmp("cld_load ", buf, sizeof("cld_load ") - 1) == 0) {
             char *p = buf + sizeof("cld_load ") - 1;
             while (isspace(*p)) p++;
@@ -5022,6 +5023,7 @@ static void frame(void *userdata) {
             char *slash = max(strrchr(load, '/'), strrchr(load, '\\'));
             char *dot = strrchr(load, '.');
             if (dot > slash) {
+                // @DisableCLD
                 if ((0, 0) && strcmp(dot, ".cld") == 0) {
                     cld_load(g, load);
                 } else if (strcmp(dot, ".map") == 0) {
@@ -6062,6 +6064,7 @@ static void frame(void *userdata) {
                 }
             }
         }
+        // @DisableCLD
         if ((0, 0) && ImGui::CollapsingHeader("CLD Subgroups", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::PushID("CLD Subgroup Visibility Buttons");
             defer {
@@ -6783,7 +6786,7 @@ static void frame(void *userdata) {
                     g.select_cld_face = -1;
                 }
             }
-            {
+            if ((0, 0)) { // @DisableCLD
                 if (!face) {
                     ImGui::BeginDisabled();
                 }
@@ -6807,8 +6810,8 @@ static void frame(void *userdata) {
                     }
                     g.staleify_cld();
                 }
+                ImGui::Separator();
             }
-            ImGui::Separator();
             int num_map_bufs_selected = 0;
             for (auto &buf : g.map_buffers) {
                 if (&buf - g.map_buffers >= g.map_buffers_count) {
