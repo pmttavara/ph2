@@ -7549,6 +7549,7 @@ static void frame(void *userdata) {
             ImGuiWindowFlags_NoCollapse |
             ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoDocking :
+            ImGuiWindowFlags_NoScrollWithMouse |
             ImGuiWindowFlags_NoCollapse;
         if (sapp_is_fullscreen()) {
             ImGui::SetNextWindowPos(ImVec2 { 0, 20 }, ImGuiCond_Always);
