@@ -4812,10 +4812,10 @@ static void frame(void *userdata) {
                 g.control_shift_s = true;
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Import OBJ Model...")) {
+            if (ImGui::MenuItem("Import OBJ Model...", nullptr, nullptr, !!g.opened_map_filename)) {
                 start_import_obj_model_popup = true;
             }
-            if (ImGui::MenuItem("Import DDS Texture...")) {
+            if (ImGui::MenuItem("Import DDS Texture...", nullptr, nullptr, !!g.opened_map_filename)) {
                 dds_file_buf = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds\0"
                                                             "All Files\0" "*.*\0",
                                                            L"Open DDS", true);
@@ -4829,7 +4829,7 @@ static void frame(void *userdata) {
                     any_selected = true;
                 }
             }
-            if (ImGui::MenuItem("Export Selected as OBJ...", nullptr, nullptr, any_selected)) {
+            if (ImGui::MenuItem("Export Selected as OBJ...", nullptr, nullptr, !!g.opened_map_filename && any_selected)) {
                 start_export_selected_as_obj_popup = true;
             }
             ImGui::Separator();
