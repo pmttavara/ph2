@@ -882,6 +882,7 @@ struct G : Map {
 
     float mouse_x = 0;
     float mouse_y = 0;
+    bool hovering_viewport_window = false;
 
     ControlState control_state = {};
     float fov = FOV_DEFAULT;
@@ -3719,7 +3720,7 @@ static void event(const sapp_event *e_, void *userdata) {
     if (g.control_state == ControlState::Normal) {
         bool mouse_in_viewport = (e.mouse_x >= g.view_x && e.mouse_x <= g.view_x + g.view_w &&
                                   e.mouse_y >= g.view_y && e.mouse_y <= g.view_y + g.view_h);
-        if (!mouse_in_viewport || ImGui::GetIO().WantCaptureKeyboard) {
+        if (!mouse_in_viewport || !g.hovering_viewport_window || ImGui::GetIO().WantCaptureKeyboard) {
             return;
         }
     }
@@ -7516,6 +7517,7 @@ static void frame(void *userdata) {
             g.materials.push(mat);
         }
     }
+    g.hovering_viewport_window = false;
     if (sapp_is_fullscreen() || g.show_viewport) {
         const char *name = sapp_is_fullscreen() ? "Viewport##Fullscreen Mode" : "Viewport";
         bool *p_show = sapp_is_fullscreen() ? nullptr : &g.show_viewport;
@@ -7544,6 +7546,9 @@ static void frame(void *userdata) {
             ImGui::PopStyleColor();
         };
         if (ImGui::Begin(name, p_show, flags)) {
+            if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_RootWindow | ImGuiHoveredFlags_NoNavOverride)) {
+                g.hovering_viewport_window = true;
+            }
             ImGui::Columns(3);
             ImGui::SliderAngle("Camera FOV", &g.fov, FOV_MIN * (360 / TAU32), FOV_MAX * (360 / TAU32));
             ImGui::NextColumn();
