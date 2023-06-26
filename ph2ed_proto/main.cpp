@@ -3473,7 +3473,8 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
         for (int vertex_buffer_index = 0; vertex_buffer_index < mesh.vertex_buffers.count; ++vertex_buffer_index) {
             MAP_Mesh_Vertex_Buffer &vertex_buffer = mesh.vertex_buffers[vertex_buffer_index];
 
-            if (buf.selected) for (int vertex_index = 0; vertex_index < vertex_buffer.num_vertices; ++vertex_index) {
+            // HACK
+            if (buf.selected && g.control_state == ControlState::Normal && !ImGui::GetIO().KeyShift) for (int vertex_index = 0; vertex_index < vertex_buffer.num_vertices; ++vertex_index) {
                 HMM_Vec3 vertex = *(HMM_Vec3 *)&vertex_buffer.data.data[vertex_index * vertex_buffer.bytes_per_vertex];
                 // HMM_Vec3 offset = -g.cld_origin() + vertex;
                 // float radius = widget_radius(g, offset) / SCALE;
@@ -3534,7 +3535,8 @@ static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
 
     assert(!g.stale());
 
-    for (int group = 0; group < 4; group++) {
+    // HACK
+    if (g.control_state == ControlState::Normal && !ImGui::GetIO().KeyShift) for (int group = 0; group < 4; group++) {
         PH2CLD_Face *faces = g.cld.group_0_faces;
         size_t num_faces = g.cld.group_0_faces_count;
         if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
@@ -3724,14 +3726,22 @@ static void event(const sapp_event *e_, void *userdata) {
             return;
         }
     }
-    if (g.control_state == ControlState::Normal && e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
+    if (e.type == SAPP_EVENTTYPE_MOUSE_DOWN) {
         if (e.mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-            g.click_ray = screen_to_ray(g, { e.mouse_x, e.mouse_y });
-            g.clicked = true;
-            g.click_result = {};
+            if (g.control_state == ControlState::Normal || g.control_state == ControlState::Orbiting) {
+                HMM_Vec2 pos = { e.mouse_x, e.mouse_y };
+                if (g.control_state == ControlState::Orbiting) {
+                    pos = { g.view_x + g.view_w / 2, g.view_y + g.view_h / 2 };
+                }
+                g.click_ray = screen_to_ray(g, pos);
+                g.clicked = true;
+                g.click_result = {};
+            }
         }
         if (e.mouse_button == SAPP_MOUSEBUTTON_RIGHT) {
-            g.control_state = ControlState::Orbiting;
+            if (g.control_state == ControlState::Normal) {
+                g.control_state = ControlState::Orbiting;
+            }
         }
     }
     if (e.type == SAPP_EVENTTYPE_MOUSE_MOVE) {
@@ -7585,6 +7595,29 @@ static void frame(void *userdata) {
             if (ImGui::BeginChild("###Viewport Rendering Region")) {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
                 dl->AddCallback(viewport_callback, &g);
+                if (g.control_state == ControlState::Orbiting) {
+                    ImVec2 centre = { (float)(int)(g.view_x + g.view_w / 2), (float)(int)(g.view_y + g.view_h / 2) };
+                    // dl->AddCircleFilled(centre.x + 0.5f, centre.y + 0.5f, 3.0f, 0xcc000000);
+                    // dl->AddCircleFilled(centre.x + 0.5f, centre.y + 0.5f, 2.0f, 0xffffffff);
+                    {
+                        ImVec2 min1 = { centre.x - 1, centre.y - 5 };
+                        ImVec2 max1 = { centre.x + 2, centre.y + 6 };
+                        ImVec2 min2 = { centre.x - 5, centre.y - 1 };
+                        ImVec2 max2 = { centre.x + 6, centre.y + 2 };
+                        dl->AddRectFilled(min1, max1, 0xcc000000);
+                        dl->AddRectFilled(min2, max2, 0xcc000000);
+                        min1.x += 1;
+                        min1.y += 1;
+                        max1.x -= 1;
+                        max1.y -= 1;
+                        min2.x += 1;
+                        min2.y += 1;
+                        max2.x -= 1;
+                        max2.y -= 1;
+                        dl->AddRectFilled(min1, max1, 0xffffffff);
+                        dl->AddRectFilled(min2, max2, 0xffffffff);
+                    }
+                }
             }
             ImGui::EndChild();
         }
@@ -7599,8 +7632,6 @@ static void frame(void *userdata) {
     if (!g.stale() && g.control_state != ControlState::Dragging && g.clicked) {
         g.clicked = false;
         auto result = g.click_result;
-
-        g.control_state = ControlState::Normal;
 
         if (!result.hit || result.map.hit_vertex < 0) {
             // Hit no MAP vertex; stop dragging
