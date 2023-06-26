@@ -3265,8 +3265,8 @@ static bool file_exists(const char *filename8) {
 void *operator new(size_t, void *ptr) { return ptr; }
 static void init(void *userdata) {
 
-    spall_ctx = spall_init_file("trace.spall", get_rdtsc_multiplier());
-    assert(spall_ctx.data);
+    // spall_ctx = spall_init_file("trace.spall", get_rdtsc_multiplier());
+    // assert(spall_ctx.data);
     spall_buffer_init(&spall_ctx, &spall_buffer);
 
     ProfileFunction();
@@ -5055,8 +5055,10 @@ static void frame(void *userdata) {
         }
         ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 60.0f);
         ImGui::Text("%.0f FPS", (last_frame - first_frame) / frametime);
-        ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 250.0f);
-        ImGui::Text("%.2f MB head, %.2f MB used", The_Arena_Allocator::arena_head / (1024.0 * 1024.0), The_Arena_Allocator::bytes_used / (1024.0 * 1024.0));
+#ifndef NDEBUG
+        // ImGui::SameLine(sapp_widthf() / sapp_dpi_scale() - 250.0f);
+        // ImGui::Text("%.2f MB head, %.2f MB used", The_Arena_Allocator::arena_head / (1024.0 * 1024.0), The_Arena_Allocator::bytes_used / (1024.0 * 1024.0));
+#endif
     }
 
     if (!g.opened_map_filename) {
