@@ -4934,6 +4934,19 @@ static void frame(void *userdata) {
                                                            "All Files\0" "*.*\0",
                                                           L"Save OBJ", false);
             if (obj_export_name) {
+                char *&s = obj_export_name;
+                size_t n = s ? strlen(s) : 0;
+                char *slash = s ? max(strrchr(s, '/'), strrchr(s, '\\')) : nullptr;
+                char *dot = s ? strrchr(s, '.') : nullptr;
+                if (dot <= slash || strcmp(dot, ".obj") != 0) {
+                    s = (char *)realloc(s, n + 4 + 1);
+                    assert(s);
+                    s[n + 0] = '.';
+                    s[n + 1] = 'o';
+                    s[n + 2] = 'b';
+                    s[n + 3] = 'j';
+                    s[n + 4] = '\0';
+                }
                 ImGui::CloseCurrentPopup();
             }
         }
@@ -5522,11 +5535,16 @@ static void frame(void *userdata) {
             }
         }
     auto export_to_obj = [&] {
-        char *mtl_export_name = mprintf("%s.mtl", obj_export_name);
+        int obj_export_name_n = (int)strlen(obj_export_name);
+        assert(obj_export_name_n >= 4);
+        char *mtl_export_name = mprintf("%.*s.mtl", (obj_export_name_n - 4), obj_export_name);
         if (!mtl_export_name) {
             MsgErr("OBJ Export Error", "Couldn't build MTL filename for \"%s\".", obj_export_name);
             return;
         }
+        defer {
+            free(mtl_export_name);
+        };
         FILE *obj = PH2CLD__fopen(obj_export_name, "w");
         if (!obj) {
             MsgErr("OBJ Export Error", "Couldn't open file \"%s\"!!", obj_export_name);
