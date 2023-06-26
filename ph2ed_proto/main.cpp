@@ -7730,7 +7730,11 @@ static void frame(void *userdata) {
             g.materials.remove_ordered(delete_mat);
             // @Todo @@@: Index patching on EVERY SINGLE mesh group!!!!!!!!!!!!!!!!! @@@
         }
-        if (ImGui::Button("New Material")) {
+
+        ImGui::BeginDisabled(!g.opened_map_filename);
+        bool do_new_material = ImGui::Button("New Material") && g.opened_map_filename;
+        ImGui::EndDisabled();
+        if (do_new_material) {
             MAP_Material mat = {};
             if (!g.materials.empty()) {
                 mat.subfile_index = ((MAP_Material *)g.materials.sentinel->prev)->subfile_index;
