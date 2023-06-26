@@ -870,6 +870,161 @@ struct Ray_Vs_World_Result {
     } cld;
 };
 
+struct Settings {
+    bool show_editor = true;
+    bool show_viewport = true;
+    bool show_textures = true;
+    bool show_materials = true;
+    bool show_console = true;
+    bool show_edit_widget = true;
+
+    bool flip_x_on_import = false;
+    bool flip_y_on_import = false;
+    bool flip_z_on_import = false;
+
+    bool flip_x_on_export = false;
+    bool flip_y_on_export = false;
+    bool flip_z_on_export = false;
+
+    bool export_materials = true;
+    bool export_materials_alpha_channel_texture = true;
+};
+
+#define NEQ(x) do { if ((a.x) != (b.x)) return false; } while (0)
+bool operator==(const Settings &a, const Settings &b) {
+    NEQ(show_editor);
+    NEQ(show_viewport);
+    NEQ(show_textures);
+    NEQ(show_materials);
+    NEQ(show_console);
+    NEQ(show_edit_widget);
+    NEQ(flip_x_on_import);
+    NEQ(flip_y_on_import);
+    NEQ(flip_z_on_import);
+    NEQ(flip_x_on_export);
+    NEQ(flip_y_on_export);
+    NEQ(flip_z_on_export);
+    NEQ(export_materials);
+    NEQ(export_materials_alpha_channel_texture);
+    return true;
+}
+bool operator!=(const Settings &a, const Settings &b) { return !(a == b); }
+
+#define SV_ADD(_version, _field) do { if (ver >= _version) { go(&x->_field); } } while (0)
+#define SV_REMOVE(added, removed, T) do { if (ver >= added && ver < removed) { T t; go(&t); } } while (0)
+
+enum {
+    SV_INVALID,
+    SV_INITIAL,
+
+    // vvvvv add versions here vvvvv
+    // ^^^^^ add versions here ^^^^^
+
+    SV_LatestPlusOne,
+    SV_LATEST = SV_LatestPlusOne - 1,
+};
+
+struct Serializer {
+    int ver = SV_INVALID;
+    bool writing = false;
+
+    // Reader
+    char *start = nullptr;
+    char *end = nullptr;
+    bool error = false;
+
+    char *p = nullptr;
+
+    // Writer
+    Array<char> writer = {};
+    bool expand(uint32_t n) {
+        if (!error) {
+            writer.reserve(writer.count + n);
+            if (!writer.data) {
+                LogErr("Serialized write of %d bytes ran out of memory (and leaked) at index %u\n", n, writer.count);
+                error = true;
+            }
+        }
+        return error;
+    }
+    bool check(uint32_t bytes) {
+        if (!error && p + bytes > end) {
+            LogErr("Serialized read hit EOF reading %d bytes at index %d\n", bytes, (int) (p - start));
+            error = true;
+        }
+        return error;
+    }
+    void start_read(char *magic, char *start_, char *end_) {
+        assert(writing == false);
+        start = start_;
+        end = end_;
+        p = start;
+        assert(magic);
+        int n = (int)strlen(magic);
+        assert(n);
+        if (!check(n)) {
+            error = memcmp(p, magic, n) != 0;
+            p += n;
+        }
+        go(&ver);
+        if (ver < SV_INITIAL) {
+            LogErr("Invalid file version %d\n", ver);
+            error = true;
+        }
+        if (ver > SV_LATEST) {
+            LogErr("File is too new (%d)\n", ver);
+            error = true;
+        }
+        if (error) end = p = start = nullptr;
+    }
+    void start_write(char *magic) {
+        assert(writing == false);
+        writing = true;
+        end = p = start = nullptr;
+        ver = SV_LATEST;
+        assert(magic);
+        int n = (int)strlen(magic);
+        assert(n);
+        if (!expand(n)) {
+            memcpy(writer.end(), magic, n);
+            writer.count += n;
+        }
+        go(&ver);
+        if (error) LogErr("Failed to begin serialized writing\n");
+    }
+    template<typename T> void go(T *x) {
+        if (writing) {
+            if (expand(sizeof(T))) return;
+            memcpy(writer.end(), x, sizeof(T));
+            writer.count += sizeof(T);
+        } else {
+            if (check(sizeof(T))) return;
+            memcpy(x, p, sizeof(T));
+            p += sizeof(T);
+        }
+    }
+    void go(Settings *x) {
+        go(&x->show_editor);
+        go(&x->show_viewport);
+        go(&x->show_textures);
+        go(&x->show_materials);
+        go(&x->show_console);
+        go(&x->show_edit_widget);
+        go(&x->flip_x_on_import);
+        go(&x->flip_y_on_import);
+        go(&x->flip_z_on_import);
+        go(&x->flip_x_on_export);
+        go(&x->flip_y_on_export);
+        go(&x->flip_z_on_export);
+        go(&x->export_materials);
+        go(&x->export_materials_alpha_channel_texture);
+    }
+    void release() {
+        writer.release();
+        *this = {};
+    }
+};
+
 struct G : Map {
     Array<Map_History_Entry> undo_stack = {};
     Array<Map_History_Entry> redo_stack = {};
@@ -895,23 +1050,8 @@ struct G : Map {
     bool overall_center_needs_recalc = true;
     bool reset_camera = false; // after map load and clicking "Reset Camera"
 
-    bool show_editor = true;
-    bool show_viewport = true;
-    bool show_textures = true;
-    bool show_materials = true;
-    bool show_console = true;
-    bool show_edit_widget = true;
-
-    bool flip_x_on_import = false;
-    bool flip_y_on_import = false;
-    bool flip_z_on_import = false;
-
-    bool flip_x_on_export = false;
-    bool flip_y_on_export = false;
-    bool flip_z_on_export = false;
-
-    bool export_materials = true;
-    bool export_materials_alpha_channel_texture = true;
+    Settings settings = {};
+    Settings saved_settings = {};
 
     float view_x = 0; // in PIXELS!
     float view_y = 0;
@@ -2928,12 +3068,12 @@ static void test_all_maps(G &g) {
 static void imgui_do_console(G &g) {
     ProfileFunction();
 
-    if (sapp_is_fullscreen() || !g.show_console) {
+    if (sapp_is_fullscreen() || !g.settings.show_console) {
         return;
     }
     ImGui::SetNextWindowPos(ImVec2 { sapp_width() * 0.66f, sapp_height() * 0.66f }, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2 { sapp_width() * 0.32f, sapp_height() * 0.32f }, ImGuiCond_FirstUseEver);
-    ImGui::Begin("Console", &g.show_console, ImGuiWindowFlags_NoCollapse);
+    ImGui::Begin("Console", &g.settings.show_console, ImGuiWindowFlags_NoCollapse);
     defer {
         ImGui::End();
     };
@@ -3119,6 +3259,9 @@ static bool file_exists(const char *filename8) {
     return file_exists(filename16);
 }
 
+#define PH2_SETTINGS_PATH "settings.ph2"
+#define PH2_SETTINGS_MAGIC "PH2SET\x1b"
+
 void *operator new(size_t, void *ptr) { return ptr; }
 static void init(void *userdata) {
 
@@ -3141,6 +3284,35 @@ static void init(void *userdata) {
 #endif
     G &g = *(G *)userdata;
     new (userdata) G{};
+    {
+        Log("Loading settings from file...");
+        FILE *settings_file = PH2CLD__fopen(PH2_SETTINGS_PATH, "rb");
+        if (settings_file) {
+            defer {
+                fclose(settings_file);
+                settings_file = nullptr;
+            };
+            char buf[2048]; // @Todo: dynamically allocate based on size of the file
+            int bytes_read = (int)fread(buf, 1, sizeof(buf), settings_file);
+            if (bytes_read <= 0) {
+                LogErr("Couldn't read from settings file!");
+            } else if (bytes_read >= sizeof(buf)) {
+                LogErr("Error reading from settings file!");
+            } else {
+                Serializer s = {}; defer { s.release(); };
+                s.start_read(PH2_SETTINGS_MAGIC, buf, buf + bytes_read);
+                Settings load_settings = {};
+                s.go(&load_settings);
+                if (!s.error) {
+                    g.settings = load_settings;
+                    Log("Settings loaded.");
+                }
+            }
+        } else {
+            Log("No settings file found, using default settings.");
+        }
+    }
+    g.saved_settings = g.settings;
     g.last_time = get_time();
     sg_desc desc = {};
     desc.context = sapp_sgcontext();
@@ -4853,12 +5025,12 @@ static void frame(void *userdata) {
             if (ImGui::MenuItem("Fullscreen", nullptr, &is_fullscreen)) {
                 sapp_toggle_fullscreen();
             }
-            ImGui::MenuItem("Editor", nullptr, &g.show_editor, !sapp_is_fullscreen());
-            ImGui::MenuItem("Viewport", nullptr, &g.show_viewport, !sapp_is_fullscreen());
-            ImGui::MenuItem("Edit Widget", nullptr, &g.show_edit_widget, !sapp_is_fullscreen());
-            ImGui::MenuItem("Textures", nullptr, &g.show_textures, !sapp_is_fullscreen());
-            ImGui::MenuItem("Materials", nullptr, &g.show_materials, !sapp_is_fullscreen());
-            ImGui::MenuItem("Console", nullptr, &g.show_console, !sapp_is_fullscreen());
+            ImGui::MenuItem("Editor", nullptr, &g.settings.show_editor, !sapp_is_fullscreen());
+            ImGui::MenuItem("Viewport", nullptr, &g.settings.show_viewport, !sapp_is_fullscreen());
+            ImGui::MenuItem("Edit Widget", nullptr, &g.settings.show_edit_widget, !sapp_is_fullscreen());
+            ImGui::MenuItem("Textures", nullptr, &g.settings.show_textures, !sapp_is_fullscreen());
+            ImGui::MenuItem("Materials", nullptr, &g.settings.show_materials, !sapp_is_fullscreen());
+            ImGui::MenuItem("Console", nullptr, &g.settings.show_console, !sapp_is_fullscreen());
         }
         if (ImGui::BeginMenu("About")) {
             defer { ImGui::EndMenu(); };
@@ -4961,9 +5133,9 @@ static void frame(void *userdata) {
         ImGui::OpenPopup("OBJ Import Options");
     }
     if (ImGui::BeginPopupModal("OBJ Import Options", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Checkbox("Flip X on Import", &g.flip_x_on_import);
-        ImGui::Checkbox("Flip Y on Import", &g.flip_y_on_import);
-        ImGui::Checkbox("Flip Z on Import", &g.flip_z_on_import);
+        ImGui::Checkbox("Flip X on Import", &g.settings.flip_x_on_import);
+        ImGui::Checkbox("Flip Y on Import", &g.settings.flip_y_on_import);
+        ImGui::Checkbox("Flip Z on Import", &g.settings.flip_z_on_import);
         if (ImGui::Button("Open...")) {
             obj_file_buf = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                         "All Files\0" "*.*\0",
@@ -4981,15 +5153,15 @@ static void frame(void *userdata) {
         ImGui::OpenPopup("OBJ Export Options");
     }
     if (ImGui::BeginPopupModal("OBJ Export Options", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Checkbox("Flip X on Import", &g.flip_x_on_export);
-        ImGui::Checkbox("Flip Y on Export", &g.flip_y_on_export);
-        ImGui::Checkbox("Flip Z on Export", &g.flip_z_on_export);
-        if (ImGui::Checkbox("Export Materials/Textures", &g.export_materials)) {
-            g.export_materials_alpha_channel_texture = true;
+        ImGui::Checkbox("Flip X on Import", &g.settings.flip_x_on_export);
+        ImGui::Checkbox("Flip Y on Export", &g.settings.flip_y_on_export);
+        ImGui::Checkbox("Flip Z on Export", &g.settings.flip_z_on_export);
+        if (ImGui::Checkbox("Export Materials/Textures", &g.settings.export_materials)) {
+            g.settings.export_materials_alpha_channel_texture = true;
         }
-        if (g.export_materials) {
+        if (g.settings.export_materials) {
             ImGui::Indent();
-            ImGui::Checkbox("Alpha Channel Texture References", &g.export_materials_alpha_channel_texture);
+            ImGui::Checkbox("Alpha Channel Texture References", &g.settings.export_materials_alpha_channel_texture);
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -4998,7 +5170,7 @@ static void frame(void *userdata) {
             }
             ImGui::Unindent();
         } else {
-            g.export_materials_alpha_channel_texture = false;
+            g.settings.export_materials_alpha_channel_texture = false;
         }
         if (ImGui::Button("Save...")) {
             obj_export_name = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
@@ -5117,9 +5289,9 @@ static void frame(void *userdata) {
                 Array<uint32_t> obj_colours = {}; defer { obj_colours.release(); };
 
                 bool should_import_colours = true;
-                float x_flipper = g.flip_x_on_import ? -1.0f : +1.0f;
-                float y_flipper = g.flip_y_on_import ? -1.0f : +1.0f;
-                float z_flipper = g.flip_z_on_import ? -1.0f : +1.0f;
+                float x_flipper = g.settings.flip_x_on_import ? -1.0f : +1.0f;
+                float y_flipper = g.settings.flip_y_on_import ? -1.0f : +1.0f;
+                float z_flipper = g.settings.flip_z_on_import ? -1.0f : +1.0f;
 
                 Array<PH2MAP__Vertex24> materialless_unstripped_verts = {}; defer { materialless_unstripped_verts.release(); };
                 Array<MAP_OBJ_Import_Material> import_materials = {};
@@ -5628,9 +5800,9 @@ static void frame(void *userdata) {
         defer {
             fclose(obj);
         };
-        auto mtl_out = [&](auto &&... args) { if (g.export_materials) fprintf(args...); };
+        auto mtl_out = [&](auto &&... args) { if (g.settings.export_materials) fprintf(args...); };
         FILE *mtl = nullptr;
-        if (g.export_materials) {
+        if (g.settings.export_materials) {
             mtl = PH2CLD__fopen(mtl_export_name, "w");
             if (!mtl) {
                 MsgErr("OBJ Export Error", "Couldn't open file \"%s\"!!", mtl_export_name);
@@ -5665,9 +5837,9 @@ static void frame(void *userdata) {
             vertices_per_selected_buffer.release();
         };
 
-        float x_flipper = g.flip_x_on_export ? -1.0f : +1.0f;
-        float y_flipper = g.flip_y_on_export ? -1.0f : +1.0f;
-        float z_flipper = g.flip_z_on_export ? -1.0f : +1.0f;
+        float x_flipper = g.settings.flip_x_on_export ? -1.0f : +1.0f;
+        float y_flipper = g.settings.flip_y_on_export ? -1.0f : +1.0f;
+        float z_flipper = g.settings.flip_z_on_export ? -1.0f : +1.0f;
         for (auto &buf : g.map_buffers) {
             if (!buf.selected || &buf - g.map_buffers >= g.map_buffers_count) continue;
             vertices_per_selected_buffer.push((int)buf.vertices.count);
@@ -5778,7 +5950,7 @@ static void frame(void *userdata) {
                                 assert(map_tex->texture_ptr);
                             }
 
-                            if (g.export_materials) {
+                            if (g.settings.export_materials) {
                                 snprintf(mat_name_buf, sizeof(mat_name_buf), "PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2",
                                          (((uint16_t)mat_index) & 0xFFFF),
                                          (((uint8_t)mat.mode) & 0xF),
@@ -5854,7 +6026,7 @@ static void frame(void *userdata) {
                     texture_id_touched[tex->id] = true;
                     unique_textures_referenced++;
 
-                    if (g.export_materials) {
+                    if (g.settings.export_materials) {
                         bool export_success = export_dds(*tex, tex_export_name);
                         if (!export_success) {
                             return;
@@ -5889,7 +6061,7 @@ static void frame(void *userdata) {
                 mtl_out(mtl, "  map_Kd %s\n", relativise(tex_export_name));
                 assert(map_tex->texture_ptr);
                 if (map_tex->texture_ptr->format != MAP_Texture_Format_BC1) {
-                    if (g.export_materials_alpha_channel_texture) {
+                    if (g.settings.export_materials_alpha_channel_texture) {
                         mtl_out(mtl, "  map_d -imfchan m %s\n", relativise(tex_export_name));
                     } else {
                         mtl_out(mtl, "  #PH2_map_d -imfchan m %s\n", relativise(tex_export_name));
@@ -5904,7 +6076,7 @@ static void frame(void *userdata) {
 
         assert(mat_index == materials_count); // Ensure we checked all materials.
 
-        if (g.export_materials) {
+        if (g.settings.export_materials) {
             Log("Material deduplicator: %d unique materials referenced out of %d total.", unique_materials_referenced, materials_referenced);
             Log("Texture deduplicator: %d unique textures referenced out of %d total.", unique_textures_referenced, textures_referenced);
         }
@@ -5964,8 +6136,8 @@ static void frame(void *userdata) {
         return was_multi;
     };
 
-    if (!sapp_is_fullscreen() && g.show_editor) {
-        ImGui::Begin("Editor", &g.show_editor, ImGuiWindowFlags_NoCollapse);
+    if (!sapp_is_fullscreen() && g.settings.show_editor) {
+        ImGui::Begin("Editor", &g.settings.show_editor, ImGuiWindowFlags_NoCollapse);
         defer {
             ImGui::End();
         };
@@ -6796,11 +6968,11 @@ static void frame(void *userdata) {
     bool duplicate = false;
     bool move = false;
     bool scale = false;
-    if (!sapp_is_fullscreen() && g.show_edit_widget) {
+    if (!sapp_is_fullscreen() && g.settings.show_edit_widget) {
         defer {
             ImGui::End();
         };
-        if (ImGui::Begin("Edit Widget", &g.show_edit_widget, ImGuiWindowFlags_NoCollapse)) {
+        if (ImGui::Begin("Edit Widget", &g.settings.show_edit_widget, ImGuiWindowFlags_NoCollapse)) {
             PH2CLD_Face *face = nullptr;
             bool is_quad = false;
             if (g.select_cld_group >= 0 && g.select_cld_face >= 0) {
@@ -7090,10 +7262,10 @@ static void frame(void *userdata) {
         g.ui_selected_texture_subfile = nullptr;
         g.ui_selected_texture = nullptr;
     }
-    if (!sapp_is_fullscreen() && g.show_textures) {
+    if (!sapp_is_fullscreen() && g.settings.show_textures) {
         ImGui::SetNextWindowPos(ImVec2 { 60, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(256, 256), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Textures", &g.show_textures, ImGuiWindowFlags_NoCollapse);
+        ImGui::Begin("Textures", &g.settings.show_textures, ImGuiWindowFlags_NoCollapse);
         defer {
             ImGui::End();
         };
@@ -7323,10 +7495,10 @@ static void frame(void *userdata) {
         g.solo_material = -1;
     }
 
-    if (!sapp_is_fullscreen() && g.show_materials) {
+    if (!sapp_is_fullscreen() && g.settings.show_materials) {
         ImGui::SetNextWindowPos(ImVec2 { 60 + 256 + 20, sapp_height() * 0.98f - 280 }, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(512, 256), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Materials", &g.show_materials, ImGuiWindowFlags_NoCollapse);
+        ImGui::Begin("Materials", &g.settings.show_materials, ImGuiWindowFlags_NoCollapse);
         defer {
             ImGui::End();
         };
@@ -7572,9 +7744,9 @@ static void frame(void *userdata) {
         }
     }
     g.hovering_viewport_window = false;
-    if (sapp_is_fullscreen() || g.show_viewport) {
+    if (sapp_is_fullscreen() || g.settings.show_viewport) {
         const char *name = sapp_is_fullscreen() ? "Viewport##Fullscreen Mode" : "Viewport";
-        bool *p_show = sapp_is_fullscreen() ? nullptr : &g.show_viewport;
+        bool *p_show = sapp_is_fullscreen() ? nullptr : &g.settings.show_viewport;
         ImGuiWindowFlags flags = sapp_is_fullscreen() ?
             ImGuiWindowFlags_NoTitleBar |
             ImGuiWindowFlags_NoResize |
@@ -7909,6 +8081,31 @@ static void frame(void *userdata) {
         simgui_render();
         sg_end_pass();
         sg_commit();
+    }
+
+    if (g.saved_settings != g.settings) {
+        Serializer s = {}; defer { s.release(); };
+        s.start_write(PH2_SETTINGS_MAGIC);
+        s.go(&g.settings);
+        if (!s.error) {
+            FILE *settings_file = PH2CLD__fopen(PH2_SETTINGS_PATH, "wb");
+            if (settings_file) {
+                if (fwrite(s.writer.data, s.writer.count, 1, settings_file) == 1) {
+                    if (!fclose(settings_file)) {
+                        g.saved_settings = g.settings;
+                        Log("Settings saved.");
+                    } else {
+                        LogErr("Couldn't successfully close file!");
+                    }
+                } else {
+                    LogErr("Couldn't write settings data to file!");
+                    fclose(settings_file);
+                }
+                settings_file = nullptr;
+            } else {
+                LogErr("Couldn't open settings file to save settings!");
+            }
+        }
     }
 }
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {

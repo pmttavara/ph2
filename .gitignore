@@ -15,3 +15,4 @@ ph2*.obj
 *.glsl.h
 *.spall
 ph2ed_proto/imgui.ini
+ph2ed_proto/settings.ph2
