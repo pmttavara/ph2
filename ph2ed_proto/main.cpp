@@ -3265,8 +3265,10 @@ static bool file_exists(const char *filename8) {
 void *operator new(size_t, void *ptr) { return ptr; }
 static void init(void *userdata) {
 
-    // spall_ctx = spall_init_file("trace.spall", get_rdtsc_multiplier());
-    // assert(spall_ctx.data);
+#ifndef NDEBUG
+    spall_ctx = spall_init_file("trace.spall", get_rdtsc_multiplier());
+    assert(spall_ctx.data);
+#endif
     spall_buffer_init(&spall_ctx, &spall_buffer);
 
     ProfileFunction();
@@ -4320,7 +4322,7 @@ struct my_dds_header {
     uint32_t caps4;
     uint32_t reserved2;
 };
-char *win_import_or_export_dialog(LPCWSTR formats, LPCWSTR title, bool import = true) {
+char *win_import_or_export_dialog(LPCWSTR formats, LPCWSTR title, bool import, LPCWSTR extension = nullptr) {
     ProfileFunction();
 
     char *result = nullptr;
@@ -4334,11 +4336,12 @@ char *win_import_or_export_dialog(LPCWSTR formats, LPCWSTR title, bool import = 
     ofn.lpstrFile = (LPWSTR)buf;
     ofn.nMaxFile = (DWORD)countof(buf) - 1;
     ofn.lpstrTitle = title;
+    ofn.lpstrDefExt = extension;
     ofn.Flags |= OFN_NOCHANGEDIR;
     ofn.Flags |= OFN_DONTADDTORECENT;
     ofn.Flags |= OFN_FILEMUSTEXIST;
     if (!import) {
-        ofn.Flags |= OFN_OVERWRITEPROMPT;
+        ofn.Flags |= OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;
     }
     if (import ? GetOpenFileNameW(&ofn) : GetSaveFileNameW(&ofn)) {
         result = utf16_to_utf8(buf);
@@ -4359,7 +4362,7 @@ char *win_import_or_export_dialog(LPCWSTR formats, LPCWSTR title, bool import = 
 }
 #define FailIfFalse(e, s, ...) do { \
         if (!(e)) { \
-            MsgErr("DDS Load Error", "DDS import error:\n\n" s "\n\nSorry!", ##__VA_ARGS__); \
+            MsgErr(error_str, "%s error:\n\n" s "\n\nSorry!", context_str, ##__VA_ARGS__); \
             return false; \
         } \
     } while (0)
@@ -4367,12 +4370,13 @@ char *win_import_or_export_dialog(LPCWSTR formats, LPCWSTR title, bool import = 
 bool dds_import(char *filename, MAP_Texture &result) {
     ProfileFunction();
 
+    const char *error_str = "DDS Load Error";
+    const char *context_str = "DDS import";
+
     FILE *f = PH2CLD__fopen(filename, "rb");
     FailIfFalse(f, "File \"%s\" couldn't be opened.", filename);
     defer {
-        if (f) {
-            fclose(f);
-        }
+        fclose(f);
     };
 
     char magic[4];
@@ -4464,16 +4468,16 @@ bool dds_import(char *filename, MAP_Texture &result) {
 bool export_dds(MAP_Texture tex, char *filename) {
     ProfileFunction();
 
+    const char *error_str = "DDS Save Error";
+    const char *context_str = "DDS export";
+
     FILE *f = PH2CLD__fopen(filename, "wb");
-    if (!f) {
-        MsgErr("DDS Export Error", "Couldn't open file \"%s\"!!", filename);
-        return false;
-    }
+    FailIfFalse(f, "File \"%s\" couldn't be opened.", filename);
     defer {
         fclose(f);
     };
 
-    assert(fwrite("DDS\x20", 4, 1, f) == 1);
+    FailIfFalse(fwrite("DDS\x20", 4, 1, f) == 1, "Couldn't write out the DDS file magic number.");
     my_dds_header header = {};
     header.size = 0x7c;
     header.flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_LINEARSIZE;
@@ -4490,8 +4494,8 @@ bool export_dds(MAP_Texture tex, char *filename) {
         default: { assert(false); } break;
     }
     header.caps = DDSCAPS_TEXTURE;
-    assert(fwrite(&header, sizeof(header), 1, f) == 1);
-    assert(fwrite(tex.blob.data, tex.blob.count, 1, f) == 1);
+    FailIfFalse(fwrite(&header, sizeof(header), 1, f) == 1, "Couldn't write out the DDS file header.");
+    FailIfFalse(fwrite(tex.blob.data, tex.blob.count, 1, f) == 1, "Couldn't write out the DDS texture data.");
 
     return true;
 }
@@ -5076,7 +5080,7 @@ static void frame(void *userdata) {
     } else if (g.control_shift_s) {
         char *requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
                                                                      "All Files\0" "*.*\0",
-                                                                    L"Save MAP", false);
+                                                                    L"Save MAP", false, L"map");
         if (requested_save_filename) {
             if (save_map(g, requested_save_filename)) {
                 free(g.opened_map_filename);
@@ -5177,21 +5181,8 @@ static void frame(void *userdata) {
         if (ImGui::Button("Save...")) {
             obj_export_name = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                            "All Files\0" "*.*\0",
-                                                          L"Save OBJ", false);
+                                                          L"Save OBJ", false, L"obj");
             if (obj_export_name) {
-                char *&s = obj_export_name;
-                size_t n = s ? strlen(s) : 0;
-                char *slash = s ? max(strrchr(s, '/'), strrchr(s, '\\')) : nullptr;
-                char *dot = s ? strrchr(s, '.') : nullptr;
-                if (dot <= slash || strcmp(dot, ".obj") != 0) {
-                    s = (char *)realloc(s, n + 4 + 1);
-                    assert(s);
-                    s[n + 0] = '.';
-                    s[n + 1] = 'o';
-                    s[n + 2] = 'b';
-                    s[n + 3] = 'j';
-                    s[n + 4] = '\0';
-                }
                 ImGui::CloseCurrentPopup();
             }
         }
@@ -5763,7 +5754,8 @@ static void frame(void *userdata) {
                     }
                 }
 
-                MsgInfo("OBJ Import", "Imported!");
+                // MsgInfo("OBJ Import", "Imported!");
+                LogC(IM_COL32(0,178,59,255), "Imported from %s!", obj_file_buf);
             } else {
                 MsgErr("OBJ Load Error", "Couldn't open file \"%s\"!!", obj_file_buf);
             }
@@ -5772,7 +5764,8 @@ static void frame(void *userdata) {
             MAP_Texture tex = {};
             bool success = dds_import(dds_file_buf, tex);
             if (success) {
-                MsgInfo("DDS Import", "Imported!");
+                // MsgInfo("DDS Import", "Imported!");
+                LogC(IM_COL32(0,178,59,255), "Imported from %s!", dds_file_buf);
 
                 if (g.texture_subfiles.empty()) {
                     g.texture_subfiles.push();
@@ -6083,7 +6076,8 @@ static void frame(void *userdata) {
             Log("Texture deduplicator: %d unique textures referenced out of %d total.", unique_textures_referenced, textures_referenced);
         }
 
-        MsgInfo("OBJ Export", "Exported!");
+        // MsgInfo("OBJ Export", "Exported!\nSaved to:\n%s", obj_export_name);
+        LogC(IM_COL32(0,178,59,255), "Exported to %s!", obj_export_name);
     };
     if (obj_export_name) {
         export_to_obj();
@@ -7374,6 +7368,26 @@ static void frame(void *userdata) {
             ImGui::SameLine(0, 0);
             ImGui::BeginChild("Editable stuff in the texture panel", ImVec2{0, 45});
 
+            auto &sub = *g.ui_selected_texture_subfile;
+            auto &tex = *g.ui_selected_texture;
+            char *dds_export_path = nullptr;
+            ImGui::SameLine(); if (ImGui::Button("Export DDS...")) {
+                dds_export_path = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds\0"
+                                                              "All Files\0" "*.*\0",
+                                                              L"Save DDS", false, L"dds");
+                if (dds_export_path) {
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            if (dds_export_path) {
+                bool success = export_dds(tex, dds_export_path);
+                if (success) {
+                    // MsgInfo("DDS Export", "Exported!\nSaved to:\n%s", dds_export_path);
+                    LogC(IM_COL32(0,178,59,255), "Exported to %s!", obj_export_name);
+                }
+            }
+            bool hovering_export_button = ImGui::IsItemHovered();
+
             bool non_numbered = (g.ui_selected_texture_subfile->came_from_non_numbered_dependency);
             ImGui::BeginDisabled(non_numbered);
 
@@ -7385,20 +7399,6 @@ static void frame(void *userdata) {
                 g.ui_selected_texture = nullptr;
             } else {
                 show_image = true;
-                auto &sub = *g.ui_selected_texture_subfile;
-                auto &tex = *g.ui_selected_texture;
-                char *dds_export_path = nullptr;
-                ImGui::SameLine(); if (ImGui::Button("Export DDS...")) {
-                    dds_export_path = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds\0"
-                                                                  "All Files\0" "*.*\0",
-                                                                  L"Save DDS", false);
-                }
-                if (dds_export_path) {
-                    bool success = export_dds(tex, dds_export_path);
-                    if (success) {
-                        MsgInfo("DDS Export", "Exported!");
-                    }
-                }
 
                 char *dds_import_buf = nullptr;
                 ImGui::SameLine(); if (ImGui::Button("Replace with DDS...")) {
@@ -7448,7 +7448,7 @@ static void frame(void *userdata) {
             ImGui::EndDisabled();
 
             ImGui::EndChild();
-            if (non_numbered && ImGui::IsItemHovered()) {
+            if (non_numbered && !hovering_export_button && ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Open \"%s\" to edit this texture.", non_numbered_filename);
             }
 
