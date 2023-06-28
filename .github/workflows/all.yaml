@@ -13,7 +13,7 @@ jobs:
           path: ph2ed_proto/ph2ed_proto.exe
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:
-          repo_token: "${{ secrets.RELEASE_TOKEN }}"
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
           automatic_release_tag: "latest"
           prerelease: true
           title: "Latest"
