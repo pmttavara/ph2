@@ -3,3 +3,7 @@
 # Psilent pHill 2
 
 A level editor for Silent Hill 2.
+
+<br>
+
+# [Download Latest (🚨 Unstable! 🚨)](https://github.com/pmttavara/ph2/releases/download/latest/ph2ed_proto.zip)
