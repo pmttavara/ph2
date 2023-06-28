@@ -11,7 +11,7 @@ flags = -showIncludes -nologo -Z7 -EHsc- $
 linker_flags = -nologo -debug -noimplib -noexp -incremental:no
 
 rule Compile
-  command = cl $flags $in -Fo$out -Od -GS  -c -RTCsu -fsanitize=address
+  command = cl $flags $in -Fo$out -Od -GS  -c -RTCsu
   description = Compile $out
   deps = msvc
 
