@@ -5,7 +5,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v2
-      - uses: ilammy/msvc-dev-cmd@v1
+      # - uses: ilammy/msvc-dev-cmd@v1
       - run: ./ci.bat
       - uses: actions/upload-artifact@v2
         with:
@@ -15,6 +15,6 @@ jobs:
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
           automatic_release_tag: "latest"
-          prerelease: true
+          prerelease: false
           title: "Latest"
           files: ph2ed_proto.zip
