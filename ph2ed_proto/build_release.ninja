@@ -11,7 +11,7 @@ flags = -showIncludes -nologo -Z7 -EHsc- $
 linker_flags = -nologo -debug -noimplib -noexp -incremental:no
 
 rule Compile
-  command = cl $flags $in -Fe$out -Od -GS- -DNDEBUG -Fo"$builddir\\" -link $linker_flags
+  command = cl $flags $in -Fe$out -O2 -GS- -DNDEBUG -Fo"$builddir\\" -link $linker_flags
   description = Compile $out
   deps = msvc
 
@@ -19,7 +19,7 @@ rule Compile
 
 
 
-
+build shaders.glsl.h: Sokol_Shdc shaders.glsl
 
 
 build $builddir/ph2ed_proto.exe: Compile main.cpp
