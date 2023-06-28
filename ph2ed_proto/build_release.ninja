@@ -1,0 +1,25 @@
+
+builddir = build/release
+
+rule Sokol_Shdc
+  command = sokol-shdc -i $in -o $out --slang hlsl5 --bytecode
+  description = Sokol $out
+
+flags = -showIncludes -nologo -Z7 -EHsc- $
+  -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505 -wd4334 -wd4244 -wd4267 -wd4706 -wd4100
+
+linker_flags = -nologo -debug -noimplib -noexp -incremental:no
+
+rule Compile
+  command = cl $flags $in -Fe$out -Od -GS- -DNDEBUG -Fo"$builddir\\" -link $linker_flags
+  description = Compile $out
+  deps = msvc
+
+
+
+
+
+
+
+
+build $builddir/ph2ed_proto.exe: Compile main.cpp

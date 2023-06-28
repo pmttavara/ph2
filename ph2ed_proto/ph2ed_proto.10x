@@ -15,13 +15,14 @@
 		<BuildWorkingDirectory></BuildWorkingDirectory>
 		<CancelBuild></CancelBuild>
 		<RunCommand></RunCommand>
+		<RunCommandWorkingDirectory></RunCommandWorkingDirectory>
 		<DebugCommand>$(WorkspaceDirectory)\remedybg.exe start-debugging</DebugCommand>
 		<ExePathCommand></ExePathCommand>
 		<DebugSln>$(WorkspaceDirectory)\ph2ed_proto.sln</DebugSln>
 		<UseVisualStudioEnvBat>true</UseVisualStudioEnvBat>
 		<Configurations>
-			<Configuration>Debug</Configuration>
-			<Configuration>Release</Configuration>
+			<Configuration>debug</Configuration>
+			<Configuration>release</Configuration>
 		</Configurations>
 		<Platforms>
 			<Platform>x64</Platform>

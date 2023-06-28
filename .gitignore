@@ -1,12 +1,11 @@
 .vs/
+build
 ph2ed_proto/assets/
 misc/John_Modest_SH_Level_Viewer*.zip
 misc/SH_Texture_Explorer*.zip
 *.cld
 *.map
-*.map.bak.zip  
-ph2ed_proto/libs.obj
-ph2ed_proto/main.obj
+*.map.bak.zip
 *.pdb
 cld*.exe
 cld*.obj
