@@ -5155,7 +5155,7 @@ static void frame(void *userdata) {
         ImGui::OpenPopup("OBJ Export Options");
     }
     if (ImGui::BeginPopupModal("OBJ Export Options", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Checkbox("Flip X on Import", &g.settings.flip_x_on_export);
+        ImGui::Checkbox("Flip X on Export", &g.settings.flip_x_on_export);
         ImGui::Checkbox("Flip Y on Export", &g.settings.flip_y_on_export);
         ImGui::Checkbox("Flip Z on Export", &g.settings.flip_z_on_export);
         if (ImGui::Checkbox("Export Materials/Textures", &g.settings.export_materials)) {
