@@ -1,0 +1,12 @@
+name: builds
+on: [push]
+jobs:
+  ph2ed_proto:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v2
+      - run: cd ph2ed_proto && build.bat release
+      - uses: actions/upload-artifact@v2
+        with:
+          name: ph2ed_proto
+          path: ph2ed_proto/ph2ed_proto.exe
