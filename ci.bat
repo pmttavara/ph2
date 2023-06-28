@@ -1,4 +1,5 @@
 pushd ph2ed_proto
-call "./build.bat" release
+call "./build.bat" release || exit /b %errorlevel%
 popd
-call tar -a -c -f ph2ed_proto.zip ph2ed_proto/ph2ed_proto.exe
+call powershell Compress-Archive -Force -Path .\ph2ed_proto\ph2ed_proto.exe -DestinationPath ph2ed_proto.zip
+if %errorlevel% neq 0 exit /b %errorlevel%
