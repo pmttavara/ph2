@@ -5,7 +5,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v2
-      - run: ci.bat
+      - run: ./ci.bat
       - uses: actions/upload-artifact@v2
         with:
           name: ph2ed_proto
