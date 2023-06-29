@@ -15,3 +15,4 @@ ph2*.obj
 *.spall
 ph2ed_proto/imgui.ini
 ph2ed_proto/settings.ph2
+ph2ed_proto/build.ninja
