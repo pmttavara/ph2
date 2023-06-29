@@ -5,11 +5,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v2
+      - name: Cache LLVM and Clang
+        id: cache-llvm
+        uses: actions/cache@v3
+        with:
+          path: C:/Program Files/LLVM
+          key: llvm-11
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v1
+        with:
+          version: "11"
+          cached: ${{ steps.cache-llvm.outputs.cache-hit }}
       - run: ./ci.bat
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: ph2ed_proto
-          path: ph2ed_proto/ph2ed_proto.exe
+          path: |
+            ph2ed_proto/ph2ed_proto.exe
+            ph2ed_proto/ph2ed_proto.pdb
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
