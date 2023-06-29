@@ -5,21 +5,28 @@ rule Sokol_Shdc
   command = sokol-shdc -i $in -o $out --slang hlsl5 --bytecode
   description = Sokol $out
 
-flags = -showIncludes -nologo -Z7 -EHsc- $
+flags = -showIncludes -nologo -diagnostics:caret -Z7 -EHsc- $
   -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505 -wd4334 -wd4244 -wd4267 -wd4706 -wd4100
 
-linker_flags = -nologo -debug -noimplib -noexp -incremental:no
+clang_flags = -maes -mavx2 -Brepro $
+  -Wno-sign-compare -Wno-missing-field-initializers -Wno-microsoft-include -Wno-unused $
+  -Wno-missing-field-initializers -Wno-missing-braces -Wno-unused-variable -Wno-deprecated-declarations $
+  -Wno-writable-strings -Wno-string-plus-int -Wno-format-security -Wno-tautological-constant-out-of-range-compare $
+
+linker_flags = -nologo -debug -incremental:no -Brepro -timestamp:1 -pdbsourcepath:X:\\ -pdbaltpath:%_PDB%
 
 rule Compile
-  command = cl $flags $in -Fo$out -Od -GS  -c -RTCsu
+  command =       cl $flags $in -Fo$out -Od -GS  -c $extra_flags -RTCsu
   description = Compile $out
   deps = msvc
 
 rule Link
-  command = link -nologo $in -out:$out $linker_flags
+  command = lld-link -nologo $in -out:$out $linker_flags
   description = Link $out
 
 build shaders.glsl.h: Sokol_Shdc shaders.glsl
 build $builddir/main.obj: Compile main.cpp
 build $builddir/libs.obj: Compile libs.cpp
-build $builddir/ph2ed_proto.exe: Link $builddir/main.obj $builddir/libs.obj
+build $builddir/crash_handler.obj: Compile crash_handler.cpp
+  extra_flags = -DGIT_HASH=$git_hash
+build $builddir/ph2ed_proto.exe: Link $builddir/main.obj $builddir/crash_handler.obj $builddir/libs.obj

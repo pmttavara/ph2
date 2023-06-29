@@ -45,6 +45,11 @@
 				<Defines></Defines>
 				<ForceIncludes></ForceIncludes>
 			</ConfigAndPlatform>
+			<ConfigAndPlatform>
+				<Name>release:x64</Name>
+				<Defines></Defines>
+				<ForceIncludes></ForceIncludes>
+			</ConfigAndPlatform>
 			<Config>
 				<Name>Debug</Name>
 				<Defines></Defines>
@@ -58,6 +63,12 @@
 			<Config>
 				<Name>debug</Name>
 				<Defines></Defines>
+			</Config>
+			<Config>
+				<Name>release</Name>
+				<Defines>
+					<Define>NDEBUG</Define>
+				</Defines>
 			</Config>
 			<Platform>
 				<Name>x64</Name>

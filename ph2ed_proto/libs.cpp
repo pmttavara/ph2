@@ -19,6 +19,12 @@
 #pragma clang diagnostic pop
 #endif
 
+#ifndef NDEBUG
+#define SOKOL_WIN32_FORCE_MAIN
+#endif
+
+#define WinMain sokol__WinMain
+#define main sokol__main
 #define SOKOL_IMPL
 #define SOKOL_D3D11
 //#define SOKOL_GLCORE33

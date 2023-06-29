@@ -4,6 +4,8 @@
 // which are licensed under zlib/libpng license.
 // Dear Imgui is licensed under MIT License. https://github.com/ocornut/imgui/blob/master/LICENSE.txt
 
+#include "app_details.h"
+
 #ifdef NDEBUG
 #include "libs.cpp"
 #endif
@@ -5038,7 +5040,7 @@ static void frame(void *userdata) {
         }
         if (ImGui::BeginMenu("About")) {
             defer { ImGui::EndMenu(); };
-            ImGui::MenuItem("Psilent pHill 2 Editor v0.001", nullptr, false, false);
+            ImGui::MenuItem("Psilent pHill 2 Editor v" APP_VERSION_STRING, nullptr, false, false);
             ImGui::Separator();
 #define URL "https://github.com/pmttavara/ph2"
             if (ImGui::MenuItem(URL)) {
@@ -8450,10 +8452,32 @@ sapp_desc sokol_main(int, char **) {
     d.sample_count = 8;
     d.swap_interval = 0;
     d.high_dpi = true;
-#ifndef NDEBUG
-    d.win32_console_create = true;
-    d.win32_console_utf8 = true;
-#endif
     d.html5_ask_leave_site = true;
     return d;
 }
+
+extern void do_crash_handler();
+
+#undef WinMain
+#undef main
+
+#ifdef NDEBUG
+
+extern int WINAPI sokol__WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nCmdShow);
+int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nCmdShow) {
+    do_crash_handler();
+    return sokol__WinMain(hInstance, hPrevInstance, lpCmdLine, nCmdShow);
+}
+
+#else
+
+extern int sokol__main(int argc, char* argv[]);
+int main(int argc, char **argv) {
+    printf("Process start\n");
+    fflush(stdout);
+
+    do_crash_handler();
+    return sokol__main(argc, argv);
+}
+
+#endif

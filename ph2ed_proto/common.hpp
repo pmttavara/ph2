@@ -89,11 +89,7 @@ static inline int assert_(const char *s) {
 #define assert_STR_(LINE) #LINE
 #define assert_STR(LINE) assert_STR_(LINE)
 #undef assert
-#ifdef NDEBUG
-#define PH2_assert(ignore) ((void)0)
-#else
-#define PH2_assert(e) ((e) || assert_("At " __FILE__ ":" assert_STR(__LINE__) ":\n\n" #e "\n\nPress Retry to debug.") && (__debugbreak(), 0))
-#endif
+#define PH2_assert(e) ((e) || (__debugbreak(), 0))
 #define assert PH2_assert
 #ifdef __cplusplus
 }
