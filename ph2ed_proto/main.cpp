@@ -117,7 +117,7 @@ struct LogMsg {
 };
 enum { LOG_MAX = 16384 };
 LogMsg log_buf[LOG_MAX];
-int log_buf_index = 0;
+unsigned int log_buf_index = 0;
 void LogC_(uint32_t c, const char *fmt, ...) {
     ProfileFunction();
 
@@ -3091,7 +3091,7 @@ static void imgui_do_console(G &g) {
         if (log_start < 0) {
             log_start = 0;
         }
-        for (int i = log_start; i < log_buf_index; i++) {
+        for (unsigned int i = (unsigned int)log_start; i < log_buf_index; i++) {
             ImGui::PushStyleColor(ImGuiCol_Text, log_buf[i % LOG_MAX].colour);
             ImGui::TextWrapped("%s", log_buf[i % LOG_MAX].buf);
             ImGui::PopStyleColor();
@@ -5411,8 +5411,8 @@ static void frame(void *userdata) {
 
                     }
 
-                    char args[6][64] = {};
-                    int matches = sscanf(b, " %s %s %s %s %s %s %s ", directive, args[0], args[1], args[2], args[3], args[4], args[5]);
+                    char args[6][1024] = {};
+                    int matches = sscanf(b, " %2s %1023s %1023s %1023s %1023s %1023s %1023s ", directive, args[0], args[1], args[2], args[3], args[4], args[5]);
                     if (strcmp("v", directive) == 0) {
                         // Position
                         assert(matches == 4 || matches == 7);
