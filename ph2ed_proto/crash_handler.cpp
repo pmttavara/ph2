@@ -28,6 +28,7 @@ template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
 #include <DbgHelp.h>
 #include <Commctrl.h>
 #include <Winhttp.h>
+#include <Psapi.h>
 #pragma comment(lib, "comctl32")
 #pragma comment(lib, "dbghelp")
 #pragma comment(lib, "winhttp")
@@ -35,6 +36,35 @@ template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
 #include "zip.h"
 
 #define DISCORD_WEBHOOK_ENDPOINT "/api/webhooks/1122762006571778138/RakVUJMgDBhohzIWg9aeY8KtL2vuivfF85c7Z1dFI1WNH0dprbPWFnS92AEyzu2hTUIl"
+
+BOOL CALLBACK minidump_callback(void *userdata, MINIDUMP_CALLBACK_INPUT *input, MINIDUMP_CALLBACK_OUTPUT *output) {
+
+    if (input->CallbackType == ModuleCallback) {
+        WCHAR  main[65536];
+        DWORD  main_n = GetProcessImageFileNameW(input->ProcessHandle, main, 65536);
+        WCHAR *path = input->Module.FullPath;
+        DWORD  path_n = 0;
+        while (path[path_n]) { // wcslen() can crash ASan
+            path_n++;
+        }
+        if (main_n && path_n) {
+            for (int a = main_n - 1, b = path_n - 1; a >= 0 && b >= 0; --a, --b) {
+                if (main[a] != path[b]) {
+                    output->ModuleWriteFlags &= ~ModuleWriteDataSeg;
+                    break;
+                }
+                if (path[b] == '/' || path[b] == '\\') {
+                    break;
+                }
+            }
+        }
+        if (output->ModuleWriteFlags & ModuleWriteDataSeg) {
+            printf("Dumping data seg for module %ls\n", path);
+        }
+    }
+
+    return TRUE;
+}
 
 void do_crash_handler() {
 
@@ -61,9 +91,15 @@ void do_crash_handler() {
     }
 
     // Concatenate -no-crash-handler onto the command line for the subprocess
-    int cmd_n = wcslen(cmd);
+    int cmd_n = 0;
+    while (cmd[cmd_n]) { // wcslen() can crash ASan
+        cmd_n++;
+    }
     const wchar_t *append = L" -no-crash-handler";
-    int append_n = wcslen(append);
+    int append_n = 0;
+    while (append[append_n]) { // wcslen() can crash ASan
+        append_n++;
+    }
     wchar_t *cmd_new = (wchar_t *)calloc(cmd_n + append_n + 1, sizeof(wchar_t)); // @Leak
     if (!cmd_new) {
         return; // Error: just run the app without a crash handler.
@@ -207,7 +243,7 @@ void do_crash_handler() {
 
     // Create crash dump file
     file = CreateFileW((LPCWSTR)filename16, GENERIC_WRITE | GENERIC_READ, 0, nullptr,
-                                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                            CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         exit_child();
         ExitProcess(1);
@@ -230,16 +266,20 @@ void do_crash_handler() {
 
     // You could add some others here, but these should be good.
     int flags = MiniDumpNormal
-            | MiniDumpWithHandleData
-            | MiniDumpScanMemory
-            | MiniDumpWithUnloadedModules
-            | MiniDumpWithProcessThreadData
-            | MiniDumpWithThreadInfo
-            | MiniDumpIgnoreInaccessibleMemory;
+              | MiniDumpWithDataSegs
+              | MiniDumpWithHandleData
+              | MiniDumpScanMemory
+              | MiniDumpWithUnloadedModules
+              | MiniDumpWithIndirectlyReferencedMemory
+              | MiniDumpFilterModulePaths
+              | MiniDumpWithProcessThreadData
+              | MiniDumpWithThreadInfo
+              | MiniDumpIgnoreInaccessibleMemory;
 
     // Write minidump
+    MINIDUMP_CALLBACK_INFORMATION mci = { minidump_callback };
     if (!MiniDumpWriteDump(pi.hProcess, GetProcessId(pi.hProcess), file,
-                        (MINIDUMP_TYPE)flags, &mei, nullptr, nullptr)) {
+                           (MINIDUMP_TYPE)flags, &mei, nullptr, &mci)) {
         exit_child();
         ExitProcess(1);
     }
@@ -301,14 +341,9 @@ void do_crash_handler() {
                     zip_close(zip);
                     if (success) {
                         HANDLE file_zip = CreateFileW((LPCWSTR)filename_zip16, GENERIC_READ, 0, nullptr,
-                                                                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                                                               OPEN_EXISTING, FILE_ATTRIBUTE_TEMPORARY, nullptr);
                         uint64_t file_size_zip = 0;
                         if (file_zip != INVALID_HANDLE_VALUE && GetFileSizeEx(file_zip, (LARGE_INTEGER *)&file_size_zip)) {
-
-                            // Discord limit is 25 MB -- can't upload if it's bigger than this
-                            if (file_size_zip >= 2500000) {
-                                ExitProcess(1);
-                            }
 
                             // The file has been zipped, so we don't need the original anymore -- delete it
                             CloseHandle(file);
@@ -330,6 +365,11 @@ void do_crash_handler() {
                 }
             }
         }
+    }
+
+    // Discord limit is 25 MB -- can't upload if it's bigger than this
+    if (file_size >= 25000000) {
+        ExitProcess(1);
     }
 
     // Build MIME multipart-form payload

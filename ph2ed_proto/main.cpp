@@ -2790,8 +2790,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
             }
         }
     }
-    
-    // upload textures and geometries IFF this is a top-level call
+
     if (!is_non_numbered_dependency) {
         if (round_trip_test) { // Round-trip test
             Array<uint8_t> round_trip = {};
@@ -8134,6 +8133,8 @@ static void frame(void *userdata) {
             }
         }
     }
+
+    if (KEY(VK_LCONTROL) && KEY(VK_RSHIFT) && KEY(VK_RMENU) && KEY('Y') && KEY('B')) __debugbreak();
 }
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
     ProfileFunction();
