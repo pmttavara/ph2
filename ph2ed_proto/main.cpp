@@ -3020,8 +3020,10 @@ static void map_upload(G &g) {
         ProfileScope("Update MAP buffer");
 
         auto &buf = g.map_buffers[i];
-        sg_update_buffer(buf.vertex_buffer, sg_range { buf.vertices.data, buf.vertices.count * sizeof(buf.vertices[0]) });
-        sg_update_buffer(buf.index_buffer, sg_range { buf.indices.data, buf.indices.count * sizeof(buf.indices[0]) });
+        if (buf.indices.count > 0) {
+            sg_update_buffer(buf.vertex_buffer, sg_range { buf.vertices.data, buf.vertices.count * sizeof(buf.vertices[0]) });
+            sg_update_buffer(buf.index_buffer, sg_range { buf.indices.data, buf.indices.count * sizeof(buf.indices[0]) });
+        }
 
         // Log("Vertex buffer for map buffer #%d is %d vertices", i, (int)buf.vertices.count);
         // Log("Index buffer for map buffer #%d is %d indices", i, (int)buf.indices.count);
