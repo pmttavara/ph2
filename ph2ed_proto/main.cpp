@@ -1115,8 +1115,7 @@ struct G : Map {
     sg_pipeline decal_pipeline_wireframe = {};
     sg_pipeline decal_pipeline_no_cull_wireframe = {};
 
-    enum { map_buffers_max = 64 };
-    MAP_Geometry_Buffer map_buffers[map_buffers_max];// = {};
+    Array<MAP_Geometry_Buffer> map_buffers = {};
     int map_buffers_count = 0;
 
     Array<MAP_Texture_Buffer> map_textures = {};
@@ -2934,7 +2933,25 @@ static void map_upload(G &g) {
             int mesh_index = 0;
             for (MAP_Mesh &mesh : meshes) {
 
-                assert(g.map_buffers_count < g.map_buffers_max);
+                if (g.map_buffers_count >= g.map_buffers.count) {
+                    auto &buffer = *g.map_buffers.push();
+                    assert(&buffer);
+                    {
+                        sg_buffer_desc d = {};
+                        size_t MAP_MAX_VERTICES_PER_MESH = 65536 * 4; // 64K in each vertex section
+                        size_t MAP_MAX_INDICES_PER_MESH = 100000; // empirical max in stock maps was ~72000 iirc
+                        size_t VERTEX_BUFFER_SIZE = MAP_MAX_VERTICES_PER_MESH * sizeof(MAP_Geometry_Vertex);
+                        size_t INDEX_BUFFER_SIZE = MAP_MAX_INDICES_PER_MESH * sizeof(uint32_t);
+                        d.usage = SG_USAGE_DYNAMIC;
+                        d.type = SG_BUFFERTYPE_VERTEXBUFFER;
+                        d.size = VERTEX_BUFFER_SIZE;
+                        buffer.vertex_buffer = sg_make_buffer(d);
+                        d.type = SG_BUFFERTYPE_INDEXBUFFER;
+                        d.size = INDEX_BUFFER_SIZE;
+                        buffer.index_buffer = sg_make_buffer(d);
+                    }
+                }
+                assert(g.map_buffers_count < g.map_buffers.count);
                 auto &map_buffer = g.map_buffers[g.map_buffers_count++];
                 map_buffer.source = source;
                 map_buffer.id = geo.id;
@@ -3322,7 +3339,8 @@ static void init(void *userdata) {
     g.last_time = get_time();
     sg_desc desc = {};
     desc.context = sapp_sgcontext();
-    desc.buffer_pool_size = 256;
+    desc.buffer_pool_size = 1024;
+    desc.image_pool_size = 1024;
     desc.logger.func = slog_func;
     sg_setup(&desc);
     simgui_desc_t simgui_desc = {};
@@ -3464,22 +3482,6 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
         d.layout.attrs[ATTR_highlight_vertex_circle_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
         d.alpha_to_coverage_enabled = true;
         g.highlight_vertex_circle_pipeline = sg_make_pipeline(d);
-    }
-    {
-        sg_buffer_desc d = {};
-        size_t MAP_MAX_VERTICES_PER_MESH = 65536 * 4; // 64K in each vertex section
-        size_t MAP_MAX_INDICES_PER_MESH = 100000; // empirical max in stock maps was ~72000 iirc
-        size_t VERTEX_BUFFER_SIZE = MAP_MAX_VERTICES_PER_MESH * sizeof(MAP_Geometry_Vertex);
-        size_t INDEX_BUFFER_SIZE = MAP_MAX_INDICES_PER_MESH * sizeof(uint32_t);
-        d.usage = SG_USAGE_DYNAMIC;
-        for (auto &buffer : g.map_buffers) {
-            d.type = SG_BUFFERTYPE_VERTEXBUFFER;
-            d.size = VERTEX_BUFFER_SIZE;
-            buffer.vertex_buffer = sg_make_buffer(d);
-            d.type = SG_BUFFERTYPE_INDEXBUFFER;
-            d.size = INDEX_BUFFER_SIZE;
-            buffer.index_buffer = sg_make_buffer(d);
-        }
     }
 #ifndef NDEBUG
     {
@@ -3643,7 +3645,7 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
     float widget_radius_factor = (widget_pixel_radius / sapp_heightf() * tanf(g.fov / 2) / SCALE);
     Ray_Vs_Sphere_Result sphere_raycast = {};
     for (MAP_Geometry_Buffer &buf : g.map_buffers) {
-        if (&buf - g.map_buffers >= g.map_buffers_count) {
+        if (&buf - g.map_buffers.data >= g.map_buffers_count) {
             break;
         }
         if (!buf.shown) continue;
@@ -4006,7 +4008,7 @@ static void event(const sapp_event *e_, void *userdata) {
                                 // LinkedList<MAP_Mesh, The_Arena_Allocator> *lists[3] = { &geo.opaque_meshes, &geo.transparent_meshes, &geo.decal_meshes };
 
                                 for (MAP_Geometry_Buffer &buf : g.map_buffers) {
-                                    // if (&buf - g.map_buffers >= g.map_buffers_count) {
+                                    // if (&buf - g.map_buffers.data >= g.map_buffers_count) {
                                     //     break;
                                     // }
                                     // if (!buf.shown) continue;
@@ -5003,7 +5005,7 @@ static void frame(void *userdata) {
             }
             bool any_selected = false;
             for (auto &buf : g.map_buffers) {
-                if (&buf - g.map_buffers >= g.map_buffers_count) {
+                if (&buf - g.map_buffers.data >= g.map_buffers_count) {
                     break;
                 }
                 if (buf.selected) {
@@ -5840,7 +5842,7 @@ static void frame(void *userdata) {
         float y_flipper = g.settings.flip_y_on_export ? -1.0f : +1.0f;
         float z_flipper = g.settings.flip_z_on_export ? -1.0f : +1.0f;
         for (auto &buf : g.map_buffers) {
-            if (!buf.selected || &buf - g.map_buffers >= g.map_buffers_count) continue;
+            if (!buf.selected || &buf - g.map_buffers.data >= g.map_buffers_count) continue;
             vertices_per_selected_buffer.push((int)buf.vertices.count);
             for (auto &v : buf.vertices) {
                 auto c = PH2MAP_u32_to_bgra(v.color);
@@ -5853,7 +5855,7 @@ static void frame(void *userdata) {
         {
             int colours_printed = 0;
             for (auto &buf : g.map_buffers) {
-                if (!buf.selected || &buf - g.map_buffers >= g.map_buffers_count) continue;
+                if (!buf.selected || &buf - g.map_buffers.data >= g.map_buffers_count) continue;
                 for (auto &v : buf.vertices) {
                     if (colours_printed % 64 == 0) {
                         fprintf(obj, "\n#MRGB ");
@@ -5885,7 +5887,7 @@ static void frame(void *userdata) {
         int index_base = 0;
         int selected_buffer_index = 0;
         for (MAP_Geometry_Buffer &buf : g.map_buffers) {
-            if (&buf - g.map_buffers >= g.map_buffers_count) {
+            if (&buf - g.map_buffers.data >= g.map_buffers_count) {
                 break;
             }
             if (buf.selected) {
@@ -6124,7 +6126,7 @@ static void frame(void *userdata) {
     auto deselect_all_buffers_and_check_for_multi_select = [&] (auto &&check) -> bool {
         bool was_multi = false;
         for (auto &b : g.map_buffers) {
-            if (&b - g.map_buffers >= g.map_buffers_count) {
+            if (&b - g.map_buffers.data >= g.map_buffers_count) {
                 break;
             }
             was_multi |= check(b);
@@ -6327,7 +6329,7 @@ static void frame(void *userdata) {
                 for (int i = 0; i < g.map_buffers_count; i++) {
                     g.map_buffers[i].shown = !all_buffers_shown;
                 }
-                for (int i = g.map_buffers_count; i < g.map_buffers_max; i++) {
+                for (int i = g.map_buffers_count; i < g.map_buffers.count; i++) {
                     g.map_buffers[i].shown = true;
                 }
             }
@@ -6336,7 +6338,7 @@ static void frame(void *userdata) {
                 for (int i = 0; i < g.map_buffers_count; i++) {
                     g.map_buffers[i].selected = !all_buffers_selected;
                 }
-                for (int i = g.map_buffers_count; i < g.map_buffers_max; i++) {
+                for (int i = g.map_buffers_count; i < g.map_buffers.count; i++) {
                     g.map_buffers[i].selected = false;
                 }
                 g.select_cld_group = -1; // @Cleanup: cld selection clear function?
@@ -6347,7 +6349,7 @@ static void frame(void *userdata) {
 
             auto visit_mesh_buffer = [&] (MAP_Mesh &mesh, auto &&lambda) -> void {
                 for (auto &b : g.map_buffers) {
-                    if (&b - g.map_buffers >= g.map_buffers_count) {
+                    if (&b - g.map_buffers.data >= g.map_buffers_count) {
                         break;
                     }
                     if (b.mesh_ptr == &mesh) {
@@ -7018,7 +7020,7 @@ static void frame(void *userdata) {
             }
             int num_map_bufs_selected = 0;
             for (auto &buf : g.map_buffers) {
-                if (&buf - g.map_buffers >= g.map_buffers_count) {
+                if (&buf - g.map_buffers.data >= g.map_buffers_count) {
                     break;
                 }
                 if (buf.selected) {
@@ -7173,7 +7175,7 @@ static void frame(void *userdata) {
             if (!g.stale()) {
                 if (g.overall_center_needs_recalc) {
                     for (auto &buf : g.map_buffers) {
-                        if (&buf - g.map_buffers >= g.map_buffers_count) {
+                        if (&buf - g.map_buffers.data >= g.map_buffers_count) {
                             break;
                         }
                         if (buf.selected || g.reset_camera) {
@@ -7185,7 +7187,7 @@ static void frame(void *userdata) {
                     g.overall_center /= (float)overall_center_sum;
                 }
                 for (auto &buf : g.map_buffers) {
-                    if (&buf - g.map_buffers >= g.map_buffers_count) {
+                    if (&buf - g.map_buffers.data >= g.map_buffers_count) {
                         break;
                     }
                     if (buf.selected && !g.reset_camera) {
@@ -7229,7 +7231,7 @@ static void frame(void *userdata) {
                 };
                 if (del) {
                     for (auto &buf : g.map_buffers) {
-                        if (&buf - g.map_buffers >= g.map_buffers_count) {
+                        if (&buf - g.map_buffers.data >= g.map_buffers_count) {
                             break;
                         }
                         if (buf.selected) {
