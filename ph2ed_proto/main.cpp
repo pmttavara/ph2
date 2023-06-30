@@ -5642,7 +5642,22 @@ static void frame(void *userdata) {
 
                             if (!texture_deduplicated) {
                                 MAP_Texture tex = {};
-                                bool success = dds_import(import_material.dds_filename_buf, tex);
+                                bool success = false;
+                                char *s = import_material.dds_filename_buf;
+                                if (file_exists(s)) {
+                                    success = dds_import(s, tex);
+                                } else {
+                                    // maybe it was a relative path; search the .OBJ's folder.
+                                    auto obj_file_buf_n = strlen(obj_file_buf);
+                                    auto s_n = strlen(s);
+                                    char *absolute = (char *)calloc(obj_file_buf_n + s_n + 1, 1);
+                                    memcpy(absolute, obj_file_buf, obj_file_buf_n + 1);
+                                    char *slash = max(strrchr(absolute, '/'), strrchr(absolute, '\\'));
+                                    if (slash) {
+                                        memcpy(slash + 1, s, s_n + 1);
+                                        success = dds_import(absolute, tex);
+                                    }
+                                }
                                 if (success) {
                                     tex.id = import_material.texture_id;
                                     tex.material = import_material.texture_unknown;
