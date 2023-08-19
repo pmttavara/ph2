@@ -890,6 +890,9 @@ struct Settings {
 
     bool export_materials = true;
     bool export_materials_alpha_channel_texture = true;
+
+    bool invert_face_winding_on_import = false;
+    bool invert_face_winding_on_export = false;
 };
 
 #define NEQ(x) do { if ((a.x) != (b.x)) return false; } while (0)
@@ -908,18 +911,18 @@ bool operator==(const Settings &a, const Settings &b) {
     NEQ(flip_z_on_export);
     NEQ(export_materials);
     NEQ(export_materials_alpha_channel_texture);
+    NEQ(invert_face_winding_on_import);
+    NEQ(invert_face_winding_on_export);
     return true;
 }
 bool operator!=(const Settings &a, const Settings &b) { return !(a == b); }
-
-#define SV_ADD(_version, _field) do { if (ver >= _version) { go(&x->_field); } } while (0)
-#define SV_REMOVE(added, removed, T) do { if (ver >= added && ver < removed) { T t; go(&t); } } while (0)
 
 enum {
     SV_INVALID,
     SV_INITIAL,
 
     // vvvvv add versions here vvvvv
+    SV_Add_Invert_Face_Winding,
     // ^^^^^ add versions here ^^^^^
 
     SV_LatestPlusOne,
@@ -996,15 +999,31 @@ struct Serializer {
     }
     template<typename T> void go(T *x) {
         if (writing) {
-            if (expand(sizeof(T))) return;
+            if (expand(sizeof(T))) {
+                return;
+            }
             memcpy(writer.end(), x, sizeof(T));
             writer.count += sizeof(T);
         } else {
-            if (check(sizeof(T))) return;
+            if (check(sizeof(T))) {
+                return;
+            }
             memcpy(x, p, sizeof(T));
             p += sizeof(T);
         }
     }
+    template<int Version, typename T> void add(T *x) {
+        if (ver >= Version) {
+            go(x);
+        }
+    }
+    template<int Added, int Removed, typename T> void remove() {
+        if (ver >= Added && ver < Removed) {
+            T t = {};
+            go(&t);
+        }
+    }
+
     void go(Settings *x) {
         go(&x->show_editor);
         go(&x->show_viewport);
@@ -1020,6 +1039,8 @@ struct Serializer {
         go(&x->flip_z_on_export);
         go(&x->export_materials);
         go(&x->export_materials_alpha_channel_texture);
+        add<SV_Add_Invert_Face_Winding>(&x->invert_face_winding_on_import);
+        add<SV_Add_Invert_Face_Winding>(&x->invert_face_winding_on_export);
     }
     void release() {
         writer.release();
@@ -5147,6 +5168,7 @@ static void frame(void *userdata) {
         ImGui::Checkbox("Flip X on Import", &g.settings.flip_x_on_import);
         ImGui::Checkbox("Flip Y on Import", &g.settings.flip_y_on_import);
         ImGui::Checkbox("Flip Z on Import", &g.settings.flip_z_on_import);
+        ImGui::Checkbox("Invert Face Winding on Import", &g.settings.invert_face_winding_on_import);
         if (ImGui::Button("Open...")) {
             obj_file_buf = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                         "All Files\0" "*.*\0",
@@ -5167,6 +5189,7 @@ static void frame(void *userdata) {
         ImGui::Checkbox("Flip X on Export", &g.settings.flip_x_on_export);
         ImGui::Checkbox("Flip Y on Export", &g.settings.flip_y_on_export);
         ImGui::Checkbox("Flip Z on Export", &g.settings.flip_z_on_export);
+        ImGui::Checkbox("Invert Face Winding on Export", &g.settings.invert_face_winding_on_export);
         if (ImGui::Checkbox("Export Materials/Textures", &g.settings.export_materials)) {
             g.settings.export_materials_alpha_channel_texture = true;
         }
@@ -5344,6 +5367,13 @@ static void frame(void *userdata) {
                 }
 
                 rewind(f);
+
+                int vertex_offset_second = 1;
+                int vertex_offset_third = 2;
+                if (g.settings.invert_face_winding_on_import) {
+                    vertex_offset_second = 2;
+                    vertex_offset_third = 1;
+                }
 
                 HMM_Vec3 center = {};
                 while (fgets(b, sizeof(b) - 1, f)) {
@@ -5534,9 +5564,9 @@ static void frame(void *userdata) {
                             //     current_verts->push(vert_c);
                             // }
                         };
-                        push_wound(0, 1, 2);
+                        push_wound(0, vertex_offset_second, vertex_offset_third);
                         if (matches == 5) { // Quad - upload another triangle
-                            push_wound(0, 2, 3);
+                            push_wound(0, 1 + vertex_offset_second, 1 + vertex_offset_third);
                         }
                     }
                     memset(b, 0, sizeof b);
@@ -5898,6 +5928,13 @@ static void frame(void *userdata) {
 
         bool first_group = true;
 
+        int vertex_offset_second = 1;
+        int vertex_offset_third = 2;
+        if (g.settings.invert_face_winding_on_export) {
+            vertex_offset_second = 2;
+            vertex_offset_third = 1;
+        }
+
         int index_base = 0;
         int selected_buffer_index = 0;
         for (MAP_Geometry_Buffer &buf : g.map_buffers) {
@@ -5999,8 +6036,8 @@ static void frame(void *userdata) {
                     assert(num_indices % 3 == 0);
                     for (int i = 0; i < num_indices; i += 3) {
                         int a = index_base + buf.indices[indices_start + i] + 1;
-                        int b = index_base + buf.indices[indices_start + i + 1] + 1;
-                        int c = index_base + buf.indices[indices_start + i + 2] + 1;
+                        int b = index_base + buf.indices[indices_start + i + vertex_offset_second] + 1;
+                        int c = index_base + buf.indices[indices_start + i + vertex_offset_third] + 1;
                         fprintf(obj, "f %d/%d/%d %d/%d/%d %d/%d/%d\n", a, a, a, b, b, b, c, c, c);
                     }
                     indices_start += num_indices;
