@@ -1152,6 +1152,7 @@ struct G : Map {
     bool texture_actual_size = false;
 
     int solo_material = -1; // @Hack, but whatever.
+    MAP_Mesh_Part_Group *hovered_mpg = nullptr; // @Hack, but whatever.
 
     bool cld_must_update = false;
     bool map_must_update = false;
@@ -4967,6 +4968,7 @@ static void frame(void *userdata) {
     }
     simgui_new_frame({ sapp_width(), sapp_height(), dt, sapp_dpi_scale() });
 
+    g.hovered_mpg = nullptr;
     g.click_result = {};
     if (!g.stale() && g.control_state != ControlState::Dragging) {
         Ray ray = g.clicked ? g.click_ray : g.mouse_ray; // @Yuck
@@ -5076,6 +5078,11 @@ static void frame(void *userdata) {
                     ShellExecuteW(0, L"open", L"" URL, 0, 0, SW_SHOW);
                 }
             }
+#ifndef NDEBUG
+            if (ImGui::MenuItem("Item Picker")) {
+                ImGui::DebugStartItemPicker();
+            }
+#endif
         }
         double frametime = 0.0f;
         uint64_t last_frame = sapp_frame_count();
@@ -6549,8 +6556,11 @@ static void frame(void *userdata) {
                         bool ret = ImGui::TreeNodeEx(b, ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_DefaultOpen);
 
                         ImGui::PopStyleColor();
-                        if (bogged && ImGui::IsItemHovered()) {
-                            ImGui::SetTooltip("%s", bogged_reason);
+                        if (ImGui::IsItemHovered()) {
+                            if (bogged) {
+                                ImGui::SetTooltip("%s", bogged_reason);
+                            }
+                            g.hovered_mpg = &mesh_part_group;
                         }
 
                         if (!ret) {
@@ -8278,7 +8288,13 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
             for (int i = 0; i < g.map_buffers_count; i++) {
                 MAP_Geometry_Buffer &buf = g.map_buffers[i];
                 if (!buf.shown) continue;
-                int num_times_to_render = buf.selected && !g.wireframe ? 2 : 1;
+                bool selected = buf.selected;
+                for (MAP_Mesh_Part_Group &mpg : buf.mesh_ptr->mesh_part_groups) {
+                    if (&mpg == g.hovered_mpg) {
+                        selected = true;
+                    }
+                }
+                int num_times_to_render = selected && !g.wireframe ? 2 : 1;
                 sg_pipeline pipelines[2] = {};
                 if (buf.source == MAP_Geometry_Buffer_Source::Opaque) {
                     fs_params.do_a2c_sharpening = true;
@@ -8302,7 +8318,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                     vs_params.M = HMM_Scale({ 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate({});
                 }
                 for (int render_time = 0; render_time < num_times_to_render; ++render_time) {
-                    int is_wireframe = buf.selected && !g.wireframe ? render_time : (int)g.wireframe;
+                    int is_wireframe = selected && !g.wireframe ? render_time : (int)g.wireframe;
                     sg_apply_pipeline(pipelines[is_wireframe]);
                     fs_params.textured = g.textured;
                     fs_params.use_colours = g.use_lighting_colours;
@@ -8325,7 +8341,12 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                         assert(mpg.material_index >= 0);
                         assert(mpg.material_index < 65536);
                         int num_indices = buf.vertices_per_mesh_part_group[mesh_part_group_index];
-                        if (g.solo_material < 0 || g.solo_material == (int)mpg.material_index) {
+
+                        bool should_show = (g.solo_material < 0 || g.solo_material == (int)mpg.material_index);
+                        if (g.hovered_mpg) {
+                            should_show = (&mpg == g.hovered_mpg) || render_time == 0;
+                        }
+                        if (should_show) {
                             fs_params.material_diffuse_color_bgra = HMM_V4(1, 1, 1, 1);
                             MAP_Material *material = g.materials.at_index(mpg.material_index);
                             if (material) {
