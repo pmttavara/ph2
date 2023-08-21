@@ -5000,17 +5000,9 @@ static void frame(void *userdata) {
         free(obj_export_name);
     };
 
-    bool any_bufs_selected_for_export = false;
-    for (auto &buf : g.map_buffers) {
-        if (&buf - g.map_buffers.data >= g.map_buffers_count) {
-            break;
-        }
-        if (buf.selected) {
-            any_bufs_selected_for_export = true;
-        }
-    }
     bool start_import_obj_model_popup = false;
     bool start_export_selected_as_obj_popup = false;
+    bool start_export_all_as_obj_popup = false;
     if (ImGui::BeginMainMenuBar()) {
         defer { ImGui::EndMainMenuBar(); };
         if (ImGui::BeginMenu("File")) {
@@ -5034,8 +5026,20 @@ static void frame(void *userdata) {
                                                             "All Files\0" "*.*\0",
                                                            L"Open DDS", true);
             }
-            if (ImGui::MenuItem(any_bufs_selected_for_export ? "Export Selected as OBJ..." : "Export All as OBJ...", nullptr, nullptr, !!g.opened_map_filename)) {
+            bool any_selected = false;
+            for (auto &buf : g.map_buffers) {
+                if (&buf - g.map_buffers.data >= g.map_buffers_count) {
+                    break;
+                }
+                if (buf.selected) {
+                    any_selected = true;
+                }
+            }
+            if (ImGui::MenuItem("Export Selected as OBJ...", nullptr, nullptr, !!g.opened_map_filename && any_selected)) {
                 start_export_selected_as_obj_popup = true;
+            }
+            if (ImGui::MenuItem("Export All as OBJ...", nullptr, nullptr, !!g.opened_map_filename)) {
+                start_export_all_as_obj_popup = true;
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
@@ -5190,9 +5194,16 @@ static void frame(void *userdata) {
         ImGui::EndPopup();
     }
     if (start_export_selected_as_obj_popup) {
-        ImGui::OpenPopup("OBJ Export Options");
+        ImGui::OpenPopup("OBJ Export Options - Selected");
     }
-    if (ImGui::BeginPopupModal("OBJ Export Options", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (start_export_all_as_obj_popup) {
+        ImGui::OpenPopup("OBJ Export Options - All");
+    }
+
+    bool export_all = false;
+    bool popup_export_obj_selected = ImGui::BeginPopupModal("OBJ Export Options - Selected", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize);
+    bool popup_export_obj_all      = ImGui::BeginPopupModal("OBJ Export Options - All",      &popup_bool, ImGuiWindowFlags_AlwaysAutoResize);
+    if (popup_export_obj_selected || popup_export_obj_all) {
         bool x_changed = ImGui::Checkbox("Flip X on Export", &g.settings.flip_x_on_export);
         bool y_changed = ImGui::Checkbox("Flip Y on Export", &g.settings.flip_y_on_export);
         bool z_changed = ImGui::Checkbox("Flip Z on Export", &g.settings.flip_z_on_export);
@@ -5245,6 +5256,7 @@ static void frame(void *userdata) {
                                                           L"Save OBJ", false, L"obj");
             if (obj_export_name) {
                 ImGui::CloseCurrentPopup();
+                export_all = popup_export_obj_all;
             }
         }
         ImGui::SameLine(); if (ImGui::Button("Cancel")) {
@@ -5919,8 +5931,8 @@ static void frame(void *userdata) {
         float y_flipper = g.settings.flip_y_on_export ? -1.0f : +1.0f;
         float z_flipper = g.settings.flip_z_on_export ? -1.0f : +1.0f;
         for (auto &buf : g.map_buffers) {
-            bool selected = buf.selected || !any_bufs_selected_for_export;
-            if (!selected || &buf - g.map_buffers.data >= g.map_buffers_count) continue;
+            bool should_export = buf.selected || export_all;
+            if (!should_export || &buf - g.map_buffers.data >= g.map_buffers_count) continue;
             vertices_per_selected_buffer.push((int)buf.vertices.count);
             for (auto &v : buf.vertices) {
                 auto c = PH2MAP_u32_to_bgra(v.color);
@@ -5933,8 +5945,8 @@ static void frame(void *userdata) {
         {
             int colours_printed = 0;
             for (auto &buf : g.map_buffers) {
-                bool selected = buf.selected || !any_bufs_selected_for_export;
-                if (!selected || &buf - g.map_buffers.data >= g.map_buffers_count) continue;
+                bool should_export = buf.selected || export_all;
+                if (!should_export || &buf - g.map_buffers.data >= g.map_buffers_count) continue;
                 for (auto &v : buf.vertices) {
                     if (colours_printed % 64 == 0) {
                         fprintf(obj, "\n#MRGB ");
@@ -5976,8 +5988,8 @@ static void frame(void *userdata) {
             if (&buf - g.map_buffers.data >= g.map_buffers_count) {
                 break;
             }
-            bool selected = buf.selected || !any_bufs_selected_for_export;
-            if (selected) {
+            bool should_export = buf.selected || export_all;
+            if (should_export) {
                 defer { selected_buffer_index++; };
                 int geo_index = 0;
                 int mesh_index = 0;
