@@ -5000,6 +5000,15 @@ static void frame(void *userdata) {
         free(obj_export_name);
     };
 
+    bool any_bufs_selected_for_export = false;
+    for (auto &buf : g.map_buffers) {
+        if (&buf - g.map_buffers.data >= g.map_buffers_count) {
+            break;
+        }
+        if (buf.selected) {
+            any_bufs_selected_for_export = true;
+        }
+    }
     bool start_import_obj_model_popup = false;
     bool start_export_selected_as_obj_popup = false;
     if (ImGui::BeginMainMenuBar()) {
@@ -5025,16 +5034,7 @@ static void frame(void *userdata) {
                                                             "All Files\0" "*.*\0",
                                                            L"Open DDS", true);
             }
-            bool any_selected = false;
-            for (auto &buf : g.map_buffers) {
-                if (&buf - g.map_buffers.data >= g.map_buffers_count) {
-                    break;
-                }
-                if (buf.selected) {
-                    any_selected = true;
-                }
-            }
-            if (ImGui::MenuItem("Export Selected as OBJ...", nullptr, nullptr, !!g.opened_map_filename && any_selected)) {
+            if (ImGui::MenuItem(any_bufs_selected_for_export ? "Export Selected as OBJ..." : "Export All as OBJ...", nullptr, nullptr, !!g.opened_map_filename)) {
                 start_export_selected_as_obj_popup = true;
             }
             ImGui::Separator();
@@ -5893,7 +5893,8 @@ static void frame(void *userdata) {
         float y_flipper = g.settings.flip_y_on_export ? -1.0f : +1.0f;
         float z_flipper = g.settings.flip_z_on_export ? -1.0f : +1.0f;
         for (auto &buf : g.map_buffers) {
-            if (!buf.selected || &buf - g.map_buffers.data >= g.map_buffers_count) continue;
+            bool selected = buf.selected || !any_bufs_selected_for_export;
+            if (!selected || &buf - g.map_buffers.data >= g.map_buffers_count) continue;
             vertices_per_selected_buffer.push((int)buf.vertices.count);
             for (auto &v : buf.vertices) {
                 auto c = PH2MAP_u32_to_bgra(v.color);
@@ -5906,7 +5907,8 @@ static void frame(void *userdata) {
         {
             int colours_printed = 0;
             for (auto &buf : g.map_buffers) {
-                if (!buf.selected || &buf - g.map_buffers.data >= g.map_buffers_count) continue;
+                bool selected = buf.selected || !any_bufs_selected_for_export;
+                if (!selected || &buf - g.map_buffers.data >= g.map_buffers_count) continue;
                 for (auto &v : buf.vertices) {
                     if (colours_printed % 64 == 0) {
                         fprintf(obj, "\n#MRGB ");
@@ -5948,7 +5950,8 @@ static void frame(void *userdata) {
             if (&buf - g.map_buffers.data >= g.map_buffers_count) {
                 break;
             }
-            if (buf.selected) {
+            bool selected = buf.selected || !any_bufs_selected_for_export;
+            if (selected) {
                 defer { selected_buffer_index++; };
                 int geo_index = 0;
                 int mesh_index = 0;
