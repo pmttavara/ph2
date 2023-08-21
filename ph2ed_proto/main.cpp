@@ -5193,10 +5193,36 @@ static void frame(void *userdata) {
         ImGui::OpenPopup("OBJ Export Options");
     }
     if (ImGui::BeginPopupModal("OBJ Export Options", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Checkbox("Flip X on Export", &g.settings.flip_x_on_export);
-        ImGui::Checkbox("Flip Y on Export", &g.settings.flip_y_on_export);
-        ImGui::Checkbox("Flip Z on Export", &g.settings.flip_z_on_export);
+        bool x_changed = ImGui::Checkbox("Flip X on Export", &g.settings.flip_x_on_export);
+        bool y_changed = ImGui::Checkbox("Flip Y on Export", &g.settings.flip_y_on_export);
+        bool z_changed = ImGui::Checkbox("Flip Z on Export", &g.settings.flip_z_on_export);
+        if (x_changed || y_changed || z_changed) {
+            g.settings.invert_face_winding_on_export = g.settings.flip_x_on_export ^ g.settings.flip_y_on_export ^ g.settings.flip_z_on_export;
+        }
         ImGui::Checkbox("Invert Face Winding on Export", &g.settings.invert_face_winding_on_export);
+        ImGui::SameLine();
+        if (g.settings.flip_x_on_export ^ g.settings.flip_y_on_export ^ g.settings.flip_z_on_export) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4{0.3f, 0.8f, 0.3f, 1.0f}, "Recommended");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip("The currently selected transformation will change the\n"
+                                  "front-facing orientation of the exported triangles.\n"
+                                  "Use this feature to compensate for that inversion.");
+            }
+        } else {
+            ImGui::TextColored(ImVec4{0.8f, 0.3f, 0.3f, 1.0f}, "Not Recommended");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::SetTooltip("The currently selected transformation does not change\n"
+                                  "the front-facing orientation of any triangles.\n"
+                                  "This feature is only meant to be used to compensate\n"
+                                  "for any inversion.");
+            }
+        }
+        ImGui::Separator();
         if (ImGui::Checkbox("Export Materials/Textures", &g.settings.export_materials)) {
             g.settings.export_materials_alpha_channel_texture = true;
         }
