@@ -1312,6 +1312,7 @@ static void cld_load(G &g, const char *filename) {
     }
 }
 #define Read(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(&(x), ptr, sizeof(x)) && (ptr += sizeof(x)))
+#define WritePtr(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(ptr, &(x), sizeof(x)) && (ptr += sizeof(x)))
 struct PH2MAP__Header {
     uint32_t magic; // should be 0x20010510
     uint32_t file_length;
@@ -4576,14 +4577,6 @@ struct MAP_OBJ_Import_Material {
     uint8_t texture_unknown = 0;
 
     char dds_filename_buf[1024] = {};
-
-    Array<PH2MAP__Vertex24> unstripped_verts = {};
-
-    void release() {
-        ProfileFunction();
-
-        unstripped_verts.release();
-    }
 };
 
 static bool map_obj_import_materials_equivalent(const MAP_OBJ_Import_Material &a, const MAP_OBJ_Import_Material &b) {
@@ -4604,8 +4597,8 @@ static bool parse_material_name(char *s, MAP_OBJ_Import_Material &result) {
 
     result = {};
 
-    char *start = strstr(s, "PH2_");
-    char *end = strstr(start, "_PH2");
+    char *start = s ? strstr(s, "PH2M_") : nullptr;
+    char *end = start ? strstr(start, "_PH2M") : nullptr;
 
     if (!start) {
         return false;
@@ -4615,13 +4608,15 @@ static bool parse_material_name(char *s, MAP_OBJ_Import_Material &result) {
         return false;
     }
 
-    if (end - start != 47) {
+    static const constexpr int len_of_end_minus_start = sizeof("PH2M_0000_0_00000000_00000000_00000000_0000_0_00") - 1;
+
+    if (end - start != len_of_end_minus_start) {
         return false;
     }
 
     bool underscores_good = true;
-    for (int i = 0; i < 47; ++i) {
-        const char *p = "PH2_0000_0_00000000_00000000_00000000_0000_0_00_PH2" + i;
+    for (int i = 0; i < len_of_end_minus_start; ++i) {
+        const char *p = "PH2M_0000_0_00000000_00000000_00000000_0000_0_00_PH2M" + i;
         if (*p == '_') {
             if (start[i] != '_') {
                 underscores_good = false;
@@ -4643,7 +4638,7 @@ static bool parse_material_name(char *s, MAP_OBJ_Import_Material &result) {
     unsigned int tex_unknown = 0;
 
     int matches = sscanf(start,
-                         "PH2_%x_%x_%x_%x_%x_%x_%x_%x_PH2",
+                         "PH2M_%x_%x_%x_%x_%x_%x_%x_%x_PH2M",
                          &mat_index,
                          &mat_mode,
                          &mat_diffuse_color,
@@ -4711,7 +4706,17 @@ static void parse_mtl(FILE *mtl, Array<MAP_OBJ_Import_Material> &materials) {
             continue;
         }
 
-        materials.push(mat);
+        bool duplicate = false;
+        for (MAP_OBJ_Import_Material &other : materials) {
+            if (map_obj_import_materials_equivalent(mat, other)) {
+                duplicate = true;
+                break;
+            }
+        }
+
+        if (!duplicate) {
+            materials.push(mat);
+        }
     }
 }
 
@@ -5217,7 +5222,7 @@ static void frame(void *userdata) {
             ImGui::TextColored(ImVec4{0.3f, 0.8f, 0.3f, 1.0f}, "Recommended");
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("The currently selected transformation will change the\n"
                                   "front-facing orientation of the exported triangles.\n"
                                   "Use this feature to compensate for that inversion.");
@@ -5226,7 +5231,7 @@ static void frame(void *userdata) {
             ImGui::TextColored(ImVec4{0.8f, 0.3f, 0.3f, 1.0f}, "Not Recommended");
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("The currently selected transformation does not change\n"
                                   "the front-facing orientation of any triangles.\n"
                                   "This feature is only meant to be used to compensate\n"
@@ -5242,7 +5247,7 @@ static void frame(void *userdata) {
             ImGui::Checkbox("Alpha Channel Texture References", &g.settings.export_materials_alpha_channel_texture);
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("This enables the \"map_d -imfchan m <texture filename>\" directive for each material.\n"
                                   "It's supported by some Blender OBJ importers, but it may crash some Maya OBJ importers.");
             }
@@ -5343,6 +5348,7 @@ static void frame(void *userdata) {
         }
     };
         if (obj_file_buf) {
+            g.map_must_update = true;
             FILE *f = PH2CLD__fopen(obj_file_buf, "r");
             if (f) {
                 defer {
@@ -5354,20 +5360,39 @@ static void frame(void *userdata) {
                 Array<HMM_Vec3> obj_normals = {}; defer { obj_normals.release(); };
                 Array<uint32_t> obj_colours = {}; defer { obj_colours.release(); };
 
-                bool should_import_colours = true;
                 float x_flipper = g.settings.flip_x_on_import ? -1.0f : +1.0f;
                 float y_flipper = g.settings.flip_y_on_import ? -1.0f : +1.0f;
                 float z_flipper = g.settings.flip_z_on_import ? -1.0f : +1.0f;
 
-                Array<PH2MAP__Vertex24> materialless_unstripped_verts = {}; defer { materialless_unstripped_verts.release(); };
                 Array<MAP_OBJ_Import_Material> import_materials = {};
-                defer {
-                    for (MAP_OBJ_Import_Material &mat : import_materials) {
-                        mat.release();
+
+                struct Unstripped_Mpg {
+                    Array<PH2MAP__Vertex24> verts = {};
+                    int geo_index = -1;
+                    int geo_id = -1;
+                    MAP_Geometry_Buffer_Source source = MAP_Geometry_Buffer_Source::Opaque;
+                    int mesh_index = -1;
+                    int bytes_per_vertex = -1;
+                    int import_material_index = -1;
+
+                    void release() {
+                        ProfileFunction();
+
+                        verts.release();
                     }
                 };
 
-                Array<PH2MAP__Vertex24> *current_verts = &materialless_unstripped_verts;
+                Array<Unstripped_Mpg> unstripped_mpgs = {};
+
+                defer {
+                    for (Unstripped_Mpg &mpg : unstripped_mpgs) {
+                        mpg.release();
+                    }
+
+                    unstripped_mpgs.release();
+                };
+
+                int current_mpg = -1;
 
                 char b[1024] = {};
                 while (fgets(b, sizeof(b) - 1, f)) {
@@ -5478,15 +5503,105 @@ static void frame(void *userdata) {
                             continue;
                         }
 
+                        int index = -1;
                         for (MAP_OBJ_Import_Material &import_material : import_materials) {
                             if (map_obj_import_materials_equivalent(mat, import_material)) {
-                                current_verts = &import_material.unstripped_verts;
+                                index = (int)(&import_material - import_materials.data); // Hack
                                 break;
                             }
                         }
 
+                        if (index >= 0) {
+                            if (current_mpg < 0 || unstripped_mpgs[current_mpg].verts.count > 0) {
+                                // either no current mpg, or the current one already has some vertices with another material
+                                unstripped_mpgs.push();
+                                current_mpg = unstripped_mpgs.count - 1;
+                            }
+                            // @Note: This will override material specified by the group name if there was one.
+                            //        So basically if you change usemtl without changing g, usemtl takes priority
+                            unstripped_mpgs[current_mpg].import_material_index = index;
+                        }
+
                         continue;
 
+                    }
+
+                    if (memcmp(s, "g ", 2) == 0) {
+                        s += 2;
+
+                        while (isspace(s[0])) {
+                            ++s;
+                        }
+
+                        // if we don't parse a PH2G_x_x_xx_xx, add an unspecified MPG
+                        bool added_valid_mpg = false;
+                        defer {
+                            if (!added_valid_mpg) {
+                                unstripped_mpgs.push();
+                                current_mpg = unstripped_mpgs.count - 1;
+                            }
+                        };
+
+                        unsigned int geo_index = 0;
+                        unsigned int geo_id = 0;
+                        char source = 0;
+                        unsigned int mesh_index = 0;
+                        unsigned int bytes_per_vertex = 0;
+                        int import_material_index = -1;
+
+                        int matches = sscanf(s, "PH2G_%u_%u_%c%u_%x", &geo_index, &geo_id, &source, &mesh_index, &bytes_per_vertex);
+
+                        if (matches != 5) {
+                            continue; // fail case; add unspecified MPG
+                        }
+
+                        if (geo_index >= 128) {
+                            continue; // fail case; add unspecified MPG
+                        }
+
+                        if (source == 'O') {
+                            source = 0;
+                        } else if (source == 'T') {
+                            source = 1;
+                        } else if (source == 'D') {
+                            source = 2;
+                        } else {
+                            continue; // fail case; add unspecified MPG
+                        }
+
+                        if (mesh_index >= 128) {
+                            continue; // fail case; add unspecified MPG
+                        }
+
+                        if (bytes_per_vertex != 0x14 &&
+                            bytes_per_vertex != 0x18 &&
+                            bytes_per_vertex != 0x20 &&
+                            bytes_per_vertex != 0x24) {
+                            continue; // fail case; add unspecified MPG
+                        }
+
+                        MAP_OBJ_Import_Material mat = {};
+                        if (parse_material_name(s, mat)) {
+                            for (MAP_OBJ_Import_Material &import_material : import_materials) {
+                                if (map_obj_import_materials_equivalent(mat, import_material)) {
+                                    import_material_index = (int)(&import_material - import_materials.data); // Hack
+                                    break;
+                                }
+                            }
+                        }
+
+                        Unstripped_Mpg new_mpg = {};
+                        new_mpg.geo_index = geo_index;
+                        new_mpg.geo_id = geo_id;
+                        new_mpg.source = (MAP_Geometry_Buffer_Source)source;
+                        new_mpg.mesh_index = mesh_index;
+                        new_mpg.bytes_per_vertex = bytes_per_vertex;
+                        new_mpg.import_material_index = import_material_index;
+                        unstripped_mpgs.push(new_mpg);
+                        current_mpg = unstripped_mpgs.count - 1;
+                        added_valid_mpg = true;
+
+                        continue;
                     }
 
                     char args[6][1024] = {};
@@ -5580,10 +5695,17 @@ static void frame(void *userdata) {
                             }
                             verts_to_push[i] = vert;
                         }
+                        if (current_mpg < 0) {
+                            unstripped_mpgs.push();
+                            current_mpg = 0;
+                        }
                         auto push_wound = [&] (int a, int b, int c) {
                             PH2MAP__Vertex24 vert_a = verts_to_push[a];
                             PH2MAP__Vertex24 vert_b = verts_to_push[b];
                             PH2MAP__Vertex24 vert_c = verts_to_push[c];
+                            assert(HMM_LenSqr(*(HMM_Vec3 *)vert_a.position) > 0);
+                            assert(HMM_LenSqr(*(HMM_Vec3 *)vert_b.position) > 0);
+                            assert(HMM_LenSqr(*(HMM_Vec3 *)vert_c.position) > 0);
                             // // Infer face winding by comparing cross product to normal
                             // HMM_Vec3 v0 = { vert_a.position[0], vert_a.position[1], vert_a.position[2] };
                             // HMM_Vec3 v1 = { vert_b.position[0], vert_b.position[1], vert_b.position[2] };
@@ -5600,13 +5722,13 @@ static void frame(void *userdata) {
 
                             // bool is_wound_right = (dot >= 0);
                             // if (is_wound_right) {
-                                current_verts->push(vert_a);
-                                current_verts->push(vert_b);
-                                current_verts->push(vert_c);
+                                unstripped_mpgs[current_mpg].verts.push(vert_a);
+                                unstripped_mpgs[current_mpg].verts.push(vert_b);
+                                unstripped_mpgs[current_mpg].verts.push(vert_c);
                             // } else {
-                            //     current_verts->push(vert_b);
-                            //     current_verts->push(vert_a);
-                            //     current_verts->push(vert_c);
+                            //     unstripped_mpgs[current_mpg].verts.push(vert_b);
+                            //     unstripped_mpgs[current_mpg].verts.push(vert_a);
+                            //     unstripped_mpgs[current_mpg].verts.push(vert_c);
                             // }
                         };
                         push_wound(0, vertex_offset_second, vertex_offset_third);
@@ -5628,127 +5750,230 @@ static void frame(void *userdata) {
 
                 Log("We got %lld positions, %lld uvs, %lld normals.", obj_positions.count, obj_uvs.count, obj_normals.count);
 
-                {
+                auto add_geo = [&] () -> MAP_Geometry * {
                     MAP_Geometry geo = {};
                     if (!g.geometries.empty()) {
                         geo.subfile_index = ((MAP_Geometry *)g.geometries.sentinel->prev)->subfile_index;
                     }
-                    g.geometries.push(geo);
+                    MAP_Geometry *result = g.geometries.push(geo);
+                    result->opaque_meshes.init();
+                    result->transparent_meshes.init();
+                    result->decal_meshes.init();
+                    return result;
+                };
+
+                auto find_or_add_geo = [&] (int geo_index) -> MAP_Geometry * {
+                    if (geo_index < 0) {
+                        return add_geo();
+                    }
+                    assert(geo_index < 128);
+                    MAP_Geometry *at_index = g.geometries.at_index(geo_index);
+                    if (at_index) {
+                        return at_index;
+                    }
+                    for (int i = g.geometries.count(); i < geo_index; ++i) {
+                        auto x = add_geo();
+                        assert(x);
+                    }
+                    return add_geo();
+                };
+
+                auto find_or_add_mesh = [&] (MAP_Geometry *geo, MAP_Geometry_Buffer_Source source, int mesh_index) -> MAP_Mesh * {
+                    assert(mesh_index < 128);
+                    LinkedList<MAP_Mesh, The_Arena_Allocator> *meshes = nullptr;
+                    if (source == MAP_Geometry_Buffer_Source::Opaque) meshes = &geo->opaque_meshes;
+                    else if (source == MAP_Geometry_Buffer_Source::Transparent) meshes = &geo->transparent_meshes;
+                    else if (source == MAP_Geometry_Buffer_Source::Decal) meshes = &geo->decal_meshes;
+                    else {
+                        assert(false);
+                        return nullptr;
+                    }
+                    if (mesh_index < 0) {
+                        return meshes->push();
+                    }
+                    MAP_Mesh *at_index = meshes->at_index(mesh_index);
+                    if (at_index) {
+                        return at_index;
+                    }
+                    for (int i = meshes->count(); i < mesh_index; ++i) {
+                        auto x = meshes->push();
+                        assert(x);
+                    }
+                    return meshes->push();
+                };
+
+                auto find_or_add_material = [&] (MAP_OBJ_Import_Material &import_material) -> int {
+                    int material_index = 0;
+
+                    bool material_deduplicated = false;
+
+                    if (MAP_Material *mat = g.materials.at_index(import_material.index_in_materials_array)) {
+                        if ((mat->mode == import_material.mode) &&
+                            (mat->diffuse_color == import_material.diffuse_color) &&
+                            (mat->specular_color == import_material.specular_color) &&
+                            (mat->specularity == import_material.specularity_f32) &&
+                            (mat->texture_id == import_material.texture_id)) {
+
+                            material_index = import_material.index_in_materials_array;
+                            material_deduplicated = true;
+                        }
+                    }
+
+                    if (!material_deduplicated) {
+                        int i = 0;
+                        for (MAP_Material &mat : g.materials) {
+                            defer { i++; };
+
+                            if ((mat.mode == import_material.mode) &&
+                                (mat.diffuse_color == import_material.diffuse_color) &&
+                                (mat.specular_color == import_material.specular_color) &&
+                                (mat.specularity == import_material.specularity_f32) &&
+                                (mat.texture_id == import_material.texture_id)) {
+
+                                material_index = i;
+                                material_deduplicated = true;
+
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!material_deduplicated) {
+                        MAP_Material mat = {};
+                        if (!g.materials.empty()) {
+                            mat.subfile_index = ((MAP_Material *)g.materials.sentinel->prev)->subfile_index;
+                        }
+                        mat.mode = import_material.mode;
+                        mat.diffuse_color = import_material.diffuse_color;
+                        mat.specular_color = import_material.specular_color;
+                        mat.specularity = import_material.specularity_f32;
+                        mat.texture_id = import_material.texture_id;
+                        material_index = (int)g.materials.count();
+                        g.materials.push(mat);
+                    }
+
+                    return material_index;
+                };
+
+                auto find_or_add_texture = [&] (MAP_OBJ_Import_Material &import_material) {
+                    bool texture_deduplicated = false;
+
+                    if (MAP_Texture *tex = map_get_texture_by_id(g, import_material.texture_id)) {
+                        texture_deduplicated = true;
+                    }
+
+                    if (!texture_deduplicated) {
+                        MAP_Texture tex = {};
+                        bool success = false;
+                        char *s = import_material.dds_filename_buf;
+                        if (file_exists(s)) {
+                            success = dds_import(s, tex);
+                        } else {
+                            // maybe it was a relative path; search the .OBJ's folder.
+                            auto obj_file_buf_n = strlen(obj_file_buf);
+                            auto s_n = strlen(s);
+                            char *absolute = (char *)calloc(obj_file_buf_n + s_n + 1, 1);
+                            memcpy(absolute, obj_file_buf, obj_file_buf_n + 1);
+                            char *slash = max(strrchr(absolute, '/'), strrchr(absolute, '\\'));
+                            if (slash) {
+                                memcpy(slash + 1, s, s_n + 1);
+                                success = dds_import(absolute, tex);
+                            }
+                        }
+                        if (success) {
+                            tex.id = import_material.texture_id;
+                            tex.material = import_material.texture_unknown;
+
+                            if (g.texture_subfiles.empty()) {
+                                g.texture_subfiles.push();
+                            }
+                            ((MAP_Texture_Subfile *)g.texture_subfiles.sentinel->prev)->textures.push(tex);
+                        }
+                    }
+                };
+
+                // "Pre-allocate" all required geos/meshes.
+                // This is REQUIRED because we might have >65535 vertices somewhere, and we need to make sure
+                // that if we find_or_add(-1) for the extra meshes we have to add, those all come **AFTER**
+                // the preallocated, explicitly-specified meshes.
+                for (Unstripped_Mpg &mpg : unstripped_mpgs) {
+                    if (mpg.geo_index >= 0) {
+                        MAP_Geometry *geo = find_or_add_geo(mpg.geo_index);
+                        assert(geo);
+                        if (mpg.geo_id >= 0) {
+                            geo->id = mpg.geo_id;
+                        }
+                        assert(mpg.mesh_index >= 0);
+                        MAP_Mesh *mesh = find_or_add_mesh(geo, mpg.source, mpg.mesh_index);
+                        assert(mesh);
+                    }
                 }
 
-                for (int i = 0; i < 1 + import_materials.count; ++i) {
-                    Array<PH2MAP__Vertex24> *verts = &materialless_unstripped_verts;
-                    if (i > 0) {
-                        verts = &import_materials[i - 1].unstripped_verts;
-                        Log("Built %lld unstripped vertices for material %d.", verts->count, import_materials[i - 1].index_in_materials_array);
-                    } else {
-                        Log("Built %lld unstripped vertices for (no material).", verts->count);
-                    }
+                for (int unstripped_mpg_index = 0; unstripped_mpg_index < unstripped_mpgs.count; ++unstripped_mpg_index) {
+                    Unstripped_Mpg &mpg = unstripped_mpgs[unstripped_mpg_index];
+
+                    Array<PH2MAP__Vertex24> *verts = &mpg.verts;
+
+                    Log("Built %lld unstripped vertices for group %d (geo %d, %c mesh %d, %d bytes per vertex, import material index %d).",
+                        verts->count, unstripped_mpg_index, mpg.geo_index, "OTD"[(int)mpg.source], mpg.mesh_index, mpg.bytes_per_vertex, mpg.import_material_index);
 
                     if (verts->count <= 0) {
                         continue;
                     }
 
-                    int num_meshes_to_add = ((int)verts->count + 65534) / 65535;
-                    assert(num_meshes_to_add >= 1);
-
                     unsigned int material_index = 0;
 
-                    if (i > 0) {
+                    if (mpg.import_material_index >= 0) {
+                        MAP_OBJ_Import_Material &import_material = import_materials[mpg.import_material_index];
+                        material_index = find_or_add_material(import_material);
 
-                        // Deduplicate or insert material
-                        MAP_OBJ_Import_Material &import_material = import_materials[i - 1];
-
-                        bool material_deduplicated = false;
-
-                        if (MAP_Material *mat = g.materials.at_index(import_material.index_in_materials_array)) {
-                            if ((mat->mode == import_material.mode) &&
-                                (mat->diffuse_color == import_material.diffuse_color) &&
-                                (mat->specular_color == import_material.specular_color) &&
-                                (mat->specularity == import_material.specularity_f32) &&
-                                (mat->texture_id == import_material.texture_id)) {
-
-                                material_index = import_material.index_in_materials_array;
-                                material_deduplicated = true;
-                            }
-                        }
-                        
-                        if (!material_deduplicated) {
-                            int i = 0;
-                            for (MAP_Material &mat : g.materials) {
-                                defer { i++; };
-
-                                if ((mat.mode == import_material.mode) &&
-                                    (mat.diffuse_color == import_material.diffuse_color) &&
-                                    (mat.specular_color == import_material.specular_color) &&
-                                    (mat.specularity == import_material.specularity_f32) &&
-                                    (mat.texture_id == import_material.texture_id)) {
-
-                                    material_index = i;
-                                    material_deduplicated = true;
-
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (!material_deduplicated) {
-                            MAP_Material mat = {};
-                            if (!g.materials.empty()) {
-                                mat.subfile_index = ((MAP_Material *)g.materials.sentinel->prev)->subfile_index;
-                            }
-                            mat.mode = import_material.mode;
-                            mat.diffuse_color = import_material.diffuse_color;
-                            mat.specular_color = import_material.specular_color;
-                            mat.specularity = import_material.specularity_f32;
-                            mat.texture_id = import_material.texture_id;
-                            material_index = (int)g.materials.count();
-                            g.materials.push(mat);
-                        }
-
-                        // Deduplicate or insert texture
                         if (import_material.texture_was_found) {
-                            bool texture_deduplicated = false;
-
-                            if (MAP_Texture *tex = map_get_texture_by_id(g, import_material.texture_id)) {
-                                texture_deduplicated = true;
-                            }
-
-                            if (!texture_deduplicated) {
-                                MAP_Texture tex = {};
-                                bool success = false;
-                                char *s = import_material.dds_filename_buf;
-                                if (file_exists(s)) {
-                                    success = dds_import(s, tex);
-                                } else {
-                                    // maybe it was a relative path; search the .OBJ's folder.
-                                    auto obj_file_buf_n = strlen(obj_file_buf);
-                                    auto s_n = strlen(s);
-                                    char *absolute = (char *)calloc(obj_file_buf_n + s_n + 1, 1);
-                                    memcpy(absolute, obj_file_buf, obj_file_buf_n + 1);
-                                    char *slash = max(strrchr(absolute, '/'), strrchr(absolute, '\\'));
-                                    if (slash) {
-                                        memcpy(slash + 1, s, s_n + 1);
-                                        success = dds_import(absolute, tex);
-                                    }
-                                }
-                                if (success) {
-                                    tex.id = import_material.texture_id;
-                                    tex.material = import_material.texture_unknown;
-
-                                    if (g.texture_subfiles.empty()) {
-                                        g.texture_subfiles.push();
-                                    }
-                                    ((MAP_Texture_Subfile *)g.texture_subfiles.sentinel->prev)->textures.push(tex);
-                                }
-                            }
+                            find_or_add_texture(import_material);
                         }
                     }
 
-                    for (int i = 0; i < num_meshes_to_add; ++i) {
+                    MAP_Geometry *geo = find_or_add_geo(mpg.geo_index);
+                    assert(geo);
 
-                        int input_vertex_start = (i * 65535);
-                        int input_vertex_count = i < num_meshes_to_add - 1 ? 65535 : (verts->count % 65535);
+                    int bytes_per_vertex = mpg.bytes_per_vertex >= 0 ? mpg.bytes_per_vertex : 0x24;
+                    int input_vertex_start = 0;
+
+                    assert(bytes_per_vertex == 0x14 ||
+                           bytes_per_vertex == 0x18 ||
+                           bytes_per_vertex == 0x20 ||
+                           bytes_per_vertex == 0x24);
+
+                    bool had_to_add_more_meshes = false;
+                    for (; input_vertex_start < verts->count;) {
+
+                        MAP_Mesh *mesh = find_or_add_mesh(geo, mpg.source, had_to_add_more_meshes ? -1 : mpg.mesh_index);
+                        assert(mesh);
+                        MAP_Mesh_Vertex_Buffer *vertex_buffer = nullptr;
+
+                        for (int i = 0; i < mesh->vertex_buffers.count; ++i) {
+                            if (mesh->vertex_buffers[i].bytes_per_vertex == bytes_per_vertex) {
+                                vertex_buffer = &mesh->vertex_buffers[i];
+                            }
+                        }
+
+                        if (!vertex_buffer) {
+                            assert(mesh->vertex_buffers.count < 4);
+                            vertex_buffer = mesh->vertex_buffers.push();
+                            vertex_buffer->bytes_per_vertex = bytes_per_vertex;
+                        }
+
+                        assert(vertex_buffer);
+
+                        int verts_remaining = min(65535 - vertex_buffer->num_vertices, verts->count - input_vertex_start);
+
+                        if (verts_remaining <= 0) {
+                            had_to_add_more_meshes = true;
+                            continue;
+                        }
+
+                        assert(verts_remaining > 0 && verts_remaining <= 65535);
+
+                        int input_vertex_count = verts_remaining;
 
                         const PH2MAP__Vertex24 *input_verts_data = &(*verts)[input_vertex_start];
 
@@ -5784,37 +6009,42 @@ static void frame(void *userdata) {
 
                         strip_indices.resize(strip_size);
 
-                        auto &geo = *(MAP_Geometry *)g.geometries.sentinel->prev;
+                        assert(vertex_buffer->bytes_per_vertex == bytes_per_vertex);
 
-                        MAP_Mesh &mesh = *geo.opaque_meshes.push();
+                        assert(vertex_buffer->data.count % bytes_per_vertex == 0);
 
-                        MAP_Mesh_Vertex_Buffer &buf = *mesh.vertex_buffers.push();
-                        buf.num_vertices = (int)vertices.count;
-                        if (should_import_colours) {
-                            buf.bytes_per_vertex = sizeof(vertices[0]);
-                            buf.data.resize(vertices.count * sizeof(vertices[0]));
-                            assert(buf.data.data);
-                            memcpy(buf.data.data, vertices.data, vertices.count * sizeof(vertices[0]));
-                        } else {
-                            static Array<PH2MAP__Vertex20> vertices20 = {};
-                            vertices20.clear();
-                            for (auto &vert24 : vertices) {
-                                vertices20.push({
-                                                vert24.position[0], vert24.position[1], vert24.position[2],
-                                                vert24.normal[0], vert24.normal[1], vert24.normal[2],
-                                                vert24.uv[0], vert24.uv[1]
-                                });
+                        assert(vertex_buffer->num_vertices + (int)vertices.count <= 65535);
+
+                        vertex_buffer->data.resize((vertex_buffer->num_vertices + vertices.count) * bytes_per_vertex);
+
+                        {
+                            for (int i = 0; i < vertices.count; ++i) {
+                                char *ptr = vertex_buffer->data.data + (vertex_buffer->num_vertices + i) * bytes_per_vertex;
+                                char *end = vertex_buffer->data.data + (vertex_buffer->num_vertices + i + 1) * bytes_per_vertex;
+                                WritePtr(ptr, vertices[i].position[0]);
+                                WritePtr(ptr, vertices[i].position[1]);
+                                WritePtr(ptr, vertices[i].position[2]);
+                                assert(HMM_LenSqr(*(HMM_Vec3 *)vertices[i].position) > 0);
+
+                                if (vertex_buffer->bytes_per_vertex >= 0x20) {
+                                    WritePtr(ptr, vertices[i].normal[0]);
+                                    WritePtr(ptr, vertices[i].normal[1]);
+                                    WritePtr(ptr, vertices[i].normal[2]);
+                                }
+
+                                if (vertex_buffer->bytes_per_vertex == 0x18 || vertex_buffer->bytes_per_vertex == 0x24) {
+                                    WritePtr(ptr, vertices[i].color);
+                                }
+
+                                WritePtr(ptr, vertices[i].uv[0]);
+                                WritePtr(ptr, vertices[i].uv[1]);
                             }
-
-                            buf.bytes_per_vertex = sizeof(vertices20[0]);
-                            buf.data.resize(vertices20.count * sizeof(vertices20[0]));
-                            assert(buf.data.data);
-                            memcpy(buf.data.data, vertices20.data, vertices20.count * sizeof(vertices20[0]));
                         }
 
-                        MAP_Mesh_Part_Group &group = *mesh.mesh_part_groups.push();
+                        MAP_Mesh_Part_Group &group = *mesh->mesh_part_groups.push();
                         group.material_index = material_index;
-                        group.section_index = 0;
+                        group.section_index = (vertex_buffer - mesh->vertex_buffers.data);
+                        assert(group.section_index < 4);
 
                         {
                             MAP_Mesh_Part *part = group.mesh_parts.push();
@@ -5831,6 +6061,7 @@ static void frame(void *userdata) {
                                     part->strip_length = 0;
 
                                 } else {
+                                    strip_indices.data[i] += vertex_buffer->num_vertices;
                                     assert(strip_indices.data[i] < 65536);
                                     ++part->strip_length;
                                     ++i;
@@ -5839,13 +6070,17 @@ static void frame(void *userdata) {
 
                         }
 
-                        mesh.indices.reserve(strip_indices.count);
-                        mesh.indices.count = strip_indices.count;
-                        assert(mesh.indices.data);
-                        for (int i = 0; i < strip_indices.count; ++i) {
-                            mesh.indices.data[i] = (uint16_t)strip_indices.data[i];
-                        }
+                        vertex_buffer->num_vertices += (int)vertices.count;
+                        assert(vertex_buffer->num_vertices <= 65535);
 
+                        mesh->indices.reserve(mesh->indices.count + strip_indices.count);
+                        assert(mesh->indices.data);
+                        for (int i = 0; i < strip_indices.count; ++i) {
+                            mesh->indices.data[mesh->indices.count + i] = (uint16_t)strip_indices.data[i];
+                        }
+                        mesh->indices.count += strip_indices.count;
+
+                        input_vertex_start += input_vertex_count;
                     }
                 }
 
@@ -5973,8 +6208,6 @@ static void frame(void *userdata) {
         int textures_referenced = 0;
         int unique_textures_referenced = 0;
 
-        bool first_group = true;
-
         int vertex_offset_second = 1;
         int vertex_offset_third = 2;
         if (g.settings.invert_face_winding_on_export) {
@@ -5991,42 +6224,22 @@ static void frame(void *userdata) {
             bool should_export = buf.selected || export_all;
             if (should_export) {
                 defer { selected_buffer_index++; };
-                int geo_index = 0;
-                int mesh_index = 0;
-                // @Lazy @Hack @@@
-                for (auto &geo : g.geometries) {
-                    mesh_index = 0;
-                    for (auto &mesh : geo.opaque_meshes) {
-                        if (&mesh == buf.mesh_ptr) {
-                            goto double_break;
-                        }
-                        mesh_index++;
-                    }
-                    mesh_index = 0;
-                    for (auto &mesh : geo.transparent_meshes) {
-                        if (&mesh == buf.mesh_ptr) {
-                            goto double_break;
-                        }
-                        mesh_index++;
-                    }
-                    mesh_index = 0;
-                    for (auto &mesh : geo.decal_meshes) {
-                        if (&mesh == buf.mesh_ptr) {
-                            goto double_break;
-                        }
-                        mesh_index++;
-                    }
-                    geo_index++;
-                }
-                double_break:;
                 MAP_Mesh &mesh = *buf.mesh_ptr;
+                MAP_Geometry &geo = *buf.geometry_ptr;
+                int geo_index = g.geometries.get_index(buf.geometry_ptr);
+                int mesh_index = geo.opaque_meshes.sentinel ? geo.opaque_meshes.get_index(buf.mesh_ptr) : -1;
+                if (mesh_index < 0) {
+                    mesh_index = geo.transparent_meshes.sentinel ? geo.transparent_meshes.get_index(buf.mesh_ptr) : -1;
+                }
+                if (mesh_index < 0) {
+                    mesh_index = geo.decal_meshes.sentinel ? geo.decal_meshes.get_index(buf.mesh_ptr) : -1;
+                }
+                assert(geo_index >= 0);
+                assert(mesh_index >= 0);
 
-                const char *source = "X";
-                if (buf.source == MAP_Geometry_Buffer_Source::Opaque) { source = "Opaque"; }
-                else if (buf.source == MAP_Geometry_Buffer_Source::Transparent) { source = "Transparent"; }
-                else if (buf.source == MAP_Geometry_Buffer_Source::Decal) { source = "Decal"; }
+                assert(buf.source >= 0 && buf.source <= 2);
+                char source = "OTD"[(int)buf.source];
 
-                // fprintf(obj, "o Geometry_%d_%s_Mesh_%d\n", geo_index, source, mesh_index);
                 int indices_start = 0;
                 int mesh_part_group_index = 0;
                 for (MAP_Mesh_Part_Group &mpg : mesh.mesh_part_groups) {
@@ -6051,7 +6264,7 @@ static void frame(void *userdata) {
                             }
 
                             if (g.settings.export_materials) {
-                                snprintf(mat_name_buf, sizeof(mat_name_buf), "PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2",
+                                snprintf(mat_name_buf, sizeof(mat_name_buf), "PH2M_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2M",
                                          (((uint16_t)mat_index) & 0xFFFF),
                                          (((uint8_t)mat.mode) & 0xF),
                                          (((uint32_t)mat.diffuse_color) & 0xFFFFFFFF),
@@ -6068,12 +6281,11 @@ static void frame(void *userdata) {
                         mtl_out(obj, "# Note: This mesh part group tried to reference a material that is out of bounds (index was %d, minimum is 0, maximum is 65535).\n", mat_index);
                     }
 
-                    if (first_group) {
-                        first_group = false;
-                        fprintf(obj, "g G%d_%cM%d_MPG%d%s%s PH2Grp\n", geo_index, source[0], mesh_index, mesh_part_group_index, mat_name_buf[0] ? "_" : "", mat_name_buf);
-                    } else {
-                        fprintf(obj, "g PH2Grp G%d_%cM%d_MPG%d%s%s\n", geo_index, source[0], mesh_index, mesh_part_group_index, mat_name_buf[0] ? "_" : "", mat_name_buf);
-                    }
+                    int bytes_per_vertex = mesh.vertex_buffers[mpg.section_index].bytes_per_vertex;
+                    assert(bytes_per_vertex == 0x14 || bytes_per_vertex == 0x18 ||
+                           bytes_per_vertex == 0x20 || bytes_per_vertex == 0x24);
+
+                    fprintf(obj, "g PH2G_%u_%u_%c%u_%02x%s%s_PH2G\n", geo_index, geo.id, source, mesh_index, (uint8_t)bytes_per_vertex, mat_name_buf[0] ? "_" : "", mat_name_buf);
 
                     if (mat_name_buf[0]) {
                         mtl_out(obj, "usemtl %s\n", mat_name_buf);
@@ -6135,7 +6347,7 @@ static void frame(void *userdata) {
                 }
             }
 
-            mtl_out(mtl, "newmtl PH2_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2\n",
+            mtl_out(mtl, "newmtl PH2M_%04x_%01x_%08x_%08x_%08x_%04x_%01x_%02x_PH2M\n",
                     (((uint16_t)mat_index) & 0xFFFF),
                     (((uint8_t)mat.mode) & 0xF),
                     (((uint32_t)mat.diffuse_color) & 0xFFFFFFFF),
@@ -6546,29 +6758,28 @@ static void frame(void *userdata) {
                         if (new_vertex_format_combo == 3) { section.bytes_per_vertex = 0x24; }
 
                         {
-                            Array<uint8_t> *result = (Array<uint8_t> *)&section.data;
                             section.data.clear();
                             section.data.reserve(section.num_vertices * section.bytes_per_vertex);
 
                             for (int i = 0; i < section.num_vertices; ++i) {
-                                const char *ptr = section.data.data + i * section.bytes_per_vertex;
-                                const char *end = section.data.data + (i + 1) * section.bytes_per_vertex;
-                                Write(upconverted[i].position[0]);
-                                Write(upconverted[i].position[1]);
-                                Write(upconverted[i].position[2]);
+                                char *ptr = section.data.data + i * section.bytes_per_vertex;
+                                char *end = section.data.data + (i + 1) * section.bytes_per_vertex;
+                                WritePtr(ptr, upconverted[i].position[0]);
+                                WritePtr(ptr, upconverted[i].position[1]);
+                                WritePtr(ptr, upconverted[i].position[2]);
 
                                 if (section.bytes_per_vertex >= 0x20) {
-                                    Write(upconverted[i].normal[0]);
-                                    Write(upconverted[i].normal[1]);
-                                    Write(upconverted[i].normal[2]);
+                                    WritePtr(ptr, upconverted[i].normal[0]);
+                                    WritePtr(ptr, upconverted[i].normal[1]);
+                                    WritePtr(ptr, upconverted[i].normal[2]);
                                 }
 
                                 if (section.bytes_per_vertex == 0x18 || section.bytes_per_vertex == 0x24) {
-                                    Write(upconverted[i].color);
+                                    WritePtr(ptr, upconverted[i].color);
                                 }
 
-                                Write(upconverted[i].uv[0]);
-                                Write(upconverted[i].uv[1]);
+                                WritePtr(ptr, upconverted[i].uv[0]);
+                                WritePtr(ptr, upconverted[i].uv[1]);
                             }
                         }
                     }
