@@ -144,7 +144,7 @@ void MsgBox_(const char *title, int flag, const char *msg, ...) {
     };
     char buf[1024];
     if (vsnprintf(buf, sizeof buf, msg, arg) > 0) {
-        MessageBoxA(0, buf, title, MB_OK | flag | MB_TASKMODAL);
+        MessageBoxA((HWND)sapp_win32_get_hwnd(), buf, title, MB_OK | flag | MB_TASKMODAL);
     }
 }
 #define MsgErr(title, ...) MsgBox_(title, MB_ICONERROR, "" __VA_ARGS__);
@@ -3871,11 +3871,69 @@ static Ray_Vs_World_Result ray_vs_world(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir
     return result;
 }
 
+// @Hack: @Remove this and replace it with the standard ImGui popup.
+static bool prompt_unsaved_changes(G &g) {
+    if (!has_unsaved_changes(g)) return true;
+
+    char content[65536 * 2];
+    int formatted = snprintf(content, sizeof(content), "The current file \"%s\" has unsaved changes.\nSave these changes before opening the new file?", g.opened_map_filename);
+    assert(formatted < countof(content));
+
+    int button = MessageBoxA((HWND)sapp_win32_get_hwnd(), content, "Open File - Unsaved Changes", MB_YESNOCANCEL | MB_ICONWARNING | MB_TASKMODAL | MB_DEFBUTTON3);
+
+    if (button == 0) {
+        return false;
+    } else if (button == IDYES) {
+        bool save_map(G &g, char *requested_save_filename);
+        if (save_map(g, g.opened_map_filename)) {
+            return true;
+        }
+        return false;
+    } else if (button == IDNO) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
 static void event(const sapp_event *e_, void *userdata) {
     ProfileFunction();
 
     G &g = *(G *)userdata;
     const sapp_event &e = *e_;
+    if (e.type == SAPP_EVENTTYPE_FILES_DROPPED) {
+        // get the number of files and their paths like this:
+        const int num_dropped_files = sapp_get_num_dropped_files();
+        if (num_dropped_files > 1) {
+            MsgInfo("File Open", "Can't open multiple files at once, only opening first file...");
+        }
+        const char *load = sapp_get_dropped_file_path(0);
+        size_t n = strlen(load);
+        const char *slash = max(strrchr(load, '/'), strrchr(load, '\\'));
+        const char *dot = strrchr(load, '.');
+        if (dot > slash) {
+            // @DisableCLD
+            if ((0, 0) && strcmp(dot, ".cld") == 0) {
+                if (prompt_unsaved_changes(g)) {
+                    cld_load(g, load);
+                }
+            } else if (strcmp(dot, ".map") == 0) {
+                if (prompt_unsaved_changes(g)) {
+                    map_load(g, load);
+                }
+            } else {
+                size_t mapbaklen = (sizeof(".map.bak") - 1);
+                if (n >= mapbaklen && strcmp(load + n - mapbaklen, ".map.bak") == 0) {
+                    if (prompt_unsaved_changes(g)) {
+                        map_load(g, load);
+                    }
+                } else {
+                    // MsgErr("File Load Error", "The file \"%s\"\ndoesn't have the file extension .CLD or .MAP.\nThe editor can only open files ending in .CLD or .MAP. Sorry!!", load);
+                    MsgErr("File Load Error", "The file \"%s\"\ndoesn't have the file extension .MAP.\nThe editor can only open files ending in .MAP. Sorry!!", load);
+                }
+            }
+        }
+    }
     if (e.type == SAPP_EVENTTYPE_QUIT_REQUESTED) {
         if (has_unsaved_changes(g)) {
             g.want_exit = true;
@@ -8783,6 +8841,9 @@ sapp_desc sokol_main(int, char **) {
     d.swap_interval = 0;
     d.high_dpi = true;
     d.html5_ask_leave_site = true;
+    d.enable_dragndrop = true;
+    d.max_dropped_files = 8;
+    d.max_dropped_file_path_length = 65536;
     return d;
 }
 
