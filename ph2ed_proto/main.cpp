@@ -7757,7 +7757,7 @@ static void frame(void *userdata) {
                     ImGui::NextColumn();
                     {
                         int x = tex.material;
-                        ImGui::InputInt("\"Material\" (?)", &x);
+                        ImGui::InputInt("Unknown (material?)", &x);
                         x = clamp(x, 0, 255);
                         tex.material = (uint8_t)x;
                     }
