@@ -1088,6 +1088,7 @@ struct G : Map {
     bool control_shift_s = false;
 
     bool control_o = false;
+    bool control_i = false;
 
     bool control_z = false;
     bool control_y = false;
@@ -3971,6 +3972,9 @@ static void event(const sapp_event *e_, void *userdata) {
         if (!e.key_repeat && e.key_code == SAPP_KEYCODE_O && e.modifiers == SAPP_MODIFIER_CTRL) {
             g.control_o = true;
         }
+        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_I && e.modifiers == SAPP_MODIFIER_CTRL) {
+            g.control_i = true;
+        }
         if (!ImGui::GetIO().WantCaptureKeyboard) {
             if (e.key_code == SAPP_KEYCODE_Z && e.modifiers == SAPP_MODIFIER_CTRL) {
                 g.control_z = true;
@@ -5081,8 +5085,8 @@ static void frame(void *userdata) {
                 g.control_shift_s = true;
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Import OBJ Model...", nullptr, nullptr, !!g.opened_map_filename)) {
-                start_import_obj_model_popup = true;
+            if (ImGui::MenuItem("Import OBJ Model...", "Ctrl-I", nullptr, !!g.opened_map_filename)) {
+                g.control_i = true;
             }
             if (ImGui::MenuItem("Import DDS Texture...", nullptr, nullptr, !!g.opened_map_filename)) {
                 dds_file_buf = win_import_or_export_dialog(L"DDS Texture File\0" "*.dds\0"
@@ -5166,6 +5170,7 @@ static void frame(void *userdata) {
     }
 
     if (!g.opened_map_filename) {
+        g.control_i = false;
         g.control_s = false;
         g.control_shift_s = false;
     }
@@ -5177,6 +5182,8 @@ static void frame(void *userdata) {
         } else {
             do_control_o_load = true;
         }
+    } else if (g.control_i) {
+        start_import_obj_model_popup = true;
     } else if (g.control_shift_s) {
         char *requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
                                                                      "All Files\0" "*.*\0",
@@ -5205,6 +5212,7 @@ static void frame(void *userdata) {
             do_control_o_load = true;
             ImGui::CloseCurrentPopup();
         }
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         ImGui::SameLine(); if (ImGui::Button("Cancel")) {
             ImGui::CloseCurrentPopup();
         }
@@ -5226,6 +5234,7 @@ static void frame(void *userdata) {
             sapp_request_quit();
             ImGui::CloseCurrentPopup();
         }
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         ImGui::SameLine(); if (ImGui::Button("Cancel")) {
             g.want_exit = false;
             ImGui::CloseCurrentPopup();
@@ -5243,6 +5252,7 @@ static void frame(void *userdata) {
         ImGui::Checkbox("Flip Y on Import", &g.settings.flip_y_on_import);
         ImGui::Checkbox("Flip Z on Import", &g.settings.flip_z_on_import);
         ImGui::Checkbox("Invert Face Winding on Import", &g.settings.invert_face_winding_on_import);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         if (ImGui::Button("Open...")) {
             obj_file_buf = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                         "All Files\0" "*.*\0",
@@ -5313,6 +5323,7 @@ static void frame(void *userdata) {
         } else {
             g.settings.export_materials_alpha_channel_texture = false;
         }
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         if (ImGui::Button("Save...")) {
             obj_export_name = win_import_or_export_dialog(L"Wavefront OBJ\0" "*.obj\0"
                                                            "All Files\0" "*.*\0",
@@ -5361,6 +5372,7 @@ static void frame(void *userdata) {
     g.control_s = false;
     g.control_shift_s = false;
     g.control_o = false;
+    g.control_i = false;
     ImGui::DockSpaceOverViewport(nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
     imgui_do_console(g);
     sapp_lock_mouse(g.control_state == ControlState::Orbiting);
