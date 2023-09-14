@@ -3958,24 +3958,24 @@ static void event(const sapp_event *e_, void *userdata) {
     if (e.type == SAPP_EVENTTYPE_KEY_DOWN) {
         if (!e.key_repeat &&
             ((e.key_code == SAPP_KEYCODE_F11) ||
-             (e.key_code == SAPP_KEYCODE_ENTER && (e.modifiers & SAPP_MODIFIER_ALT)))) {
+             (e.key_code == SAPP_KEYCODE_ENTER && (e.modifiers == SAPP_MODIFIER_ALT)))) {
             sapp_toggle_fullscreen();
         }
-        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_S && (e.modifiers & SAPP_MODIFIER_CTRL)) {
-            if (e.modifiers & SAPP_MODIFIER_SHIFT) {
+        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_S) {
+            if (e.modifiers == (SAPP_MODIFIER_SHIFT | SAPP_MODIFIER_CTRL)) {
                 g.control_shift_s = true;
-            } else {
+            } else if (e.modifiers == SAPP_MODIFIER_CTRL) {
                 g.control_s = true;
             }
         }
-        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_O && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+        if (!e.key_repeat && e.key_code == SAPP_KEYCODE_O && e.modifiers == SAPP_MODIFIER_CTRL) {
             g.control_o = true;
         }
         if (!ImGui::GetIO().WantCaptureKeyboard) {
-            if (e.key_code == SAPP_KEYCODE_Z && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+            if (e.key_code == SAPP_KEYCODE_Z && e.modifiers == SAPP_MODIFIER_CTRL) {
                 g.control_z = true;
             }
-            if (e.key_code == SAPP_KEYCODE_Y && (e.modifiers & SAPP_MODIFIER_CTRL)) {
+            if (e.key_code == SAPP_KEYCODE_Y && e.modifiers == SAPP_MODIFIER_CTRL) {
                 g.control_y = true;
             }
         }
