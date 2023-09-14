@@ -5120,16 +5120,16 @@ static void frame(void *userdata) {
         }
         if (ImGui::BeginMenu("View")) {
             defer { ImGui::EndMenu(); };
-            bool is_fullscreen = sapp_is_fullscreen();
-            if (ImGui::MenuItem("Fullscreen", nullptr, &is_fullscreen)) {
+            bool fs = sapp_is_fullscreen();
+            if (ImGui::MenuItem("Fullscreen", "Alt-Enter", &fs)) {
                 sapp_toggle_fullscreen();
             }
-            ImGui::MenuItem("Editor", nullptr, &g.settings.show_editor, !sapp_is_fullscreen());
-            ImGui::MenuItem("Viewport", nullptr, &g.settings.show_viewport, !sapp_is_fullscreen());
-            ImGui::MenuItem("Edit Widget", nullptr, &g.settings.show_edit_widget, !sapp_is_fullscreen());
-            ImGui::MenuItem("Textures", nullptr, &g.settings.show_textures, !sapp_is_fullscreen());
-            ImGui::MenuItem("Materials", nullptr, &g.settings.show_materials, !sapp_is_fullscreen());
-            ImGui::MenuItem("Console", nullptr, &g.settings.show_console, !sapp_is_fullscreen());
+            ImGui::MenuItem("Editor", nullptr, fs ? nullptr : &g.settings.show_editor, !fs);
+            ImGui::MenuItem("Viewport", nullptr, fs ? nullptr : &g.settings.show_viewport, !fs);
+            ImGui::MenuItem("Edit Widget", nullptr, fs ? nullptr : &g.settings.show_edit_widget, !fs);
+            ImGui::MenuItem("Textures", nullptr, fs ? nullptr : &g.settings.show_textures, !fs);
+            ImGui::MenuItem("Materials", nullptr, fs ? nullptr : &g.settings.show_materials, !fs);
+            ImGui::MenuItem("Console", nullptr, fs ? nullptr : &g.settings.show_console, !fs);
         }
         if (ImGui::BeginMenu("About")) {
             defer { ImGui::EndMenu(); };
