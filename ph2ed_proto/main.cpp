@@ -132,6 +132,7 @@ void LogC_(uint32_t c, const char *fmt, ...) {
 }
 #define LogC(c, ...) LogC_(c, "" __VA_ARGS__)
 #define Log(...) LogC(IM_COL32(127,127,127,255), "" __VA_ARGS__)
+#define LogWarn(...) LogC(IM_COL32(255, 255, 127, 255), "" __VA_ARGS__)
 #define LogErr(...) LogC(IM_COL32(255, 127, 127, 255), "" __VA_ARGS__)
 
 void MsgBox_(const char *title, int flag, const char *msg, ...) {
@@ -1507,6 +1508,10 @@ void map_unpack_mesh_vertex_buffer(MAP_Geometry_Buffer &buffer, MAP_Mesh &mesh) 
 
 }
 
+static const constexpr int MAP_MAX_VERTICES_PER_MESH = 65536 * 4; // 64K in each vertex section
+static const constexpr int MAP_MAX_STRIPPED_INDICES_PER_MESH = 100000; // empirical max in stock maps was ~72000 iirc
+static const constexpr int MAP_MAX_DESTRIPPED_INDICES_PER_MESH = MAP_MAX_STRIPPED_INDICES_PER_MESH * 3 + 6; // add fudge room for sloppy math :'(
+
 void map_destrip_mesh_part_group(MAP_Geometry_Buffer &buffer, int &indices_index, const MAP_Mesh &mesh, MAP_Mesh_Part_Group mesh_part_group) {
     ProfileFunction();
 
@@ -1546,6 +1551,8 @@ void map_destrip_mesh_part_group(MAP_Geometry_Buffer &buffer, int &indices_index
                     buffer.indices.push(base_of_this_section + c);
 
                     num_vertices_written += 3;
+
+                    assert(buffer.indices.count <= MAP_MAX_DESTRIPPED_INDICES_PER_MESH);
                 }
 
             }
@@ -2961,10 +2968,8 @@ static void map_upload(G &g) {
                     assert(&buffer);
                     {
                         sg_buffer_desc d = {};
-                        size_t MAP_MAX_VERTICES_PER_MESH = 65536 * 4; // 64K in each vertex section
-                        size_t MAP_MAX_INDICES_PER_MESH = 100000; // empirical max in stock maps was ~72000 iirc
                         size_t VERTEX_BUFFER_SIZE = MAP_MAX_VERTICES_PER_MESH * sizeof(MAP_Geometry_Vertex);
-                        size_t INDEX_BUFFER_SIZE = MAP_MAX_INDICES_PER_MESH * sizeof(uint32_t);
+                        size_t INDEX_BUFFER_SIZE = MAP_MAX_DESTRIPPED_INDICES_PER_MESH * sizeof(uint32_t);
                         d.usage = SG_USAGE_DYNAMIC;
                         d.type = SG_BUFFERTYPE_VERTEXBUFFER;
                         d.size = VERTEX_BUFFER_SIZE;
@@ -5444,6 +5449,7 @@ static void frame(void *userdata) {
                     int mesh_index = -1;
                     int bytes_per_vertex = -1;
                     int import_material_index = -1;
+                    char name[256];
 
                     void release() {
                         ProfileFunction();
@@ -5667,6 +5673,7 @@ static void frame(void *userdata) {
                         new_mpg.mesh_index = mesh_index;
                         new_mpg.bytes_per_vertex = bytes_per_vertex;
                         new_mpg.import_material_index = import_material_index;
+                        strncpy(new_mpg.name, s, sizeof(new_mpg.name));
                         unstripped_mpgs.push(new_mpg);
                         current_mpg = unstripped_mpgs.count - 1;
                         added_valid_mpg = true;
@@ -5962,6 +5969,10 @@ static void frame(void *userdata) {
                     }
                 };
 
+                for (Unstripped_Mpg &mpg : unstripped_mpgs) {
+                    assert(mpg.verts.count % 3 == 0);
+                }
+
                 // "Pre-allocate" all required geos/meshes.
                 // This is REQUIRED because we might have >65535 vertices somewhere, and we need to make sure
                 // that if we find_or_add(-1) for the extra meshes we have to add, those all come **AFTER**
@@ -5990,6 +6001,7 @@ static void frame(void *userdata) {
                     if (verts->count <= 0) {
                         continue;
                     }
+                    assert(verts->count % 3 == 0);
 
                     unsigned int material_index = 0;
 
@@ -6034,16 +6046,31 @@ static void frame(void *userdata) {
 
                         assert(vertex_buffer);
 
-                        int verts_remaining = min(65535 - vertex_buffer->num_vertices, verts->count - input_vertex_start);
+                        int verts_remaining = (65535 - vertex_buffer->num_vertices) / 3 * 3;
 
-                        if (verts_remaining <= 0) {
+                        int verts_to_add = min(verts_remaining, verts->count - input_vertex_start);
+
+                        bool too_many_vtxs = verts_to_add <= 0;
+                        bool too_many_idxs = verts_to_add >= MAP_MAX_STRIPPED_INDICES_PER_MESH - mesh->indices.count;
+
+                        if (too_many_vtxs || too_many_idxs) {
                             had_to_add_more_meshes = true;
+                            if (mpg.geo_index >= 0) {
+                                assert(mpg.mesh_index >= 0);
+                                LogWarn("WARNING: When trying to import into geometry %d, mesh %d:", mpg.geo_index, mpg.mesh_index);
+                            } else {
+                                LogWarn("WARNING: When trying to import a group:");
+                            }
+                            LogWarn("  Importing group named \"%s\":", mpg.name);
+                            if (too_many_vtxs) LogWarn("  Too many vertices to guarantee a fit -- needed at most %d more, only space for %d left", (int)(verts->count - input_vertex_start), (int)(65535 - vertex_buffer->num_vertices));
+                            if (too_many_idxs) LogWarn("  Too many indices to guarantee a fit -- needed at most %d more, only space for %d left", (int)verts_to_add, (int)(MAP_MAX_STRIPPED_INDICES_PER_MESH - mesh->indices.count));
                             continue;
                         }
 
-                        assert(verts_remaining > 0 && verts_remaining <= 65535);
+                        assert(verts_to_add > 0 && verts_to_add <= 65535);
+                        assert(verts_to_add % 3 == 0);
 
-                        int input_vertex_count = verts_remaining;
+                        int input_vertex_count = verts_to_add;
 
                         const PH2MAP__Vertex24 *input_verts_data = &(*verts)[input_vertex_start];
 
@@ -6150,7 +6177,10 @@ static void frame(void *userdata) {
                         }
                         mesh->indices.count += strip_indices.count;
 
+                        assert(mesh->indices.count <= MAP_MAX_STRIPPED_INDICES_PER_MESH);
+
                         input_vertex_start += input_vertex_count;
+                        assert(input_vertex_start % 3 == 0);
                     }
                 }
 
