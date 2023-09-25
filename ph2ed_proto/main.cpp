@@ -5820,14 +5820,14 @@ static void frame(void *userdata) {
                     memset(b, 0, sizeof b);
                 }
 
-                assert(obj_positions.count);
-                if (obj_positions.count) {
-                    center /= (float)obj_positions.count;
-                    g.cam_pos = center;
-                    g.cam_pos.X *= 1 * SCALE;
-                    g.cam_pos.Y *= -1 * SCALE;
-                    g.cam_pos.Z *= -1 * SCALE;
-                }
+                // assert(obj_positions.count);
+                // if (obj_positions.count) {
+                //     center /= (float)obj_positions.count;
+                //     g.cam_pos = center;
+                //     g.cam_pos.X *= 1 * SCALE;
+                //     g.cam_pos.Y *= -1 * SCALE;
+                //     g.cam_pos.Z *= -1 * SCALE;
+                // }
 
                 Log("We got %lld positions, %lld uvs, %lld normals.", obj_positions.count, obj_uvs.count, obj_normals.count);
 
