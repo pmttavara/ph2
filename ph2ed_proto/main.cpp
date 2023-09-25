@@ -894,6 +894,8 @@ struct Settings {
 
     bool invert_face_winding_on_import = false;
     bool invert_face_winding_on_export = false;
+
+    HMM_Vec3 bg_col = BG_COL_DEFAULT;
 };
 
 #define NEQ(x) do { if ((a.x) != (b.x)) return false; } while (0)
@@ -914,6 +916,7 @@ bool operator==(const Settings &a, const Settings &b) {
     NEQ(export_materials_alpha_channel_texture);
     NEQ(invert_face_winding_on_import);
     NEQ(invert_face_winding_on_export);
+    NEQ(bg_col);
     return true;
 }
 bool operator!=(const Settings &a, const Settings &b) { return !(a == b); }
@@ -924,6 +927,7 @@ enum {
 
     // vvvvv add versions here vvvvv
     SV_Add_Invert_Face_Winding,
+    SV_Add_BG_Colour,
     // ^^^^^ add versions here ^^^^^
 
     SV_LatestPlusOne,
@@ -1042,6 +1046,7 @@ struct Serializer {
         go(&x->export_materials_alpha_channel_texture);
         add<SV_Add_Invert_Face_Winding>(&x->invert_face_winding_on_import);
         add<SV_Add_Invert_Face_Winding>(&x->invert_face_winding_on_export);
+        add<SV_Add_BG_Colour>(&x->bg_col);
     }
     void release() {
         writer.release();
@@ -1065,7 +1070,6 @@ struct G : Map {
 
     ControlState control_state = {};
     float fov = FOV_DEFAULT;
-    HMM_Vec3 bg_col = BG_COL_DEFAULT;
 
     HMM_Vec3 displacement = {};
     HMM_Vec3 scaling_factor = {1, 1, 1};
@@ -7622,7 +7626,6 @@ static void frame(void *userdata) {
                         g.pitch = 0;
                         g.yaw = 0;
                         g.fov = FOV_DEFAULT;
-                        g.bg_col = BG_COL_DEFAULT;
                         g.solo_material = -1;
                         g.reset_camera = false;
                     }
@@ -8209,7 +8212,11 @@ static void frame(void *userdata) {
             }
             ImGui::SameLine(); ImGui::Text("(%.0f, %.0f, %.0f)", g.cam_pos.X / SCALE, g.cam_pos.Y / -SCALE, g.cam_pos.Z / -SCALE);
             ImGui::NextColumn();
-            ImGui::ColorEdit3("BG Colour", &g.bg_col.X);
+            ImGui::ColorEdit3("BG Colour", &g.settings.bg_col.X);
+            ImGui::SameLine();
+            if (ImGui::Button("Reset")) {
+                g.settings.bg_col = BG_COL_DEFAULT;
+            }
             ImGui::Columns(1);
             ImGui::Checkbox("Textures", &g.textured);
             ImGui::SameLine(); ImGui::Checkbox("Lighting Colours", &g.use_lighting_colours);
@@ -8230,7 +8237,7 @@ static void frame(void *userdata) {
             //     ImGui::Text("%08x", text_col);
             // }
 
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, {g.bg_col.X, g.bg_col.Y, g.bg_col.Z, 1});
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, {g.settings.bg_col.X, g.settings.bg_col.Y, g.settings.bg_col.Z, 1});
             defer {
                 ImGui::PopStyleColor();
             };
@@ -8508,7 +8515,7 @@ static void frame(void *userdata) {
         sg_commit();
     }
 
-    if (g.saved_settings != g.settings) {
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && g.saved_settings != g.settings) {
         Serializer s = {}; defer { s.release(); };
         s.start_write(PH2_SETTINGS_MAGIC);
         s.go(&g.settings);
