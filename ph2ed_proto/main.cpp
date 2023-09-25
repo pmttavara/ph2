@@ -4587,9 +4587,10 @@ bool export_dds(MAP_Texture tex, char *filename) {
     header.pixelformat_flags = 4;
     // @Note: *PRETTY* sure this is fine??
     switch (tex.format) {
-        case MAP_Texture_Format_BC1: { header.pixelformat_four_cc = FOURCC_DXT1; } break;
-        case MAP_Texture_Format_BC2: { header.pixelformat_four_cc = FOURCC_DXT3; } break;
-        case MAP_Texture_Format_BC3: { header.pixelformat_four_cc = FOURCC_DXT5; } break;
+        case MAP_Texture_Format_BC1:       { header.pixelformat_four_cc = FOURCC_DXT1; } break;
+        case MAP_Texture_Format_BC2:       { header.pixelformat_four_cc = FOURCC_DXT3; } break;
+        case MAP_Texture_Format_BC3:       { header.pixelformat_four_cc = FOURCC_DXT5; } break;
+        case MAP_Texture_Format_BC3_Maybe: { header.pixelformat_four_cc = FOURCC_DXT5; } break;
         default: { assert(false); } break;
     }
     header.caps = DDSCAPS_TEXTURE;
@@ -7805,7 +7806,7 @@ static void frame(void *userdata) {
                 bool success = export_dds(tex, dds_export_path);
                 if (success) {
                     // MsgInfo("DDS Export", "Exported!\nSaved to:\n%s", dds_export_path);
-                    LogC(IM_COL32(0,178,59,255), "Exported to %s!", obj_export_name);
+                    LogC(IM_COL32(0,178,59,255), "Exported to %s!", dds_export_path);
                 }
             }
             bool hovering_export_button = ImGui::IsItemHovered();
@@ -7845,7 +7846,7 @@ static void frame(void *userdata) {
                 if (tex.format == MAP_Texture_Format_BC1)       ImGui::Text("%dx%d - Format 0x%03x: BC1 (RGB - Opaque)", tex.width, tex.height, tex.format);
                 if (tex.format == MAP_Texture_Format_BC2)       ImGui::Text("%dx%d - Format 0x%03x: BC2 (RGBA - Transparent/Decal)", tex.width, tex.height, tex.format);
                 if (tex.format == MAP_Texture_Format_BC3)       ImGui::Text("%dx%d - Format 0x%03x: BC3 (RGBA - Transparent/Decal)", tex.width, tex.height, tex.format);
-                if (tex.format == MAP_Texture_Format_BC3_Maybe) ImGui::Text("%dx%d - Format 0x%03x: BC3 (RGBA - Transparent/Decal)", tex.width, tex.height, tex.format);
+                if (tex.format == MAP_Texture_Format_BC3_Maybe) ImGui::Text("%dx%d - Format 0x%03x: BC3 (RGBA - Transparent/Decal) (Maybe?)", tex.width, tex.height, tex.format);
 
                 ImGui::NewLine();
                 {
