@@ -7847,6 +7847,17 @@ static void frame(void *userdata) {
                 if (tex.format == MAP_Texture_Format_BC2)       ImGui::Text("%dx%d - Format 0x%03x: BC2 (RGBA - Transparent/Decal)", tex.width, tex.height, tex.format);
                 if (tex.format == MAP_Texture_Format_BC3)       ImGui::Text("%dx%d - Format 0x%03x: BC3 (RGBA - Transparent/Decal)", tex.width, tex.height, tex.format);
                 if (tex.format == MAP_Texture_Format_BC3_Maybe) ImGui::Text("%dx%d - Format 0x%03x: BC3 (RGBA - Transparent/Decal) (Maybe?)", tex.width, tex.height, tex.format);
+                if (tex.format == MAP_Texture_Format_BC3 || tex.format == MAP_Texture_Format_BC3_Maybe) {
+                    ImGui::SameLine();
+                    bool to_104 = tex.format == MAP_Texture_Format_BC3 && ImGui::Button("Switch to 0x104");
+                    bool to_103 = tex.format == MAP_Texture_Format_BC3_Maybe && ImGui::Button("Switch to 0x103");
+                    if (to_104) {
+                        tex.format = MAP_Texture_Format_BC3_Maybe;
+                    }
+                    if (to_103) {
+                        tex.format = MAP_Texture_Format_BC3;
+                    }
+                }
 
                 ImGui::NewLine();
                 {
