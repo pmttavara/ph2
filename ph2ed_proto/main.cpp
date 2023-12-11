@@ -148,9 +148,9 @@ void MsgBox_(const char *title, int flag, const char *msg, ...) {
         MessageBoxA((HWND)sapp_win32_get_hwnd(), buf, title, MB_OK | flag | MB_TASKMODAL);
     }
 }
-#define MsgErr(title, ...) MsgBox_(title, MB_ICONERROR, "" __VA_ARGS__);
-#define MsgWarn(title, ...) MsgBox_(title, MB_ICONWARNING, "" __VA_ARGS__);
-#define MsgInfo(title, ...) MsgBox_(title, MB_ICONINFORMATION, "" __VA_ARGS__);
+#define MsgErr(title, ...) MsgBox_(title, MB_ICONERROR, "" __VA_ARGS__)
+#define MsgWarn(title, ...) MsgBox_(title, MB_ICONWARNING, "" __VA_ARGS__)
+#define MsgInfo(title, ...) MsgBox_(title, MB_ICONINFORMATION, "" __VA_ARGS__)
 
 #include "HandmadeMath.h"
 
@@ -3117,6 +3117,36 @@ static void test_all_maps(G &g) {
     for (auto &a : texture_format_unknown_histogram) for (auto &x : a) x /= num_tested;
     map_unload(g);
 }
+static void test_all_kg2s(G &g) {
+    ProfileFunction();
+
+    struct _finddata_t find_data;
+    intptr_t directory = _findfirst("kg2/*.kg2", &find_data);
+    assert(directory >= 0);
+    int spinner = 0;
+    int num_tested = 0;
+
+    while (1) {
+        char b[260 + sizeof("kg2/")];
+        snprintf(b, sizeof(b), "kg2/%s", find_data.name);
+        if (find_data.time_write < 1100000000) { // 1100000000 is sometime after 2002...
+            // Log("Time write: %d", find_data.time_write);
+            // Log("Loading kg2 \"%s\"", b);
+            // printf("%c\r", "|/-\\"[spinner++ % 4]);
+            sapp_set_window_title(b);
+            bool kg2_export(char *filename);
+            bool success = kg2_export(b);
+            assert(success);
+            ++num_tested;
+        }
+        if (_findnext(directory, &find_data) < 0) {
+            if (errno == ENOENT) break;
+            else assert(0);
+        }
+    }
+    _findclose(directory);
+    Log("Tested %d kg2s.", num_tested);
+}
 
 static void imgui_do_console(G &g) {
     ProfileFunction();
@@ -3168,6 +3198,8 @@ static void imgui_do_console(G &g) {
             map_load(g, p);
         } else if (memcmp("test_all_maps", buf, sizeof("test_all_maps") - 1) == 0) {
             test_all_maps(g);
+        } else if (memcmp("test_all_kg2s", buf, sizeof("test_all_kg2s") - 1) == 0) {
+            test_all_kg2s(g);
         } else if (memcmp("help", buf, sizeof("help") - 1) == 0) {
             Log("Command List:");
             LogC(IM_COL32_WHITE, "  cld_load <filename>");
@@ -3176,6 +3208,8 @@ static void imgui_do_console(G &g) {
             Log("    - Loads a .MAP (map textures/geometry) file.");
             LogC(IM_COL32_WHITE, "  test_all_maps");
             Log("    - Developer test tool - loads all maps in the map/ folder (relative to the current working directory).");
+            LogC(IM_COL32_WHITE, "  test_all_kg2s");
+            Log("    - Developer test tool - exports all kg2s in the kg2/ folder (relative to the current working directory).");
         } else {
             Log("Unknown command :)");
         }
@@ -3521,6 +3555,7 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
         // cld_load(g, "../cld/cld/ob01.cld");
         // map_load(g, "map/ap64.map");
         // test_all_maps(g);
+        test_all_kg2s(g);
         // sapp_request_quit();
     }
 #endif
@@ -4564,7 +4599,7 @@ bool dds_import(char *filename, MAP_Texture &result) {
     return true;
 }
 
-bool export_dds(MAP_Texture tex, char *filename) {
+bool dds_export(MAP_Texture tex, char *filename) {
     ProfileFunction();
 
     const char *error_str = "DDS Save Error";
@@ -4598,6 +4633,120 @@ bool export_dds(MAP_Texture tex, char *filename) {
     FailIfFalse(fwrite(tex.blob.data, tex.blob.count, 1, f) == 1, "Couldn't write out the DDS texture data.");
 
     return true;
+}
+
+bool kg2_export(char *filename) {
+    ProfileFunction();
+
+    const char *error_str = "KG2 Export Error";
+    const char *context_str = "KG2 export";
+
+    FILE *f = PH2CLD__fopen(filename, "rb");
+    FailIfFalse(f, "File \"%s\" couldn't be opened.", filename);
+    defer {
+        fclose(f);
+    };
+
+    char data[128 * 1024]; // biggest stock kg2 is 71 KB
+    uint32_t file_len = (uint32_t)fread(data, 1, sizeof(data), f);
+    assert(file_len < sizeof(data)); // File is too big! Tell the programmer to turn up the buffer size.
+    char *ptr = data;
+    char *end = data + file_len;
+
+    struct KG2_File_Header {
+        uint16_t kind;         // Typically 0.
+        int16_t  map_id;       // Typically 0.
+        int16_t  object_count; // 
+        uint16_t reserved[5];  // 
+    };
+    KG2_File_Header kg2_file_header = {};
+    Read(ptr, kg2_file_header);
+
+#if 1
+#define KG2_export_log(...) (__VA_ARGS__)
+#else
+#define KG2_export_log(...) Log(__VA_ARGS__)
+#endif
+
+    KG2_export_log("%d objects {", kg2_file_header.object_count);
+    for (int object_index = 0; object_index < kg2_file_header.object_count; ++object_index) {
+        KG2_export_log("  [%d] = {", object_index);
+
+        struct KG2_Shadow_Object_Header {
+            uint32_t map_id;         // Named charId (.kg1) or mapId (.kg2) on PS2. Typically 0.
+            int16_t  object_id;      // Bone index for .kg1.
+            int16_t  geometry_count; // 
+            int16_t  unknown1[4];    // 
+            int16_t  unknown2[4];    // 
+            int16_t  boundary_x;     // X coordinate of bounding sphere.
+            int16_t  boundary_y;     // Y coordinate of bounding sphere.
+            int16_t  boundary_z;     // Z coordinate of bounding sphere.
+            int16_t  boundary_r;     // Radius of bounding sphere.
+            HMM_Mat4 matrix;         // Only applicable to .kg2. For .kg1, this matrix will be all 0's. Instead, the object inherits the transform of the bone index given by objectId.
+        };
+
+        KG2_Shadow_Object_Header shadow_object_header = {};
+        Read(ptr, shadow_object_header);
+        assert(shadow_object_header.map_id == 0);
+        KG2_export_log("    Object ID %u", shadow_object_header.object_id);
+        assert(shadow_object_header.geometry_count > 0 && shadow_object_header.geometry_count <= 512);
+        assert(shadow_object_header.unknown1[0] == 0);
+        assert(shadow_object_header.unknown1[1] == 0);
+        assert(shadow_object_header.unknown1[2] == 0);
+        assert(shadow_object_header.unknown1[3] == 0);
+        assert(shadow_object_header.unknown2[0] == 0 ||
+               shadow_object_header.unknown2[0] == 1 ||
+               shadow_object_header.unknown2[0] == 2 ||
+               shadow_object_header.unknown2[0] == 999);
+        assert(shadow_object_header.unknown2[1] == 0);
+        assert(shadow_object_header.unknown2[2] == 0);
+        assert(shadow_object_header.unknown2[3] == 0);
+        assert(shadow_object_header.boundary_r > 0);
+        assert(PH2CLD__sanity_check_float4(shadow_object_header.matrix[0].Elements));
+        assert(PH2CLD__sanity_check_float4(shadow_object_header.matrix[1].Elements));
+        assert(PH2CLD__sanity_check_float4(shadow_object_header.matrix[2].Elements));
+        assert(PH2CLD__sanity_check_float4(shadow_object_header.matrix[3].Elements));
+
+        KG2_export_log("    %d geometries {", shadow_object_header.geometry_count);
+        for (int geometry_index = 0; geometry_index < shadow_object_header.geometry_count; ++geometry_index) {
+            KG2_export_log("      [%d] {", geometry_index);
+
+            struct KG2_Shadow_Geometry_Header {
+                int16_t vertex_count;   // 
+                int16_t prim;           // See "Primitive types" for details.
+                int16_t send_data_num;  // 
+                int16_t ee_memory_size; // Total size in quadwords including this header.
+                int16_t boundary_x;     // X coordinate of bounding sphere.
+                int16_t boundary_y;     // Y coordinate of bounding sphere.
+                int16_t boundary_z;     // Z coordinate of bounding sphere.
+                int16_t boundary_r;     // Radius of bounding sphere.
+            };
+
+            KG2_Shadow_Geometry_Header shadow_geometry_header = {};
+            char *shadow_geometry_base = ptr;
+            Read(ptr, shadow_geometry_header);
+            KG2_export_log("        %d vertices", shadow_geometry_header.vertex_count);
+
+            assert(shadow_geometry_header.vertex_count > 0);
+            assert(shadow_geometry_header.prim >= 0x1 &&
+                   shadow_geometry_header.prim <= 0xA);
+            static_assert(sizeof(KG2_Shadow_Geometry_Header) % 16 == 0, "");
+            assert(shadow_geometry_header.ee_memory_size > sizeof(KG2_Shadow_Geometry_Header) / 16);
+            assert(shadow_geometry_header.boundary_r > 0);
+
+            uint32_t bytes = shadow_geometry_header.ee_memory_size * 16;
+            assert(shadow_geometry_base + bytes <= end);
+
+            ptr = shadow_geometry_base + bytes;
+            assert(ptr <= end);
+            KG2_export_log("      }");
+        }
+        KG2_export_log("    }");
+        KG2_export_log("  }");
+    }
+    KG2_export_log("}");
+
+    return true; // @Temporary
 }
 
 #if _MSC_VER && !defined(__clang__)
@@ -5117,6 +5266,18 @@ static void frame(void *userdata) {
             }
             if (ImGui::MenuItem("Export All as OBJ...", nullptr, nullptr, !!g.opened_map_filename)) {
                 start_export_all_as_obj_popup = true;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Convert KG2 to OBJ...")) {
+                char *kg2_file_buf = win_import_or_export_dialog(L"KG2 Shadow File (*.kg2)\0" "*.kg2\0"
+                                                                   "All Files (*.*)\0" "*.*\0",
+                                                                   L"Open KG2", true);
+                if (kg2_file_buf) { // Texture import
+                    bool success = kg2_export(kg2_file_buf);
+                    if (success) {
+                        LogC(IM_COL32(0,178,59,255), "Converted %s to OBJ!", kg2_file_buf);
+                    }
+                }
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
@@ -6444,7 +6605,7 @@ static void frame(void *userdata) {
                     unique_textures_referenced++;
 
                     if (g.settings.export_materials) {
-                        bool export_success = export_dds(*tex, tex_export_name);
+                        bool export_success = dds_export(*tex, tex_export_name);
                         if (!export_success) {
                             return;
                         }
@@ -7803,7 +7964,7 @@ static void frame(void *userdata) {
                 }
             }
             if (dds_export_path) {
-                bool success = export_dds(tex, dds_export_path);
+                bool success = dds_export(tex, dds_export_path);
                 if (success) {
                     // MsgInfo("DDS Export", "Exported!\nSaved to:\n%s", dds_export_path);
                     LogC(IM_COL32(0,178,59,255), "Exported to %s!", dds_export_path);

@@ -6,6 +6,7 @@ misc/SH_Texture_Explorer*.zip
 *.cld
 *.map
 *.map.bak.zip
+*.kg2
 *.pdb
 cld*.exe
 cld*.obj
