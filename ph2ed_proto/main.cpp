@@ -3084,7 +3084,10 @@ static void test_all_maps(G &g) {
 
     struct _finddata_t find_data;
     intptr_t directory = _findfirst("map/*.map", &find_data);
-    assert(directory >= 0);
+    if (directory < 0) {
+        LogErr("Couldn't open any files in map/");
+        return;
+    }
     int spinner = 0;
     int num_tested = 0;
 
@@ -3122,7 +3125,10 @@ static void test_all_kg2s(G &g) {
 
     struct _finddata_t find_data;
     intptr_t directory = _findfirst("kg2/*.kg2", &find_data);
-    assert(directory >= 0);
+    if (directory < 0) {
+        LogErr("Couldn't open any files in kg2/");
+        return;
+    }
     int spinner = 0;
     int num_tested = 0;
 
@@ -4662,7 +4668,7 @@ bool kg2_export(char *filename) {
     KG2_File_Header kg2_file_header = {};
     Read(ptr, kg2_file_header);
 
-#if 1
+#if 01
 #define KG2_export_log(...) (__VA_ARGS__)
 #else
 #define KG2_export_log(...) Log(__VA_ARGS__)
@@ -4706,6 +4712,12 @@ bool kg2_export(char *filename) {
         assert(PH2CLD__sanity_check_float4(shadow_object_header.matrix[1].Elements));
         assert(PH2CLD__sanity_check_float4(shadow_object_header.matrix[2].Elements));
         assert(PH2CLD__sanity_check_float4(shadow_object_header.matrix[3].Elements));
+        KG2_export_log("    Matrix = {");
+        KG2_export_log("      %16.8f %16.8f %16.8f %16.8f", shadow_object_header.matrix[0][0], shadow_object_header.matrix[0][1], shadow_object_header.matrix[0][2], shadow_object_header.matrix[0][3]);
+        KG2_export_log("      %16.8f %16.8f %16.8f %16.8f", shadow_object_header.matrix[1][0], shadow_object_header.matrix[1][1], shadow_object_header.matrix[1][2], shadow_object_header.matrix[1][3]);
+        KG2_export_log("      %16.8f %16.8f %16.8f %16.8f", shadow_object_header.matrix[2][0], shadow_object_header.matrix[2][1], shadow_object_header.matrix[2][2], shadow_object_header.matrix[2][3]);
+        KG2_export_log("      %16.8f %16.8f %16.8f %16.8f", shadow_object_header.matrix[3][0], shadow_object_header.matrix[3][1], shadow_object_header.matrix[3][2], shadow_object_header.matrix[3][3]);
+        KG2_export_log("    }");
 
         KG2_export_log("    %d geometries {", shadow_object_header.geometry_count);
         for (int geometry_index = 0; geometry_index < shadow_object_header.geometry_count; ++geometry_index) {
@@ -4725,7 +4737,11 @@ bool kg2_export(char *filename) {
             KG2_Shadow_Geometry_Header shadow_geometry_header = {};
             char *shadow_geometry_base = ptr;
             Read(ptr, shadow_geometry_header);
-            KG2_export_log("        %d vertices", shadow_geometry_header.vertex_count);
+            bool tri_strip = (shadow_geometry_header.prim == 0x5 ||
+                              shadow_geometry_header.prim == 0x6 ||
+                              shadow_geometry_header.prim == 0x8 ||
+                              shadow_geometry_header.prim == 0x9);
+            KG2_export_log("        %s", tri_strip ? "TriStrip" : "PlaneBillboard");
 
             assert(shadow_geometry_header.vertex_count > 0);
             assert(shadow_geometry_header.prim >= 0x1 &&
@@ -4736,6 +4752,49 @@ bool kg2_export(char *filename) {
 
             uint32_t bytes = shadow_geometry_header.ee_memory_size * 16;
             assert(shadow_geometry_base + bytes <= end);
+
+            struct KG2_Face_Normal {
+                int16_t x;
+                int16_t y;
+                int16_t z;
+                int16_t w; // Always 0x0.
+            };
+            struct KG2_Vertex_Pos {
+                int16_t x;
+                int16_t y;
+                int16_t z;
+                int16_t w; // Always 0x1.
+            };
+
+            if (tri_strip) { // Tri strips
+                // assert(false);
+            } else {
+                char *end = shadow_geometry_base + bytes;
+                assert((uintptr_t)end % 16 == 0);
+
+                KG2_Face_Normal normal = {};
+                Read(ptr, normal);
+                KG2_export_log("        Normal = {%5d, %5d, %5d, %5d}", normal.x, normal.y, normal.z, normal.w);
+                if (normal.w != 0) {
+                    static int times_it_happened = 0;
+                    LogWarn("Normal W is nonzero in %s, object %d, geometry %d. This has happened %d times now", filename, object_index, geometry_index, ++times_it_happened);
+                }
+                // assert(normal.w == 0);
+                HMM_Vec3 normalf = { normal.x / 32768.0f, normal.y / 32768.0f, normal.z / 32768.0f };
+                assert(HMM_LenV3(normalf) <= 0.01f || fabsf(HMM_LenV3(normalf) - 1.0f) <= 0.01f);
+                KG2_export_log("        %d vertices {", shadow_geometry_header.vertex_count);
+                for (int vertex_index = 0; vertex_index < shadow_geometry_header.vertex_count; ++vertex_index) {
+                    KG2_Vertex_Pos pos = {};
+                    Read(ptr, pos);
+                    assert(pos.w == 1);
+                    KG2_export_log("          [%d] = {%5d, %5d, %5d}", vertex_index, pos.x, pos.y, pos.z);
+                }
+                for (; (uintptr_t)ptr % 16 != 0; ptr++) {
+                    assert(*ptr == 0);
+                }
+                assert(ptr == end);
+                KG2_export_log("        }");
+            }
 
             ptr = shadow_geometry_base + bytes;
             assert(ptr <= end);
