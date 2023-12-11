@@ -4727,7 +4727,7 @@ bool kg2_export(char *filename) {
                 int16_t vertex_count;   // 
                 int16_t prim;           // See "Primitive types" for details.
                 int16_t send_data_num;  // 
-                int16_t ee_memory_size; // Total size in quadwords including this header.
+                int16_t ee_memory_size; // Total size in quadwords including this header. // TODO(Phillip): is this actually 16 byte rows?
                 int16_t boundary_x;     // X coordinate of bounding sphere.
                 int16_t boundary_y;     // Y coordinate of bounding sphere.
                 int16_t boundary_z;     // Z coordinate of bounding sphere.
@@ -4766,20 +4766,33 @@ bool kg2_export(char *filename) {
                 int16_t w; // Always 0x1.
             };
 
-            if (tri_strip) { // Tri strips
-                // assert(false);
-            } else {
-                char *end = shadow_geometry_base + bytes;
-                assert((uintptr_t)end % 16 == 0);
+            static int times_normal_w_was_nonzero = 0;
 
+            char *end = shadow_geometry_base + bytes;
+            assert((uintptr_t)end % 16 == 0);
+
+            if (tri_strip) { // Tri strips
+                KG2_export_log("        %d vertices {", shadow_geometry_header.vertex_count);
+                for (int vertex_index = 0; vertex_index < shadow_geometry_header.vertex_count; ++vertex_index) {
+                    if (vertex_index >= 2) {
+                        KG2_Face_Normal normal = {};
+                        Read(ptr, normal);
+                        KG2_export_log("          Normal = {%5d, %5d, %5d, %5d}", normal.x, normal.y, normal.z, normal.w);
+                        assert(normal.w == 0);
+                    }
+                    KG2_Vertex_Pos pos = {};
+                    Read(ptr, pos);
+                    assert(pos.w == 1);
+                    KG2_export_log("          [%d] = {%5d, %5d, %5d}", vertex_index, pos.x, pos.y, pos.z);
+                }
+                KG2_export_log("        }");
+            } else {
                 KG2_Face_Normal normal = {};
                 Read(ptr, normal);
                 KG2_export_log("        Normal = {%5d, %5d, %5d, %5d}", normal.x, normal.y, normal.z, normal.w);
                 if (normal.w != 0) {
-                    static int times_it_happened = 0;
-                    LogWarn("Normal W is nonzero in %s, object %d, geometry %d. This has happened %d times now", filename, object_index, geometry_index, ++times_it_happened);
+                    LogWarn("Normal W is nonzero in %s, object %d, geometry %d. This has happened %d times now", filename, object_index, geometry_index, ++times_normal_w_was_nonzero);
                 }
-                // assert(normal.w == 0);
                 HMM_Vec3 normalf = { normal.x / 32768.0f, normal.y / 32768.0f, normal.z / 32768.0f };
                 assert(HMM_LenV3(normalf) <= 0.01f || fabsf(HMM_LenV3(normalf) - 1.0f) <= 0.01f);
                 KG2_export_log("        %d vertices {", shadow_geometry_header.vertex_count);
@@ -4789,15 +4802,13 @@ bool kg2_export(char *filename) {
                     assert(pos.w == 1);
                     KG2_export_log("          [%d] = {%5d, %5d, %5d}", vertex_index, pos.x, pos.y, pos.z);
                 }
-                for (; (uintptr_t)ptr % 16 != 0; ptr++) {
-                    assert(*ptr == 0);
-                }
-                assert(ptr == end);
                 KG2_export_log("        }");
             }
 
-            ptr = shadow_geometry_base + bytes;
-            assert(ptr <= end);
+            for (; (uintptr_t)ptr % 16 != 0; ptr++) {
+                assert(*ptr == 0);
+            }
+            assert(ptr == end);
             KG2_export_log("      }");
         }
         KG2_export_log("    }");
@@ -5327,6 +5338,7 @@ static void frame(void *userdata) {
                 start_export_all_as_obj_popup = true;
             }
             ImGui::Separator();
+#ifndef NDEBUG
             if (ImGui::MenuItem("Convert KG2 to OBJ...")) {
                 char *kg2_file_buf = win_import_or_export_dialog(L"KG2 Shadow File (*.kg2)\0" "*.kg2\0"
                                                                    "All Files (*.*)\0" "*.*\0",
@@ -5339,6 +5351,7 @@ static void frame(void *userdata) {
                 }
             }
             ImGui::Separator();
+#endif
             if (ImGui::MenuItem("Exit")) {
                 sapp_request_quit();
             }
