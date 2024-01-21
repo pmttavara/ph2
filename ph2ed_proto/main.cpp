@@ -4641,6 +4641,9 @@ bool dds_export(MAP_Texture tex, char *filename) {
     return true;
 }
 
+#define URL "https://github.com/pmttavara/ph2"
+
+// https://github.com/Polymega/SilentHillDatabase/blob/master/SH2/Files/kg.md
 bool kg2_export(char *filename) {
     ProfileFunction();
 
@@ -4653,11 +4656,38 @@ bool kg2_export(char *filename) {
         fclose(f);
     };
 
-    char data[128 * 1024]; // biggest stock kg2 is 71 KB
+    static char data[1024 * 1024]; // biggest stock kg2 is 71 KB
     uint32_t file_len = (uint32_t)fread(data, 1, sizeof(data), f);
     assert(file_len < sizeof(data)); // File is too big! Tell the programmer to turn up the buffer size.
     char *ptr = data;
     char *end = data + file_len;
+
+    int filename_n = (int)strlen(filename);
+    char *out_filename = (char *) malloc(filename_n + 4 + 1);
+    FailIfFalse(f, "Couldn't allocate output filename for %s.", filename);
+    defer {
+        free(out_filename);
+    };
+    memcpy(out_filename, filename, filename_n);
+    memcpy(out_filename + filename_n, ".obj", 4);
+    out_filename[filename_n + 4] = '\0';
+
+    FILE *obj = PH2CLD__fopen(out_filename, "wb");
+    FailIfFalse(obj, "File \"%s\" couldn't be opened.", filename);
+    defer {
+        fclose(obj);
+    };
+
+    fprintf(obj, "# .KG2 shadow mesh export from Psilent pHill 2 Editor (" URL ")\n");
+    fprintf(obj, "# Exported from filename: %s\n", filename);
+    char time_buf[sizeof("YYYY-MM-DD HH:MM:SS UTC")];
+    {
+        time_t t = time(nullptr);
+        auto result = strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S UTC", gmtime(&t));
+        assert(result);
+    }
+    fprintf(obj, "# Exported at %s\n", time_buf);
+    fprintf(obj, "\n");
 
     struct KG2_File_Header {
         uint16_t kind;         // Typically 0.
@@ -4673,6 +4703,24 @@ bool kg2_export(char *filename) {
 #else
 #define KG2_export_log(...) Log(__VA_ARGS__)
 #endif
+
+    struct KG2_Export_Vertex {
+        HMM_Vec3 position = {};
+        HMM_Vec3 normal = {};
+    };
+    Array<KG2_Export_Vertex> vertices = {};
+    defer {
+        vertices.release();
+    };
+
+    struct KG2_Export_Group {
+        int start_index;
+        int length;
+    };
+    Array<KG2_Export_Group> groups = {};
+    defer {
+        groups.release();
+    };
 
     KG2_export_log("%d objects {", kg2_file_header.object_count);
     for (int object_index = 0; object_index < kg2_file_header.object_count; ++object_index) {
@@ -4722,6 +4770,9 @@ bool kg2_export(char *filename) {
         KG2_export_log("    %d geometries {", shadow_object_header.geometry_count);
         for (int geometry_index = 0; geometry_index < shadow_object_header.geometry_count; ++geometry_index) {
             KG2_export_log("      [%d] {", geometry_index);
+
+            KG2_Export_Group *group = groups.push();
+            group->start_index = vertices.count;
 
             struct KG2_Shadow_Geometry_Header {
                 int16_t vertex_count;   // 
@@ -4773,17 +4824,74 @@ bool kg2_export(char *filename) {
 
             if (tri_strip) { // Tri strips
                 KG2_export_log("        %d vertices {", shadow_geometry_header.vertex_count);
-                for (int vertex_index = 0; vertex_index < shadow_geometry_header.vertex_count; ++vertex_index) {
-                    if (vertex_index >= 2) {
-                        KG2_Face_Normal normal = {};
-                        Read(ptr, normal);
-                        KG2_export_log("          Normal = {%5d, %5d, %5d, %5d}", normal.x, normal.y, normal.z, normal.w);
-                        assert(normal.w == 0);
-                    }
+
+                assert(shadow_geometry_header.vertex_count >= 3);
+                {
+                    KG2_Vertex_Pos pos0 = {};
+                    Read(ptr, pos0);
+                    assert(pos0.w == 1);
+                    KG2_export_log("          [%d] = {%5d, %5d, %5d}", 0, pos0.x, pos0.y, pos0.z);
+                    HMM_Vec4 pos0f = {pos0.x*1.f, pos0.y*1.f, pos0.z*1.f, pos0.w*1.f};
+                    pos0f = shadow_object_header.matrix * pos0f;
+
+                    KG2_Vertex_Pos pos1 = {};
+                    Read(ptr, pos1);
+                    assert(pos1.w == 1);
+                    KG2_export_log("          [%d] = {%5d, %5d, %5d}", 1, pos1.x, pos1.y, pos1.z);
+                    HMM_Vec4 pos1f = {pos1.x*1.f, pos1.y*1.f, pos1.z*1.f, pos1.w*1.f};
+                    pos1f = shadow_object_header.matrix * pos1f;
+
+                    KG2_Face_Normal normal = {};
+                    Read(ptr, normal);
+                    KG2_export_log("          Normal = {%5d, %5d, %5d, %5d}", normal.x, normal.y, normal.z, normal.w);
+                    assert(normal.w == 0);
+                    HMM_Vec3 normalf = { normal.x / 32768.0f, normal.y / 32768.0f, normal.z / 32768.0f };
+                    assert(HMM_LenV3(normalf) <= 0.01f || fabsf(HMM_LenV3(normalf) - 1.0f) <= 0.01f);
+
+                    KG2_Vertex_Pos pos2 = {};
+                    Read(ptr, pos2);
+                    assert(pos2.w == 1);
+                    KG2_export_log("          [%d] = {%5d, %5d, %5d}", 2, pos2.x, pos2.y, pos2.z);
+                    HMM_Vec4 pos2f = {pos2.x*1.f, pos2.y*1.f, pos2.z*1.f, pos2.w*1.f};
+                    pos2f = shadow_object_header.matrix * pos2f;
+
+                    vertices.push({pos0f.XYZ, normalf});
+                    vertices.push({pos1f.XYZ, normalf});
+                    vertices.push({pos2f.XYZ, normalf});
+
+                    group->length += 3;
+                }
+
+                for (int vertex_index = 3; vertex_index < shadow_geometry_header.vertex_count; ++vertex_index) {
+                    KG2_Face_Normal normal = {};
+                    Read(ptr, normal);
+                    KG2_export_log("          Normal = {%5d, %5d, %5d, %5d}", normal.x, normal.y, normal.z, normal.w);
+                    assert(normal.w == 0);
+                    HMM_Vec3 normalf = { normal.x / 32768.0f, normal.y / 32768.0f, normal.z / 32768.0f };
+                    assert(HMM_LenV3(normalf) <= 0.01f || fabsf(HMM_LenV3(normalf) - 1.0f) <= 0.01f);
+
                     KG2_Vertex_Pos pos = {};
                     Read(ptr, pos);
                     assert(pos.w == 1);
                     KG2_export_log("          [%d] = {%5d, %5d, %5d}", vertex_index, pos.x, pos.y, pos.z);
+                    HMM_Vec4 posf = {pos.x*1.f, pos.y*1.f, pos.z*1.f, pos.w*1.f};
+                    posf = shadow_object_header.matrix * posf;
+
+                    // inline destrip... :dizzy_face:
+                    KG2_Export_Vertex v0 = vertices[vertices.count - 2];
+                    KG2_Export_Vertex v1 = vertices[vertices.count - 1];
+                    KG2_Export_Vertex v2 = {posf.XYZ, normalf};
+                    if (vertex_index & 1) {
+                        vertices.push(v0);
+                        vertices.push(v1);
+                        vertices.push(v2);
+                    } else {
+                        vertices.push(v0);
+                        vertices.push(v2);
+                        vertices.push(v1);
+                    }
+
+                    group->length += 3;
                 }
                 KG2_export_log("        }");
             } else {
@@ -4791,16 +4899,46 @@ bool kg2_export(char *filename) {
                 Read(ptr, normal);
                 KG2_export_log("        Normal = {%5d, %5d, %5d, %5d}", normal.x, normal.y, normal.z, normal.w);
                 if (normal.w != 0) {
-                    LogWarn("Normal W is nonzero in %s, object %d, geometry %d. This has happened %d times now", filename, object_index, geometry_index, ++times_normal_w_was_nonzero);
+                    LogWarn("Normal W is nonzero in %s, object %d, geometry %d. This has happened %d times now."
+                            "    The normal was: {X: %d, Y: %d, Z: %d, W: %d}  ==  {%f, %f, %f, %f}",
+                            filename, object_index, geometry_index, ++times_normal_w_was_nonzero,
+                            normal.x, normal.y, normal.z, normal.w,
+                            normal.x / 32768.0f, normal.y / 32768.0f, normal.z / 32768.0f, normal.w / 32768.0f);
                 }
                 HMM_Vec3 normalf = { normal.x / 32768.0f, normal.y / 32768.0f, normal.z / 32768.0f };
                 assert(HMM_LenV3(normalf) <= 0.01f || fabsf(HMM_LenV3(normalf) - 1.0f) <= 0.01f);
-                KG2_export_log("        %d vertices {", shadow_geometry_header.vertex_count);
-                for (int vertex_index = 0; vertex_index < shadow_geometry_header.vertex_count; ++vertex_index) {
+
+                assert(shadow_geometry_header.vertex_count >= 3);
+
+                // I'm assuming we can triangulate this polygon by just reading 0,1,2,3,4,5,
+                // and splitting it into {0,1,2}, {0,2,3}, {0,3,4}, {0,4,5} etc.
+                // I have no idea if this is correct!
+                for (int vertex_index = 0; vertex_index < 3; ++vertex_index) {
                     KG2_Vertex_Pos pos = {};
                     Read(ptr, pos);
                     assert(pos.w == 1);
                     KG2_export_log("          [%d] = {%5d, %5d, %5d}", vertex_index, pos.x, pos.y, pos.z);
+
+                    HMM_Vec4 posf = {pos.x*1.f, pos.y*1.f, pos.z*1.f, pos.w*1.f};
+                    posf = shadow_object_header.matrix * posf;
+
+                    vertices.push({posf.XYZ, normalf});
+                    group->length += 1;
+                }
+                KG2_export_log("        %d vertices {", shadow_geometry_header.vertex_count);
+                for (int vertex_index = 3; vertex_index < shadow_geometry_header.vertex_count; ++vertex_index) {
+                    KG2_Vertex_Pos pos = {};
+                    Read(ptr, pos);
+                    assert(pos.w == 1);
+                    KG2_export_log("          [%d] = {%5d, %5d, %5d}", vertex_index, pos.x, pos.y, pos.z);
+
+                    HMM_Vec4 posf = {pos.x*1.f, pos.y*1.f, pos.z*1.f, pos.w*1.f};
+                    posf = shadow_object_header.matrix * posf;
+
+                    vertices.push({vertices[group->start_index].position, normalf});
+                    vertices.push({vertices[vertices.count - 1].position, normalf});
+                    vertices.push({posf.XYZ, normalf});
+                    group->length += 3;
                 }
                 KG2_export_log("        }");
             }
@@ -4810,11 +4948,35 @@ bool kg2_export(char *filename) {
             }
             assert(ptr == end);
             KG2_export_log("      }");
+
+            if (!group->length) {
+                groups.pop();
+            }
         }
         KG2_export_log("    }");
         KG2_export_log("  }");
     }
     KG2_export_log("}");
+
+    for (int vertex_index = 0; vertex_index < vertices.count; vertex_index++) {
+        HMM_Vec3 v  = vertices[vertex_index].position;
+        HMM_Vec3 vn = vertices[vertex_index].normal;
+        fprintf(obj, "v %f %f %f\n",  v.X,  v.Y,  v.Z);
+        fprintf(obj, "vn %f %f %f\n", vn.X, vn.Y, vn.Z);
+    }
+
+    for (int group_index = 0; group_index < groups.count; group_index++) {
+        KG2_Export_Group &group = groups[group_index];
+        fprintf(obj, "g G%d\n", group_index);
+
+        assert(group.length % 3 == 0);
+        for (int vertex_index = 0; vertex_index < group.length; vertex_index += 3) {
+            int a = (group.start_index + vertex_index + 0) + 1;
+            int b = (group.start_index + vertex_index + 1) + 1;
+            int c = (group.start_index + vertex_index + 2) + 1;
+            fprintf(obj, "  f %d//%d %d//%d %d//%d\n", a, a, b, b, c, c);
+        }
+    }
 
     return true; // @Temporary
 }
@@ -5382,7 +5544,6 @@ static void frame(void *userdata) {
             defer { ImGui::EndMenu(); };
             ImGui::MenuItem("Psilent pHill 2 Editor v" APP_VERSION_STRING, nullptr, false, false);
             ImGui::Separator();
-#define URL "https://github.com/pmttavara/ph2"
             if (ImGui::MenuItem(URL)) {
                 // Okay, we'll be nice people and ask for confirmation.
                 if (MessageBoxA(0,
