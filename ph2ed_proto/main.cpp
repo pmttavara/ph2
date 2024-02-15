@@ -3557,11 +3557,13 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
     }
 #ifndef NDEBUG
     {
-        // map_load(g, "map/ob01 (2).map");
+        map_load(g, "map/ob01 (2).map");
         // cld_load(g, "../cld/cld/ob01.cld");
         // map_load(g, "map/ap64.map");
         // test_all_maps(g);
-        test_all_kg2s(g);
+        // test_all_kg2s(g);
+        bool kg2_export(char *filename);
+        bool success = kg2_export("kg2/ap01.kg2");
         // sapp_request_quit();
     }
 #endif
@@ -4882,13 +4884,13 @@ bool kg2_export(char *filename) {
                     KG2_Export_Vertex v1 = vertices[vertices.count - 1];
                     KG2_Export_Vertex v2 = {posf.XYZ, normalf};
                     if (vertex_index & 1) {
-                        vertices.push(v0);
                         vertices.push(v1);
+                        vertices.push(v0);
                         vertices.push(v2);
                     } else {
-                        vertices.push(v0);
-                        vertices.push(v2);
+                        vertices.push(vertices[vertices.count - 3]); // index - 2 in the stripped version, but we have added triangles since then!!
                         vertices.push(v1);
+                        vertices.push(v2);
                     }
 
                     group->length += 3;
@@ -4935,9 +4937,12 @@ bool kg2_export(char *filename) {
                     HMM_Vec4 posf = {pos.x*1.f, pos.y*1.f, pos.z*1.f, pos.w*1.f};
                     posf = shadow_object_header.matrix * posf;
 
-                    vertices.push({vertices[group->start_index].position, normalf});
-                    vertices.push({vertices[vertices.count - 1].position, normalf});
-                    vertices.push({posf.XYZ, normalf});
+                    KG2_Export_Vertex v0 = vertices[group->start_index];
+                    KG2_Export_Vertex v1 = vertices[vertices.count - 1];
+                    KG2_Export_Vertex v2 = {posf.XYZ, normalf};
+                    vertices.push({v0.position, normalf});
+                    vertices.push({v1.position, normalf});
+                    vertices.push({v2.position, normalf});
                     group->length += 3;
                 }
                 KG2_export_log("        }");
@@ -5447,7 +5452,9 @@ static void frame(void *userdata) {
         free(obj_file_buf);
     };
 
-    // static unsigned long long asdfasdf; if (!asdfasdf++) obj_file_buf = strdup("map/ap64.map.obj");
+#ifndef NDEBUG
+    static bool asdfasdf; if (!asdfasdf++) obj_file_buf = strdup("kg2/ap01.kg2.obj");
+#endif
 
     char *dds_file_buf = nullptr;
     defer {
@@ -5500,7 +5507,7 @@ static void frame(void *userdata) {
                 start_export_all_as_obj_popup = true;
             }
             ImGui::Separator();
-#ifndef NDEBUG
+#if 1 // ndef NDEBUG
             if (ImGui::MenuItem("Convert KG2 to OBJ...")) {
                 char *kg2_file_buf = win_import_or_export_dialog(L"KG2 Shadow File (*.kg2)\0" "*.kg2\0"
                                                                    "All Files (*.*)\0" "*.*\0",
