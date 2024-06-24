@@ -5180,13 +5180,8 @@ static void parse_mtl(FILE *mtl, Array<MAP_OBJ_Import_Material> &materials) {
     }
 }
 
-bool save_map(G &g, char *requested_save_filename) {
+static bool save_file_with_backup(Array<uint8_t> filedata, char *requested_save_filename) {
     assert(requested_save_filename);
-    Array<uint8_t> filedata = {};
-    defer {
-        filedata.release();
-    };
-    map_write_to_memory(g, &filedata);
     bool success = false;
     {
         time_t backup_time = time(nullptr); // default to current-time if we can't determine the mtime
@@ -5359,9 +5354,7 @@ bool save_map(G &g, char *requested_save_filename) {
                             if (zip_entry_close(zip)) return false;
                             return true;
                         };
-                        if (success) {
-                            g.saved_file_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
-                        } else {
+                        if (!success) {
                             if (MessageBoxA(0,
                                 "The file couldn't be written to disk.\n\nDo you want to attempt to restore from a backup?",
                                 "Save Failed",
@@ -5406,10 +5399,23 @@ bool save_map(G &g, char *requested_save_filename) {
             Log("Couldn't build backup filename!!!");
         }
     }
-    if (success) {
+    return success;
+}
+
+bool save_map(G &g, char *requested_save_filename) {
+    Array<uint8_t> filedata = {};
+    defer {
+        filedata.release();
+    };
+    map_write_to_memory(g, &filedata);
+
+    bool result = save_file_with_backup(filedata, requested_save_filename);
+    if (result) {
+        g.saved_file_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
         assert(!has_unsaved_changes(g));
     }
-    return success;
+
+    return result;
 }
 
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd);
