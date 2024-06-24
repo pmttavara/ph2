@@ -4970,6 +4970,8 @@ bool kg2_export(char *filename) {
         fprintf(obj, "vn %f %f %f\n", vn.X, vn.Y, vn.Z);
     }
 
+    fprintf(obj, "\n");
+
     for (int group_index = 0; group_index < groups.count; group_index++) {
         KG2_Export_Group &group = groups[group_index];
         fprintf(obj, "g G%d\n", group_index);
@@ -4981,6 +4983,8 @@ bool kg2_export(char *filename) {
             int c = (group.start_index + vertex_index + 2) + 1;
             fprintf(obj, "  f %d//%d %d//%d %d//%d\n", a, a, b, b, c, c);
         }
+
+        fprintf(obj, "\n");
     }
 
     return true; // @Temporary
