@@ -3193,8 +3193,7 @@ static void imgui_do_console(G &g) {
     if (ImGui::InputTextWithHint("###console input", "help", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
         // Process buf
         LogC(IM_COL32_WHITE, "> %s", buf);
-        // @DisableCLD
-        if ((0, 0) && memcmp("cld_load ", buf, sizeof("cld_load ") - 1) == 0) {
+        if (memcmp("cld_load ", buf, sizeof("cld_load ") - 1) == 0) {
             char *p = buf + sizeof("cld_load ") - 1;
             while (isspace(*p)) p++;
             cld_load(g, p);
@@ -3965,8 +3964,7 @@ static void event(const sapp_event *e_, void *userdata) {
         const char *slash = max(strrchr(load, '/'), strrchr(load, '\\'));
         const char *dot = strrchr(load, '.');
         if (dot > slash) {
-            // @DisableCLD
-            if ((0, 0) && strcmp(dot, ".cld") == 0) {
+            if (strcmp(dot, ".cld") == 0) {
                 if (prompt_unsaved_changes(g)) {
                     cld_load(g, load);
                 }
@@ -5456,10 +5454,6 @@ static void frame(void *userdata) {
         free(obj_file_buf);
     };
 
-#ifndef NDEBUG
-    static bool asdfasdf; if (!asdfasdf++) obj_file_buf = strdup("kg2/ap01.kg2.obj");
-#endif
-
     char *dds_file_buf = nullptr;
     defer {
         free(dds_file_buf);
@@ -5766,8 +5760,7 @@ static void frame(void *userdata) {
             char *slash = max(strrchr(load, '/'), strrchr(load, '\\'));
             char *dot = strrchr(load, '.');
             if (dot > slash) {
-                // @DisableCLD
-                if ((0, 0) && strcmp(dot, ".cld") == 0) {
+                if (strcmp(dot, ".cld") == 0) {
                     cld_load(g, load);
                 } else if (strcmp(dot, ".map") == 0) {
                     map_load(g, load);
@@ -7091,8 +7084,7 @@ static void frame(void *userdata) {
                 }
             }
         }
-        // @DisableCLD
-        if ((0, 0) && ImGui::CollapsingHeader("CLD Subgroups", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (g.cld.valid && ImGui::CollapsingHeader("CLD Subgroups", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::PushID("CLD Subgroup Visibility Buttons");
             defer {
                 ImGui::PopID();
@@ -7815,7 +7807,7 @@ static void frame(void *userdata) {
                     g.select_cld_face = -1;
                 }
             }
-            if ((0, 0)) { // @DisableCLD
+            if (1) {
                 if (!face) {
                     ImGui::BeginDisabled();
                 }
