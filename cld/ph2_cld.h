@@ -319,6 +319,7 @@ PH2CLD_Collision_Data PH2CLD_get_collision_data_from_file_with_allocator(const c
         fclose(fp);
         return result; /* Allocation succeeded, but read failed */
     }
+    fclose(fp);
     result = PH2CLD_get_collision_data_from_file_memory_with_allocator(file_memory, file_memory_length, alloc_func, userdata);
     free_func(file_memory, userdata);
     return result;
