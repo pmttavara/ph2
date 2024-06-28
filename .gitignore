@@ -4,6 +4,7 @@ ph2ed_proto/assets/
 misc/John_Modest_SH_Level_Viewer*.zip
 misc/SH_Texture_Explorer*.zip
 *.cld
+*.cld.bak.zip
 *.map
 *.map.bak.zip
 *.kg2
@@ -15,6 +16,7 @@ ph2*.exe
 ph2*.obj
 *.glsl.h
 *.spall
+deleteme.log
 ph2ed_proto/imgui.ini
 ph2ed_proto/settings.ph2
 ph2ed_proto/build.ninja

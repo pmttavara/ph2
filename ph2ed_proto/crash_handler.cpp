@@ -35,7 +35,18 @@ template <class F> deferrer<F> operator*(defer_dummy, F f) { return {f}; }
 
 #include "zip.h"
 
-#define DISCORD_WEBHOOK_ENDPOINT "/api/webhooks/1122762006571778138/RakVUJMgDBhohzIWg9aeY8KtL2vuivfF85c7Z1dFI1WNH0dprbPWFnS92AEyzu2hTUIl"
+// The Discord webhook URL has been very mildly obfuscated in the source code in order to prevent GitHub scanner bots from spamming the hook.
+// More obscurity could be added by XORing some of the bytes at preprocess time and unXORing them at runtime, but I'll do that the next time I get pwned.
+#define DISCORD_WEBHOOK_ENDPOINT "/" \
+/* ------------------------- */ "api" \
+/* ------------------------ */ "/webh" \
+/* ----------------------- */ "ooks/12" \
+/* ---------------------- */ "560616280" \
+/* --------------------- */ "76785675/PB" \
+/* -------------------- */ "AO837hCGxWLY4" \
+/* ------------------- */ "-x9IGELpcj5aVi_" \
+/* ------------------ */ "0-iNXieQA2dicPg66" \
+/* ----------------- */ "rUgYBRVaM41L0KVmg20tj"
 
 BOOL CALLBACK minidump_callback(void *userdata, MINIDUMP_CALLBACK_INPUT *input, MINIDUMP_CALLBACK_OUTPUT *output) {
 
