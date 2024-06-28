@@ -874,6 +874,14 @@ struct Ray_Vs_World_Result {
     } cld;
 };
 
+static size_t cld_memory_bytes(PH2CLD_Collision_Data cld) {
+    return sizeof(*cld.group_0_faces) * cld.group_0_faces_count
+         + sizeof(*cld.group_1_faces) * cld.group_1_faces_count
+         + sizeof(*cld.group_2_faces) * cld.group_2_faces_count
+         + sizeof(*cld.group_3_faces) * cld.group_3_faces_count
+         + sizeof(*cld.group_4_cylinders) * cld.group_4_cylinders_count;
+}
+
 struct Settings {
     bool show_editor = true;
     bool show_viewport = true;
@@ -1206,7 +1214,9 @@ struct G : Map {
         clear_undo_redo_stacks();
         undo_stack.release();
         redo_stack.release();
-        PH2CLD_free_collision_data(cld);
+        if (cld.group_0_faces) {
+            (The_Arena_Allocator::free)(cld.group_0_faces, cld_memory_bytes(cld));
+        }
         sg_destroy_pipeline(cld_pipeline);
         for (auto &buf : cld_face_buffers) {
             sg_destroy_buffer(buf.buf);
@@ -1317,10 +1327,13 @@ static void cld_upload(G &g) {
         assert(g.cld_face_buffers[group].num_vertices % 3 == 0);
     }
 }
+
 static void cld_unload(G &g) {
     ProfileFunction();
 
-    PH2CLD_free_collision_data(g.cld);
+    if (g.cld.group_0_faces) {
+        (The_Arena_Allocator::free)(g.cld.group_0_faces, cld_memory_bytes(g.cld));
+    }
     g.cld = {};
     g.staleify_cld();
     if (g.opened_cld_filename) {
@@ -1342,14 +1355,57 @@ static void cld_load(G &g, const char *filename) {
         return;
     }
 
+    g.clear_undo_redo_stacks();
+
     if (g.opened_cld_filename) {
         void unload(G &g);
         unload(g);
     }
 
+    if (g.opened_map_filename) {
+        void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false, bool round_trip_test = false);
+        map_load(g, g.opened_map_filename);
+    }
+
     Log("CLD filename is \"%s\"", filename);
     cld_unload(g);
-    g.cld = PH2CLD_get_collision_data_from_file(filename);
+    auto arena_alloc = [] (size_t n, void *userdata) { return The_Arena_Allocator::allocate(n); };
+
+    {
+        FILE *fp = PH2CLD__fopen(filename, "rb");
+        defer { fclose(fp); };
+        if (!fp) {
+            LogErr("Failed opening CLD file \"%s\"!", filename);
+            return;
+        }
+        if (fseek(fp, 0, SEEK_END) != 0) {
+            LogErr("Failed reading CLD file \"%s\"!", filename);
+            return;
+        }
+        fpos_t raw_file_length = {0};
+        if (fgetpos(fp, &raw_file_length) != 0 || raw_file_length < 0) {
+            LogErr("Failed reading CLD file \"%s\"!", filename);
+            return;
+        }
+        uintmax_t checked_filesize = (uintmax_t)raw_file_length;
+        if (checked_filesize > SIZE_MAX) {
+            LogErr("Failed reading CLD file \"%s\"!", filename);
+            return;
+        }
+        size_t file_memory_length = (size_t)checked_filesize;
+        void *file_memory = malloc(file_memory_length);
+        if (!file_memory) {
+            LogErr("Failed reading CLD file \"%s\"!", filename);
+            return;
+        }
+        defer { free(file_memory); };
+        rewind(fp);
+        if (fread(file_memory, 1, file_memory_length, fp) != file_memory_length) {
+            LogErr("Failed reading CLD file \"%s\"!", filename);
+            return; /* Allocation succeeded, but read failed */
+        }
+        g.cld = PH2CLD_get_collision_data_from_file_memory_with_allocator(file_memory, file_memory_length, arena_alloc, nullptr);
+    }
     if (!g.cld.valid) {
         LogErr("Failed loading CLD file \"%s\"!", filename);
         return;
@@ -1357,6 +1413,8 @@ static void cld_load(G &g, const char *filename) {
 
     g.opened_cld_filename = strdup(filename);
     assert(g.opened_cld_filename);
+
+    g.saved_arena_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
 }
 #define Read(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(&(x), ptr, sizeof(x)) && (ptr += sizeof(x)))
 #define WritePtr(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(ptr, &(x), sizeof(x)) && (ptr += sizeof(x)))
@@ -2537,7 +2595,7 @@ static float (texture_format_mode_histogram[4])[6] = {};
 static float (mode_unknown_histogram[6])[17] = {};
 static float (texture_format_unknown_histogram[4])[17] = {};
 
-static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false, bool round_trip_test = false) {
+void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false, bool round_trip_test = false) {
     ProfileFunction();
 
     bool prompt_unsaved_changes(G &g);
@@ -2545,8 +2603,14 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         return;
     }
 
+    g.clear_undo_redo_stacks();
+
     if (g.opened_map_filename) {
         unload(g);
+    }
+    
+    if (g.opened_cld_filename) {
+        cld_load(g, g.opened_cld_filename);
     }
 
     {
@@ -3615,8 +3679,8 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
     }
 #ifndef NDEBUG
     {
-        map_load(g, "map/ob01 (2).map");
-        cld_load(g, "cld/ob01.cld");
+        // map_load(g, "map/ob01 (2).map");
+        // cld_load(g, "cld/ob01.cld");
         // map_load(g, "map/ap64.map");
         // test_all_maps(g);
         // test_all_kg2s(g);
@@ -5849,7 +5913,7 @@ static void frame(void *userdata) {
             }
         }
         ImGui::SameLine(); if (ImGui::Button("Don't Save")) {
-            map_unload(g);
+            unload(g);
             sapp_request_quit();
             ImGui::CloseCurrentPopup();
         }
@@ -9043,7 +9107,7 @@ static void frame(void *userdata) {
     {
         bool either = g.opened_map_filename || g.opened_cld_filename;
         bool both = g.opened_map_filename && g.opened_cld_filename;
-        auto s = mprintf("%sPsilent pHill 2 Editor%s%s",
+        auto s = mprintf("%sPsilent pHill 2 Editor%s%s%s%s",
                          arena_hash == g.saved_arena_hash ? "" : "* ",
                          either ? " - " : "",
                          g.opened_map_filename ? g.opened_map_filename : "",
@@ -9063,6 +9127,7 @@ static void frame(void *userdata) {
             g.redo_stack.push(g.undo_stack.pop());
             apply_history_entry(g.undo_stack[g.undo_stack.count - 1]);
             g.staleify_map();
+            g.staleify_cld();
         }
     } else if (g.control_y) {
         g.control_y = false;
@@ -9070,6 +9135,7 @@ static void frame(void *userdata) {
             g.undo_stack.push(g.redo_stack.pop());
             apply_history_entry(g.undo_stack[g.undo_stack.count - 1]);
             g.staleify_map();
+            g.staleify_cld();
         }
     }
 
