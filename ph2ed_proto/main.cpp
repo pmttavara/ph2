@@ -1059,7 +1059,7 @@ struct G : Map {
     Array<Map_History_Entry> undo_stack = {};
     Array<Map_History_Entry> redo_stack = {};
 
-    uint64_t saved_file_hash = meow_hash(nullptr, 0);
+    uint64_t saved_arena_hash = meow_hash(nullptr, 0);
 
     double last_time = 0;
     double t = 0;
@@ -1092,7 +1092,6 @@ struct G : Map {
 
     bool control_s = false;
     bool control_shift_s = false;
-    bool save_cld_as = false;
 
     bool control_o = false;
     bool control_i = false;
@@ -1186,6 +1185,7 @@ struct G : Map {
     bool wireframe = false;
 
     char *opened_map_filename = nullptr;
+    char *opened_cld_filename = nullptr;
 
     void clear_undo_redo_stacks() {
         ProfileFunction();
@@ -1226,6 +1226,7 @@ struct G : Map {
         }
         map_textures.release();
         free(opened_map_filename); opened_map_filename = nullptr;
+        free(opened_cld_filename); opened_cld_filename = nullptr;
         Map::release_geometry();
         Map::release_textures();
         *this = {};
@@ -1233,7 +1234,11 @@ struct G : Map {
 };
 
 bool has_unsaved_changes(G &g) {
-    return (g.saved_file_hash != meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head));
+    bool unsaved = (g.saved_arena_hash != meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head));
+    if (unsaved) {
+        assert(g.opened_map_filename || g.opened_cld_filename);
+    }
+    return unsaved;
 }
 
 static bool cld_face_visible(G &g, PH2CLD_Face *face) {
@@ -1249,7 +1254,7 @@ static void cld_upload(G &g) {
     ProfileFunction();
 
     auto &cld = g.cld;
-    if (!cld.valid) {
+    if (!g.opened_cld_filename) {
         for (auto &buf : g.cld_face_buffers) {
             buf.num_vertices = 0;
         }
@@ -1318,16 +1323,40 @@ static void cld_unload(G &g) {
     PH2CLD_free_collision_data(g.cld);
     g.cld = {};
     g.staleify_cld();
+    if (g.opened_cld_filename) {
+        free(g.opened_cld_filename);
+        g.opened_cld_filename = nullptr;
+    }
+    g.select_cld_group = -1;
+    g.select_cld_face = -1;
+    g.drag_cld_group = -1;
+    g.drag_cld_face = -1;
+    g.drag_cld_vertex = -1;
+    g.drag_cld_normal_for_triangle_at_click_time = {};
 }
 static void cld_load(G &g, const char *filename) {
     ProfileFunction();
+
+    bool prompt_unsaved_changes(G &g);
+    if (!prompt_unsaved_changes(g)) {
+        return;
+    }
+
+    if (g.opened_cld_filename) {
+        void unload(G &g);
+        unload(g);
+    }
 
     Log("CLD filename is \"%s\"", filename);
     cld_unload(g);
     g.cld = PH2CLD_get_collision_data_from_file(filename);
     if (!g.cld.valid) {
         LogErr("Failed loading CLD file \"%s\"!", filename);
+        return;
     }
+
+    g.opened_cld_filename = strdup(filename);
+    assert(g.opened_cld_filename);
 }
 #define Read(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(&(x), ptr, sizeof(x)) && (ptr += sizeof(x)))
 #define WritePtr(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(ptr, &(x), sizeof(x)) && (ptr += sizeof(x)))
@@ -2432,31 +2461,27 @@ static void map_unload(G &g, bool release_only_geometry = false) {
     if (release_only_geometry) {
         g.release_geometry();
     } else {
-
         static_cast<Map &>(g) = Map{};
-
-        The_Arena_Allocator::free_all();
-        g.clear_undo_redo_stacks();
-        g.ui_selected_texture_subfile = nullptr;
-        g.ui_selected_texture = nullptr;
     }
+
+    g.ui_selected_texture_subfile = nullptr;
+    g.ui_selected_texture = nullptr;
+
+    g.drag_map_mesh = nullptr;
+    g.drag_map_buffer = -1;
+    g.drag_map_vertex = -1;
 
     g.staleify_map();
     if (g.opened_map_filename) {
         free(g.opened_map_filename);
         g.opened_map_filename = nullptr;
     }
-    g.saved_file_hash = meow_hash(nullptr, 0);
 
     for (auto &buf : g.map_buffers) {
         buf.shown = true;
         buf.selected = false;
     }
     g.overall_center_needs_recalc = true; // @Note: Bleh.
-
-    if (!release_only_geometry) {
-        assert(!has_unsaved_changes(g));
-    }
 }
 
 static const char *get_non_numbered_dependency_filename(const char *filename) {
@@ -2493,6 +2518,20 @@ static const char *get_non_numbered_dependency_filename(const char *filename) {
     return non_numbered;
 }
 
+void unload(G &g) {
+    ProfileFunction();
+
+    void cld_unload(G &g);
+    void map_unload(G &g, bool release_only_geometry);
+    cld_unload(g);
+    map_unload(g, false);
+
+    The_Arena_Allocator::free_all();
+    g.clear_undo_redo_stacks();
+    g.saved_arena_hash = meow_hash(nullptr, 0);
+    assert(!has_unsaved_changes(g));
+}
+
 static float (vertex_format_mode_histogram[4])[6] = {};
 static float (texture_format_mode_histogram[4])[6] = {};
 static float (mode_unknown_histogram[6])[17] = {};
@@ -2500,6 +2539,15 @@ static float (texture_format_unknown_histogram[4])[17] = {};
 
 static void map_load(G &g, const char *filename, bool is_non_numbered_dependency = false, bool round_trip_test = false) {
     ProfileFunction();
+
+    bool prompt_unsaved_changes(G &g);
+    if (!prompt_unsaved_changes(g)) {
+        return;
+    }
+
+    if (g.opened_map_filename) {
+        unload(g);
+    }
 
     {
         auto filename16 = utf8_to_utf16(filename);
@@ -2518,7 +2566,6 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
         filename = absolute_filename; // Sometimes @Leak of old filename? Don't care tbh
     }
 
-    cld_unload(g);
     map_unload(g, is_non_numbered_dependency);
 
     if (!is_non_numbered_dependency) { // Semi-garbage code.
@@ -2963,7 +3010,7 @@ static void map_load(G &g, const char *filename, bool is_non_numbered_dependency
     g.solo_material = -1;
 
     g.reset_camera = true;
-    g.saved_file_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
+    g.saved_arena_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
 }
 static void map_upload(G &g) {
     ProfileFunction();
@@ -3933,7 +3980,7 @@ static Ray_Vs_World_Result ray_vs_world(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir
             result.map.hit_vertex = raycast.hit_vertex;
         }
     }
-    if (g.cld.valid) {
+    {
         Ray_Vs_CLD_Result raycast = ray_vs_cld(g, ray_pos, ray_dir);
 
         if (raycast.hit && raycast.closest_t < result.closest_t) {
@@ -3953,11 +4000,32 @@ static Ray_Vs_World_Result ray_vs_world(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir
 }
 
 // @Hack: @Remove this and replace it with the standard ImGui popup.
-static bool prompt_unsaved_changes(G &g) {
+bool prompt_unsaved_changes(G &g) {
     if (!has_unsaved_changes(g)) return true;
 
+    assert(g.opened_map_filename || g.opened_cld_filename);
+    bool both = g.opened_map_filename && g.opened_cld_filename;
+
     char content[65536 * 2];
-    int formatted = snprintf(content, sizeof(content), "The current file \"%s\" has unsaved changes.\nSave these changes before opening the new file?", g.opened_map_filename);
+    int formatted = 0;
+    if (both) {
+        formatted = snprintf(content, sizeof(content),
+                             "The current files:\n"
+                             "  %s\n"
+                             "  %s\n"
+                             "have unsaved changes.\n"
+                             "Save these changes before opening the new file?",
+                             g.opened_map_filename, g.opened_cld_filename);
+    } else {
+        const char *the_filename = g.opened_map_filename ? g.opened_map_filename : g.opened_cld_filename;
+        formatted = snprintf(content, sizeof(content),
+                             "The current file:\n"
+                             "  %s\n"
+                             "has unsaved changes.\n"
+                             "Save these changes before opening the new file?",
+                             the_filename);
+
+    }
     assert(formatted < countof(content));
 
     int button = MessageBoxA((HWND)sapp_win32_get_hwnd(), content, "Open File - Unsaved Changes", MB_YESNOCANCEL | MB_ICONWARNING | MB_TASKMODAL | MB_DEFBUTTON3);
@@ -3965,8 +4033,8 @@ static bool prompt_unsaved_changes(G &g) {
     if (button == 0) {
         return false;
     } else if (button == IDYES) {
-        bool save_map(G &g, char *requested_save_filename);
-        if (save_map(g, g.opened_map_filename)) {
+        bool save(G &g, char *requested_map_filename, char *requested_cld_filename);
+        if (save(g, g.opened_map_filename, g.opened_cld_filename)) {
             return true;
         }
         return false;
@@ -3994,19 +4062,13 @@ static void event(const sapp_event *e_, void *userdata) {
         const char *dot = strrchr(load, '.');
         if (dot > slash) {
             if (strcmp(dot, ".cld") == 0) {
-                if (prompt_unsaved_changes(g)) {
-                    cld_load(g, load);
-                }
+                cld_load(g, load);
             } else if (strcmp(dot, ".map") == 0) {
-                if (prompt_unsaved_changes(g)) {
-                    map_load(g, load);
-                }
+                map_load(g, load);
             } else {
                 size_t mapbaklen = (sizeof(".map.bak") - 1);
                 if (n >= mapbaklen && strcmp(load + n - mapbaklen, ".map.bak") == 0) {
-                    if (prompt_unsaved_changes(g)) {
-                        map_load(g, load);
-                    }
+                    map_load(g, load);
                 } else {
                     // MsgErr("File Load Error", "The file \"%s\"\ndoesn't have the file extension .CLD or .MAP.\nThe editor can only open files ending in .CLD or .MAP. Sorry!!", load);
                     MsgErr("File Load Error", "The file \"%s\"\ndoesn't have the file extension .MAP.\nThe editor can only open files ending in .MAP. Sorry!!", load);
@@ -5486,23 +5548,21 @@ static bool save_file_with_backup(Array<uint8_t> filedata, char *file_extension,
     return success;
 }
 
-bool save_map(G &g, char *requested_save_filename) {
+bool map_save(G &g, char *requested_save_filename) {
     Array<uint8_t> filedata = {};
     defer {
         filedata.release();
     };
     map_write_to_memory(g, &filedata);
 
-    bool result = save_file_with_backup(filedata, "map", requested_save_filename);
-    if (result) {
-        g.saved_file_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
-        assert(!has_unsaved_changes(g));
+    if (!save_file_with_backup(filedata, "map", requested_save_filename)) {
+        return false;
     }
 
-    return result;
+    return true;
 }
 
-bool save_cld(G &g, char *requested_save_filename) {
+bool cld_save(G &g, char *requested_save_filename) {
     Array<uint8_t> filedata = {};
     defer {
         filedata.release();
@@ -5526,6 +5586,19 @@ bool save_cld(G &g, char *requested_save_filename) {
     return true;
 }
 
+bool save(G &g, char *requested_map_filename, char *requested_cld_filename) {
+    bool map_success = map_save(g, requested_map_filename);
+    bool cld_success = cld_save(g, requested_cld_filename);
+    if (map_success && cld_success) {
+        g.saved_arena_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
+        assert(!has_unsaved_changes(g));
+        return true;
+    }
+
+    return false;
+}
+
+
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd);
 static void frame(void *userdata) {
     ProfileFunction();
@@ -5546,6 +5619,8 @@ static void frame(void *userdata) {
         g.dt_history[sapp_frame_count() % countof(g.dt_history)] = dt;
     }
     simgui_new_frame({ sapp_width(), sapp_height(), dt, sapp_dpi_scale() });
+
+    assert(!!g.cld.valid == !!g.opened_cld_filename);
 
     g.hovered_mpg = nullptr;
     g.click_result = {};
@@ -5587,35 +5662,23 @@ static void frame(void *userdata) {
             if (ImGui::MenuItem("Open...", "Ctrl-O")) {
                 g.control_o = true;
             }
-            // char *ctrl_s_name = "Save###Save";
-            // if (g.opened_map_filename) {
-            //     if (g.cld.valid) {
-            //         ctrl_s_name = "Save MAP + CLD###Save";
-            //     } else {
-            //         ctrl_s_name = "Save MAP###Save";
-            //     }
-            // } else {
-            //     if (g.cld.valid) {
-            //         ctrl_s_name = "Save CLD###Save";
-            //     } else {
-            //         ctrl_s_name = "Save###Save";
-            //     }
-            // }
-            char *ctrl_s_name = "Save MAP###Save";
-            if (ImGui::MenuItem(ctrl_s_name, "Ctrl-S", nullptr, !!g.opened_map_filename /* || !!g.cld.valid */)) {
+
+            int openizeableification = !!g.opened_map_filename | !!g.opened_cld_filename << 1;
+            char *(save_names[4])[2] = {
+                { "Save"           "###Save", "Save As..."           "###Save As...", },
+                { "Save MAP"       "###Save", "Save MAP As..."       "###Save As...", },
+                { "Save CLD"       "###Save", "Save CLD As..."       "###Save As...", },
+                { "Save MAP + CLD" "###Save", "Save MAP + CLD As..." "###Save As...", },
+            };
+            const char *const ctrl_s_name = save_names[openizeableification][0];
+            const char *const ctrl_shift_s_name = save_names[openizeableification][1];
+            if (ImGui::MenuItem(ctrl_s_name, "Ctrl-S", nullptr, openizeableification)) {
                 g.control_s = true;
-                g.control_shift_s = true;
-                g.save_cld_as = false;
-            }
-            if (ImGui::MenuItem("Save MAP As...", "Ctrl-Shift-S", nullptr, !!g.opened_map_filename)) {
-                g.control_s = false;
-                g.control_shift_s = true;
-                g.save_cld_as = false;
-            }
-            if (ImGui::MenuItem("Save CLD As...", nullptr, nullptr, !!g.cld.valid)) {
-                g.control_s = false;
                 g.control_shift_s = false;
-                g.save_cld_as = true;
+            }
+            if (ImGui::MenuItem(ctrl_shift_s_name, "Ctrl-Shift-S", nullptr, openizeableification)) {
+                g.control_s = false;
+                g.control_shift_s = true;
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Import OBJ Model...", "Ctrl-I", nullptr, !!g.opened_map_filename)) {
@@ -5635,14 +5698,13 @@ static void frame(void *userdata) {
                     any_selected = true;
                 }
             }
-            if (ImGui::MenuItem("Export Selected as OBJ...", nullptr, nullptr, !!g.opened_map_filename && any_selected)) {
+            if (ImGui::MenuItem("Export Selected in MAP as OBJ...", nullptr, nullptr, !!g.opened_map_filename && any_selected)) {
                 start_export_selected_as_obj_popup = true;
             }
-            if (ImGui::MenuItem("Export All as OBJ...", nullptr, nullptr, !!g.opened_map_filename)) {
+            if (ImGui::MenuItem("Export All in MAP as OBJ...", nullptr, nullptr, !!g.opened_map_filename)) {
                 start_export_all_as_obj_popup = true;
             }
             ImGui::Separator();
-#if 1 // ndef NDEBUG
             if (ImGui::MenuItem("Convert KG2 to OBJ...")) {
                 char *kg2_file_buf = win_import_or_export_dialog(L"KG2 Shadow File (*.kg2)\0" "*.kg2\0"
                                                                    "All Files (*.*)\0" "*.*\0",
@@ -5655,7 +5717,6 @@ static void frame(void *userdata) {
                 }
             }
             ImGui::Separator();
-#endif
             if (ImGui::MenuItem("Exit")) {
                 sapp_request_quit();
             }
@@ -5717,6 +5778,8 @@ static void frame(void *userdata) {
 
     if (!g.opened_map_filename) {
         g.control_i = false;
+    }
+    if (!g.opened_map_filename && !g.opened_cld_filename) {
         g.control_s = false;
         g.control_shift_s = false;
     }
@@ -5730,34 +5793,33 @@ static void frame(void *userdata) {
         }
     } else if (g.control_i) {
         start_import_obj_model_popup = true;
-    } else if (g.save_cld_as) {
-        char *requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 CLD File\0" "*.cld\0"
-                                                                     "All Files\0" "*.*\0",
-                                                                    L"Save CLD", false, L"cld");
-        if (requested_save_filename) {
-            save_cld(g, requested_save_filename);
-            free(requested_save_filename);
-        }
     } else if (g.control_shift_s) {
-        char *requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
-                                                                     "All Files\0" "*.*\0",
-                                                                    L"Save MAP", false, L"map");
-        if (requested_save_filename) {
-            if (save_map(g, requested_save_filename)) {
-                free(g.opened_map_filename);
-                g.opened_map_filename = requested_save_filename;
-            } else {
-                free(requested_save_filename);
+        char *requested_map_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
+                                                                    "All Files\0" "*.*\0",
+                                                                   L"Save MAP", false, L"map");
+        defer { free(requested_map_filename); };
+        if (requested_map_filename) {
+            char *requested_cld_filename = win_import_or_export_dialog(L"Silent Hill 2 CLD File\0" "*.cld\0"
+                                                                        "All Files\0" "*.*\0",
+                                                                       L"Save CLD", false, L"cld");
+            defer { free(requested_cld_filename); };
+            if (requested_cld_filename) {
+                if (save(g, requested_map_filename, requested_cld_filename)) {
+                    ImSwap(g.opened_map_filename, requested_map_filename); // free the old names
+                    ImSwap(g.opened_cld_filename, requested_cld_filename); // free the old names
+                }
             }
         }
     } else if (g.control_s) {
-        save_map(g, g.opened_map_filename);
+        save(g, g.opened_map_filename, g.opened_cld_filename);
     }
     bool popup_bool = true;
     if (ImGui::BeginPopupModal("Open File - Unsaved Changes", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
+        ImGui::Text("MAP \"%s\" and CLD \"%s\" have unsaved changes. Are you sure?",
+                    g.opened_map_filename ? g.opened_map_filename : "",
+                    g.opened_cld_filename ? g.opened_cld_filename : "");
         if (ImGui::Button("Save")) {
-            if (save_map(g, g.opened_map_filename)) {
+            if (save(g, g.opened_map_filename, g.opened_cld_filename)) {
                 do_control_o_load = true;
                 ImGui::CloseCurrentPopup();
             }
@@ -5777,9 +5839,11 @@ static void frame(void *userdata) {
     }
 
     if (ImGui::BeginPopupModal("Exit - Unsaved Changes", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
+        ImGui::Text("MAP \"%s\" and CLD \"%s\" have unsaved changes. Are you sure?",
+                    g.opened_map_filename ? g.opened_map_filename : "",
+                    g.opened_cld_filename ? g.opened_cld_filename : "");
         if (ImGui::Button("Save")) {
-            if (save_map(g, g.opened_map_filename)) {
+            if (save(g, g.opened_map_filename, g.opened_cld_filename)) {
                 sapp_request_quit();
                 ImGui::CloseCurrentPopup();
             }
@@ -5927,7 +5991,6 @@ static void frame(void *userdata) {
     // God, this is dumb. Lol. But it works!!!
     g.control_s = false;
     g.control_shift_s = false;
-    g.save_cld_as = false;
     g.control_o = false;
     g.control_i = false;
     ImGui::DockSpaceOverViewport(nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
@@ -8935,12 +8998,12 @@ static void frame(void *userdata) {
         }
     }
 
-    auto make_history_entry = [&] (uint64_t map_hash) -> Map_History_Entry {
+    auto make_history_entry = [&] (uint64_t arena_hash) -> Map_History_Entry {
         ProfileFunction();
 
         Map_History_Entry entry = {};
 
-        entry.hash = map_hash;
+        entry.hash = arena_hash;
 
         entry.count = The_Arena_Allocator::arena_head;
         entry.bytes_used = The_Arena_Allocator::bytes_used;
@@ -8960,14 +9023,14 @@ static void frame(void *userdata) {
         no_asan_memcpy(The_Arena_Allocator::arena_data, entry.data, The_Arena_Allocator::arena_head);
     };
 
-    uint64_t map_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
+    uint64_t arena_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
     if (g.undo_stack.count < 1 ||
         (g.control_state != ControlState::Dragging &&
          !ImGui::GetIO().WantCaptureKeyboard &&
-         map_hash != g.undo_stack[g.undo_stack.count - 1].hash)) {
-        // Log("Undo/redo frame! Hash: %llu", map_hash);
+         arena_hash != g.undo_stack[g.undo_stack.count - 1].hash)) {
+        // Log("Undo/redo frame! Hash: %llu", arena_hash);
 
-        g.undo_stack.push(make_history_entry(map_hash));
+        g.undo_stack.push(make_history_entry(arena_hash));
 
         for (auto &entry : g.redo_stack) {
             entry.release();
@@ -8978,7 +9041,14 @@ static void frame(void *userdata) {
     }
 
     {
-        auto s = mprintf("%sPsilent pHill 2 Editor%s%s", map_hash == g.saved_file_hash ? "" : "* ", g.opened_map_filename ? " - " : "", g.opened_map_filename ? g.opened_map_filename : "");
+        bool either = g.opened_map_filename || g.opened_cld_filename;
+        bool both = g.opened_map_filename && g.opened_cld_filename;
+        auto s = mprintf("%sPsilent pHill 2 Editor%s%s",
+                         arena_hash == g.saved_arena_hash ? "" : "* ",
+                         either ? " - " : "",
+                         g.opened_map_filename ? g.opened_map_filename : "",
+                         both ? ", " : "",
+                         g.opened_cld_filename ? g.opened_cld_filename : "");
         if (s) {
             sapp_set_window_title(s);
             free(s);
