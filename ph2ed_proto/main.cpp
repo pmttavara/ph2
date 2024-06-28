@@ -858,6 +858,7 @@ struct Ray_Vs_World_Result {
 
     float closest_t = INFINITY;
     HMM_Vec3 hit_widget_pos = {};
+    HMM_Vec3 hit_normal = {};
 
     struct {
         MAP_Mesh *hit_mesh = nullptr;
@@ -1091,6 +1092,7 @@ struct G : Map {
 
     bool control_s = false;
     bool control_shift_s = false;
+    bool save_cld_as = false;
 
     bool control_o = false;
     bool control_i = false;
@@ -1116,6 +1118,7 @@ struct G : Map {
     int drag_cld_group = -1;
     int drag_cld_face = -1;
     int drag_cld_vertex = -1;
+    HMM_Vec3 drag_cld_normal_for_triangle_at_click_time = {};
 
     HMM_Vec3 snap_target = {};
     bool snap_found_target = false;
@@ -1262,7 +1265,7 @@ static void cld_upload(G &g) {
         //Log("group %d has %zu faces", group, num_faces);
         auto max_triangles = num_faces * 2;
         auto max_vertices = max_triangles * 3;
-        auto max_floats = max_vertices * 3;
+        auto max_floats = max_vertices * (3 + 2);
         auto floats = (float *)malloc(max_floats * sizeof(float));
         assert(floats);
         defer {
@@ -1276,18 +1279,27 @@ static void cld_upload(G &g) {
                 continue;
             }
 
-            auto push_vertex = [&] (float (&vertex)[3]) {
+            float (uvs[4])[2] = {
+                { 0, 0 },
+                { 1, 0 },
+                { 1, 1 },
+                { 0, 1 },
+            };
+
+            auto push_vertex = [&] (float (&vertex)[3], float (&uv)[2]) {
                 *write_pointer++ = vertex[0];
                 *write_pointer++ = vertex[1];
                 *write_pointer++ = vertex[2];
+                *write_pointer++ = uv[0];
+                *write_pointer++ = uv[1];
             };
-            push_vertex(face.vertices[0]);
-            push_vertex(face.vertices[1]);
-            push_vertex(face.vertices[2]);
+            push_vertex(face.vertices[0], uvs[0]);
+            push_vertex(face.vertices[1], uvs[1]);
+            push_vertex(face.vertices[2], uvs[2]);
             if (face.quad) {
-                push_vertex(face.vertices[0]);
-                push_vertex(face.vertices[2]);
-                push_vertex(face.vertices[3]);
+                push_vertex(face.vertices[0], uvs[0]);
+                push_vertex(face.vertices[2], uvs[2]);
+                push_vertex(face.vertices[3], uvs[3]);
             }
         }
         auto num_floats = (size_t)(write_pointer - floats);
@@ -1295,8 +1307,8 @@ static void cld_upload(G &g) {
         if (num_floats) {
             sg_update_buffer(g.cld_face_buffers[group].buf, sg_range { floats, num_floats * sizeof(float) });
         }
-        assert(num_floats % 3 == 0);
-        g.cld_face_buffers[group].num_vertices = (int)num_floats / 3;
+        assert(num_floats % 5 == 0);
+        g.cld_face_buffers[group].num_vertices = (int)num_floats / 5;
         assert(g.cld_face_buffers[group].num_vertices % 3 == 0);
     }
 }
@@ -3526,7 +3538,7 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
         size_t CLD_MAX_FACES_PER_GROUP = 58254;
         size_t CLD_MAX_TRIANGLES_PER_GROUP = CLD_MAX_FACES_PER_GROUP * 2;
         size_t CLD_MAX_VERTICES_PER_GROUP = CLD_MAX_TRIANGLES_PER_GROUP * 3;
-        size_t CLD_MAX_FLOATS_PER_GROUP = CLD_MAX_VERTICES_PER_GROUP * 3;
+        size_t CLD_MAX_FLOATS_PER_GROUP = CLD_MAX_VERTICES_PER_GROUP * (3 + 2);
         size_t CLD_GROUP_BUFFER_SIZE = CLD_MAX_FLOATS_PER_GROUP * sizeof(float);
         d.usage = SG_USAGE_DYNAMIC;
         d.size = CLD_GROUP_BUFFER_SIZE;
@@ -3557,7 +3569,7 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
 #ifndef NDEBUG
     {
         map_load(g, "map/ob01 (2).map");
-        // cld_load(g, "../cld/cld/ob01.cld");
+        cld_load(g, "cld/ob01.cld");
         // map_load(g, "map/ap64.map");
         // test_all_maps(g);
         // test_all_kg2s(g);
@@ -3571,6 +3583,7 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
         sg_pipeline_desc d = {};
         d.shader = sg_make_shader(cld_shader_desc(sg_query_backend()));
         d.layout.attrs[ATTR_cld_vs_position].format = SG_VERTEXFORMAT_FLOAT3;
+        d.layout.attrs[ATTR_cld_vs_uv_in].format = SG_VERTEXFORMAT_FLOAT2;
         d.depth.write_enabled = true;
         d.depth.compare = SG_COMPAREFUNC_GREATER;
         g.cld_pipeline = sg_make_pipeline(d);
@@ -3704,6 +3717,7 @@ struct Ray_Vs_MAP_Result {
     int hit_face = -1;
     int hit_vertex = -1;
     HMM_Vec3 hit_widget_pos = {};
+    HMM_Vec3 hit_normal = {};
 };
 static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
     ProfileFunction();
@@ -3745,6 +3759,8 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
                         result.hit_face = -1;
                         result.hit_vertex = vertex_index;
                         result.hit_widget_pos = vertex;
+
+                        result.hit_normal = { 0, 0, 1 }; // Not very useful, but I can't really give back a good normal for a vertex used by multiple faces! Blend them?
                     }
                 }
             }
@@ -3767,6 +3783,8 @@ static Ray_Vs_MAP_Result ray_vs_map(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
                             result.hit_face = face;
                             result.hit_vertex = -1;
                             result.hit_widget_pos = {};
+
+                            result.hit_normal = normal;
                         }
                     }
                 }
@@ -3784,6 +3802,7 @@ struct Ray_Vs_CLD_Result {
     int hit_face_index = -1;
     int hit_vertex = -1;
     HMM_Vec3 hit_widget_pos = {};
+    HMM_Vec3 hit_normal = {};
 };
 
 static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
@@ -3838,6 +3857,14 @@ static Ray_Vs_CLD_Result ray_vs_cld(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir) {
                         result.hit_face_index = face_index;
                         result.hit_vertex = vertex_index;
                         result.hit_widget_pos = widget_pos;
+
+                        HMM_Vec3 a, b, c;
+                        if (vertex_index < 3) {
+                            a = *(HMM_Vec3 *)face->vertices[0]; b = *(HMM_Vec3 *)face->vertices[1]; c = *(HMM_Vec3 *)face->vertices[2];
+                        } else {
+                            a = *(HMM_Vec3 *)face->vertices[0]; b = *(HMM_Vec3 *)face->vertices[2]; c = *(HMM_Vec3 *)face->vertices[3];
+                        }
+                        result.hit_normal = HMM_Cross((c - a), (b - a));
                     }
                 }
             }
@@ -3896,6 +3923,7 @@ static Ray_Vs_World_Result ray_vs_world(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir
             result.hit = true;
             result.closest_t = raycast.closest_t;
             result.hit_widget_pos = raycast.hit_widget_pos;
+            result.hit_normal = raycast.hit_normal;
 
             result.cld = {};
 
@@ -3912,6 +3940,7 @@ static Ray_Vs_World_Result ray_vs_world(G &g, HMM_Vec3 ray_pos, HMM_Vec3 ray_dir
             result.hit = true;
             result.closest_t = raycast.closest_t;
             result.hit_widget_pos = raycast.hit_widget_pos;
+            result.hit_normal = raycast.hit_normal;
 
             result.map = {};
 
@@ -4073,7 +4102,6 @@ static void event(const sapp_event *e_, void *userdata) {
         if (g.control_state == ControlState::Dragging) {
             
             if (g.drag_map_mesh && g.drag_map_buffer >= 0 && g.drag_map_vertex >= 0) {
-                HMM_Vec2 prev_mouse_pos = { e.mouse_x - e.mouse_dx, e.mouse_y - e.mouse_dy };
                 HMM_Vec2 this_mouse_pos = { e.mouse_x, e.mouse_y };
                 
                 MAP_Mesh &mesh = *g.drag_map_mesh;
@@ -4197,7 +4225,6 @@ static void event(const sapp_event *e_, void *userdata) {
             }
 
             if (g.cld.valid && g.drag_cld_face >= 0 && g.drag_cld_group >= 0 && g.drag_cld_vertex >= 0) {
-                HMM_Vec2 prev_mouse_pos = { e.mouse_x - e.mouse_dx, e.mouse_y - e.mouse_dy };
                 HMM_Vec2 this_mouse_pos = { e.mouse_x, e.mouse_y };
                 
                 PH2CLD_Face *faces = g.cld.group_0_faces;
@@ -4245,67 +4272,86 @@ static void event(const sapp_event *e_, void *userdata) {
 
                     bool aligned_with_camera = true;
                     if (aligned_with_camera) {
-                        // Remember you gotta put the plane in the coordinate space of the cld file!
-                        HMM_Vec3 plane_normal = ((Sinv * camera_rot(g)) * HMM_Vec4 { 0, 0, -1, 0 }).XYZ;
+                        
+                        HMM_Vec3 face_normal = {};
+                        if (face->quad) {
+                            int unchanging_vertices[3] = { 0, 1, 2 };
+                            /**/ if (g.drag_cld_vertex == 0) { int v[3] = { 1, 2, 3 }; memcpy(unchanging_vertices, v, sizeof(v)); }
+                            else if (g.drag_cld_vertex == 1) { int v[3] = { 0, 2, 3 }; memcpy(unchanging_vertices, v, sizeof(v)); }
+                            else if (g.drag_cld_vertex == 2) { int v[3] = { 0, 1, 3 }; memcpy(unchanging_vertices, v, sizeof(v)); }
+                            else                             { int v[3] = { 0, 1, 2 }; memcpy(unchanging_vertices, v, sizeof(v)); }
+                            HMM_Vec3 v0 = *(HMM_Vec3 *)&face->vertices[unchanging_vertices[0]];
+                            HMM_Vec3 v1 = *(HMM_Vec3 *)&face->vertices[unchanging_vertices[1]];
+                            HMM_Vec3 v2 = *(HMM_Vec3 *)&face->vertices[unchanging_vertices[2]];
+                            face_normal = HMM_Cross(v2 - v0, v1 - v0);
+                        } else {
+                            face_normal = g.drag_cld_normal_for_triangle_at_click_time;
+                            assert(HMM_Len(face_normal) != 0);
+                        }
+
+                        HMM_Vec3 plane_normal = (e.modifiers & SAPP_MODIFIER_CTRL) ? ((Sinv * camera_rot(g)) * HMM_Vec4 { 0, 0, -1, 0 }).XYZ : face_normal;
                         HMM_Vec3 plane_origin = g.widget_original_pos;
                         auto click_raycast = ray_vs_plane(click_ray_pos.XYZ, click_ray_dir.XYZ, plane_origin, plane_normal);
                         auto raycast = ray_vs_plane(this_ray_pos.XYZ, this_ray_dir.XYZ, plane_origin, plane_normal);
 
-                        assert(click_raycast.hit); // How could it not hit if it's aligned to the camera?
-                        assert(raycast.hit);
-                        HMM_Vec3 drag_offset = click_raycast.point - g.widget_original_pos;
-                        HMM_Vec3 target = raycast.point - drag_offset;
-                        if ((e.modifiers & SAPP_MODIFIER_ALT) || KEY('V')) {
-                            float distsq_min = INFINITY;
+                        if (click_raycast.hit && // How could it not hit if it's aligned to the camera?
+                            raycast.hit) {
+                            HMM_Vec3 drag_offset = click_raycast.point - g.widget_original_pos;
+                            HMM_Vec3 target = raycast.point - drag_offset;
+                            if ((e.modifiers & SAPP_MODIFIER_ALT) || KEY('V')) {
+                                float distsq_min = INFINITY;
 
-                            float snap_thresh_distsq = widget_radius(g, g.widget_original_pos) * 1000.0f;
-                            snap_thresh_distsq *= snap_thresh_distsq;
+                                float snap_thresh_distsq = widget_radius(g, g.widget_original_pos) * 1000.0f;
+                                snap_thresh_distsq *= snap_thresh_distsq;
 
-                            HMM_Vec3 snap_target = target;
-                            bool snap_found_target = false;
+                                HMM_Vec3 snap_target = target;
+                                bool snap_found_target = false;
 
-                            for (int group = 0; group < 4; group++) {
-                                PH2CLD_Face *faces = g.cld.group_0_faces;
-                                size_t num_faces = g.cld.group_0_faces_count;
-                                if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
-                                if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
-                                if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
-                                for (int face_index = 0; face_index < num_faces; face_index++) {
-                                    if (group == g.drag_cld_group && face_index == g.drag_cld_face) {
-                                        continue;
-                                    }
+                                for (int group = 0; group < 4; group++) {
+                                    PH2CLD_Face *faces = g.cld.group_0_faces;
+                                    size_t num_faces = g.cld.group_0_faces_count;
+                                    if (group == 1) { faces = g.cld.group_1_faces; num_faces = g.cld.group_1_faces_count; }
+                                    if (group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
+                                    if (group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
+                                    for (int face_index = 0; face_index < num_faces; face_index++) {
+                                        if (group == g.drag_cld_group && face_index == g.drag_cld_face) {
+                                            continue;
+                                        }
 
-                                    PH2CLD_Face *face = &faces[face_index];
-                                    int vertices_to_snap = 3;
-                                    if (face->quad) {
-                                        vertices_to_snap = 4;
-                                    }
+                                        PH2CLD_Face *face = &faces[face_index];
+                                        int vertices_to_snap = 3;
+                                        if (face->quad) {
+                                            vertices_to_snap = 4;
+                                        }
 
-                                    for (int vertex_index = 0; vertex_index < vertices_to_snap; vertex_index++) {
-                                        float (&vertex_floats)[3] = face->vertices[vertex_index];
-                                        HMM_Vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
+                                        for (int vertex_index = 0; vertex_index < vertices_to_snap; vertex_index++) {
+                                            float (&vertex_floats)[3] = face->vertices[vertex_index];
+                                            HMM_Vec3 vertex = { vertex_floats[0], vertex_floats[1], vertex_floats[2] };
 
-                                        HMM_Vec3 disp = vertex - target;
-                                        float distsq = HMM_LenSqr(disp);
-                                        if (distsq < snap_thresh_distsq) {
-                                            if (distsq_min > distsq) {
-                                                distsq_min = distsq;
-                                                snap_target = vertex;
-                                                snap_found_target = true;
+                                            HMM_Vec3 disp = vertex - target;
+                                            float distsq = HMM_LenSqr(disp);
+                                            if (distsq < snap_thresh_distsq) {
+                                                if (distsq_min > distsq) {
+                                                    distsq_min = distsq;
+                                                    snap_target = vertex;
+                                                    snap_found_target = true;
+                                                }
                                             }
                                         }
                                     }
                                 }
+                                if (snap_found_target) {
+                                    target = snap_target;
+                                }
+                                g.snap_target = snap_target;
+                                g.snap_found_target = snap_found_target;
                             }
-                            if (snap_found_target) {
-                                target = snap_target;
-                            }
-                            g.snap_target = snap_target;
-                            g.snap_found_target = snap_found_target;
+                            vertex_floats[0] = target.X;
+                            vertex_floats[1] = target.Y;
+                            vertex_floats[2] = target.Z;
+                        } else {
+                            
                         }
-                        vertex_floats[0] = target.X;
-                        vertex_floats[1] = target.Y;
-                        vertex_floats[2] = target.Z;
                         g.staleify_cld();
                     } else { // @Temporary: only along XZ plane
                         auto click_raycast = ray_vs_plane(click_ray_pos.XYZ, click_ray_dir.XYZ, widget_pos, { 0, 1, 0 });
@@ -4329,6 +4375,40 @@ static void event(const sapp_event *e_, void *userdata) {
                             vertex_floats[2] = target.Z;
                             g.staleify_cld();
                         }
+                    }
+                }
+
+                if ((e.modifiers & SAPP_MODIFIER_CTRL) && face->quad) {
+                    if (g.drag_cld_vertex == 0) {
+                        // Build a parallelogram out of vertices v0, v1, and v2. v3 = v2 + (v0 - v1)
+                        face->vertices[3][0] = face->vertices[2][0] + face->vertices[0][0] - face->vertices[1][0];
+                        face->vertices[3][1] = face->vertices[2][1] + face->vertices[0][1] - face->vertices[1][1];
+                        face->vertices[3][2] = face->vertices[2][2] + face->vertices[0][2] - face->vertices[1][2];
+                    } else if (g.drag_cld_vertex == 1) {
+                        // Build a parallelogram out of vertices v1, v2, and v3. v0 = v3 + (v1 - v2)
+                        face->vertices[0][0] = face->vertices[3][0] + face->vertices[1][0] - face->vertices[2][0];
+                        face->vertices[0][1] = face->vertices[3][1] + face->vertices[1][1] - face->vertices[2][1];
+                        face->vertices[0][2] = face->vertices[3][2] + face->vertices[1][2] - face->vertices[2][2];
+                    } else if (g.drag_cld_vertex == 2) {
+                        // // Build a parallelogram out of vertices v0, v2, and v3. v1 = v0 + (v2 - v3)
+                        // face->vertices[1][0] = face->vertices[0][0] + face->vertices[2][0] - face->vertices[3][0];
+                        // face->vertices[1][1] = face->vertices[0][1] + face->vertices[2][1] - face->vertices[3][1];
+                        // face->vertices[1][2] = face->vertices[0][2] + face->vertices[2][2] - face->vertices[3][2];
+
+                        // Build a parallelogram out of vertices v0, v1, and v2. v3 = v2 + (v0 - v1)
+                        face->vertices[3][0] = face->vertices[2][0] + face->vertices[0][0] - face->vertices[1][0];
+                        face->vertices[3][1] = face->vertices[2][1] + face->vertices[0][1] - face->vertices[1][1];
+                        face->vertices[3][2] = face->vertices[2][2] + face->vertices[0][2] - face->vertices[1][2];
+                    } else if (g.drag_cld_vertex == 3) {
+                        // // Build a parallelogram out of vertices v0, v1, and v3. v2 = v1 + (v3 - v0)
+                        // face->vertices[2][0] = face->vertices[1][0] + face->vertices[3][0] - face->vertices[0][0];
+                        // face->vertices[2][1] = face->vertices[1][1] + face->vertices[3][1] - face->vertices[0][1];
+                        // face->vertices[2][2] = face->vertices[1][2] + face->vertices[3][2] - face->vertices[0][2];
+
+                        // Build a parallelogram out of vertices v1, v2, and v3. v0 = v3 + (v1 - v2)
+                        face->vertices[0][0] = face->vertices[3][0] + face->vertices[1][0] - face->vertices[2][0];
+                        face->vertices[0][1] = face->vertices[3][1] + face->vertices[1][1] - face->vertices[2][1];
+                        face->vertices[0][2] = face->vertices[3][2] + face->vertices[1][2] - face->vertices[2][2];
                     }
                 }
             }
@@ -5180,7 +5260,7 @@ static void parse_mtl(FILE *mtl, Array<MAP_OBJ_Import_Material> &materials) {
     }
 }
 
-static bool save_file_with_backup(Array<uint8_t> filedata, char *requested_save_filename) {
+static bool save_file_with_backup(Array<uint8_t> filedata, char *file_extension, char *requested_save_filename) {
     assert(requested_save_filename);
     bool success = false;
     {
@@ -5195,7 +5275,7 @@ static bool save_file_with_backup(Array<uint8_t> filedata, char *requested_save_
         char *bak_filename = nullptr;
         // @Hack ughhhhhh @@@ @@@ @@@ I just don't want to add a new scope here (IMO these should be returns from a func, not nested ifs)
         if (strftime(buf, sizeof(buf), "%Y-%m-%d_%H-%M-%S", gmtime(&backup_time))) {
-            bak_filename = mprintf("%s.%s.map.bak.zip", requested_save_filename, buf);
+            bak_filename = mprintf("%s.%s.%s.bak.zip", requested_save_filename, buf, file_extension);
         }
         if (bak_filename) {
             uint16_t *filename16 = utf8_to_utf16(requested_save_filename);
@@ -5210,7 +5290,7 @@ static bool save_file_with_backup(Array<uint8_t> filedata, char *requested_save_
                     LARGE_INTEGER orig_len = {};
                     if (!GetFileSizeEx(orig_win, &orig_len)) return false;
                     uint64_t n = (uint64_t)orig_len.QuadPart;
-                    char *glob = mprintf("%s.*.map.bak.zip", requested_save_filename);
+                    char *glob = mprintf("%s.*.%s.bak.zip", requested_save_filename, file_extension);
                     if (!glob) return false;
                     defer { free(glob); };
                     uint16_t *glob16 = utf8_to_utf16(glob);
@@ -5235,9 +5315,13 @@ static bool save_file_with_backup(Array<uint8_t> filedata, char *requested_save_
                             }
                             if (periods_found == 4) {
                                 uint64_t y = 0, m = 1, d = 1, h = 1, min = 1, s = 1;
-                                int matches = swscanf((wchar_t *)(filedata.name + dot), L".%llu-%llu-%llu_%llu-%llu-%llu.map.bak.zip",
-                                    &y, &m, &d, &h, &min, &s);
-                                if (matches == 6) {
+                                wchar_t ext[4] = {};
+                                uint16_t *file_extension16 = utf8_to_utf16(file_extension);
+                                if (!file_extension16) return false;
+                                defer { free(file_extension16); };
+                                int matches = swscanf((wchar_t *)(filedata.name + dot), L".%llu-%llu-%llu_%llu-%llu-%llu.%3s.bak.zip",
+                                    &y, &m, &d, &h, &min, &s, ext);
+                                if (matches == 7 && wcscmp(ext, (wchar_t *)file_extension16) == 0) {
                                     if (y < (1ull << (63 - 40)) && m <= 12 && d <= 31 && h <= 23 && min <= 59 && s <= 60) {
                                         uint64_t lexicographic = (y << 40) | (m << 32) | (d << 24) | (h << 16) | (min << 8) | s;
                                         if (newest_date <= lexicographic) {
@@ -5409,13 +5493,37 @@ bool save_map(G &g, char *requested_save_filename) {
     };
     map_write_to_memory(g, &filedata);
 
-    bool result = save_file_with_backup(filedata, requested_save_filename);
+    bool result = save_file_with_backup(filedata, "map", requested_save_filename);
     if (result) {
         g.saved_file_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
         assert(!has_unsaved_changes(g));
     }
 
     return result;
+}
+
+bool save_cld(G &g, char *requested_save_filename) {
+    Array<uint8_t> filedata = {};
+    defer {
+        filedata.release();
+    };
+
+    size_t bytes_needed = 0;
+    if (!PH2CLD_write_cld_filesize(g.cld, &bytes_needed)) {
+        return false;
+    }
+    filedata.resize(bytes_needed);
+    if (!filedata.data) {
+        return false;
+    }
+    if (!PH2CLD_write_cld_to_memory(g.cld, filedata.data, filedata.count)) {
+        return false;
+    }
+    if (!save_file_with_backup(filedata, "cld", requested_save_filename)) {
+        return false;
+    }
+
+    return true;
 }
 
 static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd);
@@ -5479,12 +5587,35 @@ static void frame(void *userdata) {
             if (ImGui::MenuItem("Open...", "Ctrl-O")) {
                 g.control_o = true;
             }
-            if (ImGui::MenuItem("Save MAP", "Ctrl-S", nullptr, !!g.opened_map_filename)) {
+            // char *ctrl_s_name = "Save###Save";
+            // if (g.opened_map_filename) {
+            //     if (g.cld.valid) {
+            //         ctrl_s_name = "Save MAP + CLD###Save";
+            //     } else {
+            //         ctrl_s_name = "Save MAP###Save";
+            //     }
+            // } else {
+            //     if (g.cld.valid) {
+            //         ctrl_s_name = "Save CLD###Save";
+            //     } else {
+            //         ctrl_s_name = "Save###Save";
+            //     }
+            // }
+            char *ctrl_s_name = "Save MAP###Save";
+            if (ImGui::MenuItem(ctrl_s_name, "Ctrl-S", nullptr, !!g.opened_map_filename /* || !!g.cld.valid */)) {
                 g.control_s = true;
+                g.control_shift_s = true;
+                g.save_cld_as = false;
             }
             if (ImGui::MenuItem("Save MAP As...", "Ctrl-Shift-S", nullptr, !!g.opened_map_filename)) {
                 g.control_s = false;
                 g.control_shift_s = true;
+                g.save_cld_as = false;
+            }
+            if (ImGui::MenuItem("Save CLD As...", nullptr, nullptr, !!g.cld.valid)) {
+                g.control_s = false;
+                g.control_shift_s = false;
+                g.save_cld_as = true;
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Import OBJ Model...", "Ctrl-I", nullptr, !!g.opened_map_filename)) {
@@ -5599,6 +5730,14 @@ static void frame(void *userdata) {
         }
     } else if (g.control_i) {
         start_import_obj_model_popup = true;
+    } else if (g.save_cld_as) {
+        char *requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 CLD File\0" "*.cld\0"
+                                                                     "All Files\0" "*.*\0",
+                                                                    L"Save CLD", false, L"cld");
+        if (requested_save_filename) {
+            save_cld(g, requested_save_filename);
+            free(requested_save_filename);
+        }
     } else if (g.control_shift_s) {
         char *requested_save_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
                                                                      "All Files\0" "*.*\0",
@@ -5636,6 +5775,7 @@ static void frame(void *userdata) {
     if (g.want_exit) {
         ImGui::OpenPopup("Exit - Unsaved Changes");
     }
+
     if (ImGui::BeginPopupModal("Exit - Unsaved Changes", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Map \"%s\" has unsaved changes. Are you sure?", g.opened_map_filename);
         if (ImGui::Button("Save")) {
@@ -5756,8 +5896,10 @@ static void frame(void *userdata) {
 
 
     if (do_control_o_load) {
-        char *load = win_import_or_export_dialog(L"Silent Hill 2 Files (*.map; *.cld)\0" "*.map;*.cld;*.map.bak\0",
-                                                    L"Open", true);
+        char *load = win_import_or_export_dialog(L"Silent Hill 2 Files (*.map; *.cld)\0" "*.map;*.cld;*.map.bak;*.cld.bak\0"
+                                                  "MAP Files (*.map)\0" "*.map;*.map.bak\0"
+                                                  "CLD Files (*.cld)\0" "*.cld;*.cld.bak\0",
+                                                 L"Open", true, L".map");
         defer {
             free(load);
         };
@@ -5785,6 +5927,7 @@ static void frame(void *userdata) {
     // God, this is dumb. Lol. But it works!!!
     g.control_s = false;
     g.control_shift_s = false;
+    g.save_cld_as = false;
     g.control_o = false;
     g.control_i = false;
     ImGui::DockSpaceOverViewport(nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
@@ -8784,6 +8927,7 @@ static void frame(void *userdata) {
                     g.drag_cld_group = result.cld.hit_group;
                     g.drag_cld_face = result.cld.hit_face_index;
                     g.drag_cld_vertex = result.cld.hit_vertex;
+                    g.drag_cld_normal_for_triangle_at_click_time = result.hit_normal;
 
                     // Log("Hit CLD vertex: Group %d, Face %d, vertex %d", result.cld.hit_group, result.cld.hit_face_index, result.cld.hit_vertex);
                 }
@@ -9027,7 +9171,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
             };
         }
         {
-            vs_params_t params;
+            cld_vs_params_t params;
             params.cam_pos = g.cam_pos;
             params.P = perspective;
 
@@ -9042,7 +9186,7 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                     // I should also ask the community what the coordinate system is :)
                     params.M = HMM_Scale( { 1 * SCALE, -1 * SCALE, -1 * SCALE }) * HMM_Translate(-g.cld_origin());
                 }
-                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, SG_RANGE(params));
+                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_cld_vs_params, SG_RANGE(params));
                 {
                     sg_bindings b = {};
                     b.vertex_buffers[0] = g.cld_face_buffers[i].buf;
