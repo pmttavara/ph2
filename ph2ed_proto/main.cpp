@@ -5651,8 +5651,14 @@ bool cld_save(G &g, char *requested_save_filename) {
 }
 
 bool save(G &g, char *requested_map_filename, char *requested_cld_filename) {
-    bool map_success = map_save(g, requested_map_filename);
-    bool cld_success = cld_save(g, requested_cld_filename);
+    bool map_success = true;
+    bool cld_success = true;
+    if (requested_map_filename) {
+        map_success = map_save(g, requested_map_filename);
+    }
+    if (requested_cld_filename) {
+        cld_success = cld_save(g, requested_cld_filename);
+    }
     if (map_success && cld_success) {
         g.saved_arena_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
         assert(!has_unsaved_changes(g));
