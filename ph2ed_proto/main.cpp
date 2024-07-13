@@ -5864,16 +5864,22 @@ static void frame(void *userdata) {
     } else if (g.control_i) {
         start_import_obj_model_popup = true;
     } else if (g.control_shift_s) {
-        char *requested_map_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
-                                                                    "All Files\0" "*.*\0",
-                                                                   L"Save MAP", false, L"map");
+        char *requested_map_filename = nullptr;
+        if (g.opened_map_filename) {
+            requested_map_filename = win_import_or_export_dialog(L"Silent Hill 2 MAP File\0" "*.map\0"
+                                                                 "All Files\0" "*.*\0",
+                                                                 L"Save MAP", false, L"map");
+        }
         defer { free(requested_map_filename); };
-        if (requested_map_filename) {
-            char *requested_cld_filename = win_import_or_export_dialog(L"Silent Hill 2 CLD File\0" "*.cld\0"
-                                                                        "All Files\0" "*.*\0",
-                                                                       L"Save CLD", false, L"cld");
+        if (requested_map_filename || !g.opened_map_filename) {
+            char *requested_cld_filename = nullptr;
+            if (g.opened_cld_filename) {
+                requested_cld_filename = win_import_or_export_dialog(L"Silent Hill 2 CLD File\0" "*.cld\0"
+                                                                     "All Files\0" "*.*\0",
+                                                                     L"Save CLD", false, L"cld");
+            }
             defer { free(requested_cld_filename); };
-            if (requested_cld_filename) {
+            if (requested_cld_filename || !g.opened_cld_filename) {
                 if (save(g, requested_map_filename, requested_cld_filename)) {
                     ImSwap(g.opened_map_filename, requested_map_filename); // free the old names
                     ImSwap(g.opened_cld_filename, requested_cld_filename); // free the old names
