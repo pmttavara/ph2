@@ -1122,6 +1122,7 @@ struct G : Map {
     HMM_Vec3 widget_original_pos = {};
     int select_cld_group = -1;
     int select_cld_face = -1;
+    int select_cld_cylinder = -1;
     int drag_cld_group = -1;
     int drag_cld_face = -1;
     int drag_cld_vertex = -1;
@@ -1159,6 +1160,11 @@ struct G : Map {
 
     sg_buffer highlight_vertex_circle_buffer = {};
     sg_pipeline highlight_vertex_circle_pipeline = {};
+
+    struct {
+        sg_buffer buf = {};
+        int num_vertices = 0;
+    } cld_cylinder_buffer;
 
     MAP_Texture_Buffer missing_texture = {};
 
@@ -1342,6 +1348,7 @@ static void cld_unload(G &g) {
     }
     g.select_cld_group = -1;
     g.select_cld_face = -1;
+    g.select_cld_cylinder = -1;
     g.drag_cld_group = -1;
     g.drag_cld_face = -1;
     g.drag_cld_vertex = -1;
@@ -3243,6 +3250,38 @@ static void test_all_maps(G &g) {
     for (auto &a : texture_format_unknown_histogram) for (auto &x : a) x /= num_tested;
     map_unload(g);
 }
+static void test_all_clds(G &g) {
+    ProfileFunction();
+
+    struct _finddata_t find_data;
+    intptr_t directory = _findfirst("cld/*.cld", &find_data);
+    if (directory < 0) {
+        LogErr("Couldn't open any files in cld/");
+        return;
+    }
+    int spinner = 0;
+    int num_tested = 0;
+
+    while (1) {
+        char b[260 + sizeof("cld/")];
+        snprintf(b, sizeof(b), "cld/%s", find_data.name);
+        if (find_data.time_write < 1100000000) { // 1100000000 is sometime after 2002...
+            // Log("Time write: %d", find_data.time_write);
+            // Log("Loading cld \"%s\"", b);
+            // printf("%c\r", "|/-\\"[spinner++ % 4]);
+            sapp_set_window_title(b);
+            cld_load(g, b);
+            ++num_tested;
+        }
+        if (_findnext(directory, &find_data) < 0) {
+            if (errno == ENOENT) break;
+            else assert(0);
+        }
+    }
+    _findclose(directory);
+    Log("Tested %d clds.", num_tested);
+    cld_unload(g);
+}
 static void test_all_kg2s(G &g) {
     ProfileFunction();
 
@@ -3326,6 +3365,8 @@ static void imgui_do_console(G &g) {
             map_load(g, p);
         } else if (memcmp("test_all_maps", buf, sizeof("test_all_maps") - 1) == 0) {
             test_all_maps(g);
+        } else if (memcmp("test_all_clds", buf, sizeof("test_all_clds") - 1) == 0) {
+            test_all_clds(g);
         } else if (memcmp("test_all_kg2s", buf, sizeof("test_all_kg2s") - 1) == 0) {
             test_all_kg2s(g);
         } else if (memcmp("help", buf, sizeof("help") - 1) == 0) {
@@ -3495,8 +3536,8 @@ static void init(void *userdata) {
     };
     The_Arena_Allocator::init();
 #ifndef NDEBUG
-    MoveWindow(GetConsoleWindow(), +1925, 0, 1500, 800, true);
-    MoveWindow((HWND)sapp_win32_get_hwnd(), +1990, 50, 1500, 800, true);
+    // MoveWindow(GetConsoleWindow(), +1925, 0, 1500, 800, true);
+    // MoveWindow((HWND)sapp_win32_get_hwnd(), +1990, 50, 1500, 800, true);
     ShowWindow((HWND)sapp_win32_get_hwnd(), SW_MAXIMIZE);
 #endif
     G &g = *(G *)userdata;
@@ -3690,6 +3731,52 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,20 Size=1920,1007 Split=Y 
     }
 #endif
 
+    {
+        sg_buffer_desc d = {};
+        static float vertices[16384];
+        int vertices_count = 0;
+        {
+            auto push_vertex = [&] (float x, float y, float z) {
+                vertices[vertices_count * 5 + 0] = x;
+                vertices[vertices_count * 5 + 1] = y;
+                vertices[vertices_count * 5 + 2] = z;
+                vertices[vertices_count * 5 + 3] = 0;
+                vertices[vertices_count * 5 + 4] = 0;
+                ++vertices_count;
+            };
+
+            enum { N = 64 };
+            for (int i = 0; i < N; ++i) {
+                float theta_0 = ((i + 0) / (float)N) * TAU32;
+                float theta_1 = ((i + 1) / (float)N) * TAU32;
+
+                float x0 = cosf(theta_0) * 0.5f;
+                float z0 = sinf(theta_0) * 0.5f;
+
+                float x1 = cosf(theta_1) * 0.5f;
+                float z1 = sinf(theta_1) * 0.5f;
+
+                push_vertex(0, 0, 0);
+                push_vertex(x0, 0, z0);
+                push_vertex(x1, 0, z1);
+
+                push_vertex(0, 1, 0);
+                push_vertex(x0, 1, z0);
+                push_vertex(x1, 1, z1);
+
+                push_vertex(x0, 0, z0);
+                push_vertex(x0, 1, z0);
+                push_vertex(x1, 0, z1);
+
+                push_vertex(x0, 1, z0);
+                push_vertex(x1, 0, z1);
+                push_vertex(x1, 1, z1);
+            }
+        }
+        d.data = SG_RANGE(vertices);
+        g.cld_cylinder_buffer.buf = sg_make_buffer(d);
+        g.cld_cylinder_buffer.num_vertices = vertices_count;
+    }
     {
         sg_pipeline_desc d = {};
         d.shader = sg_make_shader(cld_shader_desc(sg_query_backend()));
@@ -5891,9 +5978,21 @@ static void frame(void *userdata) {
     }
     bool popup_bool = true;
     if (ImGui::BeginPopupModal("Open File - Unsaved Changes", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("MAP \"%s\" and CLD \"%s\" have unsaved changes. Are you sure?",
-                    g.opened_map_filename ? g.opened_map_filename : "",
-                    g.opened_cld_filename ? g.opened_cld_filename : "");
+        if (g.opened_map_filename && g.opened_cld_filename) {
+            ImGui::Text("The current files:\n"
+                        "  %s\n"
+                        "  %s\n"
+                        "have unsaved changes.\n"
+                        "Save these changes before opening the new file?",
+                        g.opened_map_filename, g.opened_cld_filename);
+        } else {
+            ImGui::Text("The current file:\n"
+                        "  %s\n"
+                        "has unsaved changes.\n"
+                        "Save these changes before opening the new file?",
+                        g.opened_map_filename ? g.opened_map_filename : g.opened_cld_filename);
+        }
+
         if (ImGui::Button("Save")) {
             if (save(g, g.opened_map_filename, g.opened_cld_filename)) {
                 do_control_o_load = true;
@@ -5915,9 +6014,20 @@ static void frame(void *userdata) {
     }
 
     if (ImGui::BeginPopupModal("Exit - Unsaved Changes", &popup_bool, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("MAP \"%s\" and CLD \"%s\" have unsaved changes. Are you sure?",
-                    g.opened_map_filename ? g.opened_map_filename : "",
-                    g.opened_cld_filename ? g.opened_cld_filename : "");
+        if (g.opened_map_filename && g.opened_cld_filename) {
+            ImGui::Text("The current files:\n"
+                        "  %s\n"
+                        "  %s\n"
+                        "have unsaved changes.\n"
+                        "Save these changes before opening the new file?",
+                        g.opened_map_filename, g.opened_cld_filename);
+        } else {
+            ImGui::Text("The current file:\n"
+                        "  %s\n"
+                        "has unsaved changes.\n"
+                        "Save these changes before opening the new file?",
+                        g.opened_map_filename ? g.opened_map_filename : g.opened_cld_filename);
+        }
         if (ImGui::Button("Save")) {
             if (save(g, g.opened_map_filename, g.opened_cld_filename)) {
                 sapp_request_quit();
@@ -7408,6 +7518,51 @@ static void frame(void *userdata) {
             }
             ImGui::Separator();
         }
+        if (g.cld.valid && ImGui::CollapsingHeader("CLD Cylinders", ImGuiTreeNodeFlags_None)) {
+            ImGui::PushID("CLD Cylinders");
+            ImGui::Indent();
+            defer {
+                ImGui::Unindent();
+                ImGui::PopID();
+            };
+            for (int i = 0; i < g.cld.group_4_cylinders_count; ++i) {
+                ImGui::PushID(i);
+                defer {
+                    ImGui::PopID();
+                };
+                char b[256]; snprintf(b, sizeof(b), "#%d", i);
+                bool selected = (g.select_cld_cylinder == i);
+                if (ImGui::Selectable(b, selected, ImGuiSelectableFlags_AllowItemOverlap)) {
+                    g.select_cld_group = -1; // @Cleanup: cld selection clear function?
+                    g.select_cld_face = -1;
+                    g.select_cld_cylinder = -1;
+
+                    if (!selected) { // wasn't selected; select it
+                        g.select_cld_cylinder = i;
+                    }
+                }
+                // ImGui::SameLine();
+                // if (ImGui::SmallButton("Delete")) { // TODO: undo/redo
+                //     if (g.select_cld_cylinder == i) {
+                //         g.select_cld_cylinder = -1;
+                //     }
+                //     if (g.select_cld_cylinder > i) {
+                //         --g.select_cld_cylinder;
+                //     }
+                //     memmove(&g.cld.group_4_cylinders[i], &g.cld.group_4_cylinders[i + 1], (g.cld.group_4_cylinders_count - 1 - i) * sizeof(g.cld.group_4_cylinders[0]));
+                //     --g.cld.group_4_cylinders_count;
+                //     (The_Arena_Allocator::free)(&g.cld.group_4_cylinders[g.cld.group_4_cylinders_count], sizeof(g.cld.group_4_cylinders[0]));
+                // }
+            }
+            // if (ImGui::Button("Add")) { // TODO: undo/redo
+            //     size_t old_size = g.cld.group_4_cylinders_count * sizeof(g.cld.group_4_cylinders[0]);
+            //     size_t new_size = (g.cld.group_4_cylinders_count + 1) * sizeof(g.cld.group_4_cylinders[0]);
+            //     g.cld.group_4_cylinders = (PH2CLD_Cylinder *)The_Arena_Allocator::reallocate(g.cld.group_4_cylinders, new_size, old_size);
+            //     g.cld.group_4_cylinders_count += 1;
+            //     g.cld.group_4_cylinders[g.cld.group_4_cylinders_count - 1].radius = +100;
+            //     g.cld.group_4_cylinders[g.cld.group_4_cylinders_count - 1].height = -100;
+            // }
+        }
 #ifndef NDEBUG
         // ImGui::Text("%lld undo frames", g.undo_stack.count);
         // ImGui::Text("%lld redo frames", g.redo_stack.count);
@@ -7444,6 +7599,7 @@ static void frame(void *userdata) {
                 }
                 g.select_cld_group = -1; // @Cleanup: cld selection clear function?
                 g.select_cld_face = -1;
+                g.select_cld_cylinder = -1;
                 g.overall_center_needs_recalc = true; // @Note: Bleh.
             }
             ImGui::EndDisabled();
@@ -7774,6 +7930,7 @@ static void frame(void *userdata) {
                     }
                     g.select_cld_group = -1;
                     g.select_cld_face = -1;
+                    g.select_cld_cylinder = -1;
                     g.overall_center_needs_recalc = true; // @Note: Bleh.
                 }
                 {
@@ -7923,6 +8080,7 @@ static void frame(void *userdata) {
                             });
                             g.select_cld_group = -1;
                             g.select_cld_face = -1;
+                            g.select_cld_cylinder = -1;
                             g.overall_center_needs_recalc = true; // @Note: Bleh.
                         }
                         defer { if (ret) ImGui::TreePop(); };
@@ -8080,6 +8238,7 @@ static void frame(void *userdata) {
         if (ImGui::Begin("Edit Widget", &g.settings.show_edit_widget, ImGuiWindowFlags_NoCollapse)) {
             PH2CLD_Face *face = nullptr;
             bool is_quad = false;
+            PH2CLD_Cylinder *cylinder = nullptr;
             if (g.select_cld_group >= 0 && g.select_cld_face >= 0) {
                 PH2CLD_Face *faces = g.cld.group_0_faces;
                 size_t num_faces = g.cld.group_0_faces_count;
@@ -8087,12 +8246,28 @@ static void frame(void *userdata) {
                 if (g.select_cld_group == 2) { faces = g.cld.group_2_faces; num_faces = g.cld.group_2_faces_count; }
                 if (g.select_cld_group == 3) { faces = g.cld.group_3_faces; num_faces = g.cld.group_3_faces_count; }
 
-                face = &faces[g.select_cld_face];
-                is_quad = face->quad;
-
-                if (!cld_face_visible(g, face)) {
+                if (g.select_cld_face >= num_faces) {
                     g.select_cld_group = -1;
                     g.select_cld_face = -1;
+                } else {
+
+                    face = &faces[g.select_cld_face];
+                    is_quad = face->quad;
+
+                    if (!cld_face_visible(g, face)) {
+                        g.select_cld_group = -1;
+                        g.select_cld_face = -1;
+                    }
+                }
+            }
+            if (g.select_cld_cylinder >= 0) {
+                PH2CLD_Cylinder *cylinders = g.cld.group_4_cylinders;
+                size_t num_cylinders = g.cld.group_4_cylinders_count;
+
+                if (g.select_cld_cylinder >= num_cylinders) {
+                    g.select_cld_cylinder = -1;
+                } else {
+                    cylinder = &cylinders[g.select_cld_cylinder];
                 }
             }
             if (1) {
@@ -8118,6 +8293,23 @@ static void frame(void *userdata) {
                         face->vertices[3][2] = 0;
                     }
                     g.staleify_cld();
+                }
+                ImGui::Separator();
+            }
+            if (1) {
+                if (!cylinder) {
+                    ImGui::BeginDisabled();
+                }
+                defer {
+                    if (!cylinder) {
+                        ImGui::EndDisabled();
+                    }
+                };
+                ImGui::Text("CLD Cylinder");
+                if (cylinder) {
+                    ImGui::DragFloat3("Pos", cylinder->position, 10);
+                    ImGui::DragFloat("Radius", &cylinder->radius, 1, +1, +100000, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                    ImGui::DragFloat("Height", &cylinder->height, 1, -100000, -1, "%.3f", ImGuiSliderFlags_AlwaysClamp);
                 }
                 ImGui::Separator();
             }
@@ -9056,6 +9248,7 @@ static void frame(void *userdata) {
                 assert(result.cld.hit_face_index >= 0);
                 g.select_cld_group = result.cld.hit_group;
                 g.select_cld_face = result.cld.hit_face_index;
+                g.select_cld_cylinder = -1;
 
                 if (result.cld.hit_vertex >= 0) {
                     g.widget_original_pos = result.hit_widget_pos;
@@ -9342,6 +9535,23 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                     sg_draw(0, g.cld_face_buffers[i].num_vertices, 1);
                 }
             }
+
+            if (g.cld.valid) {
+                for (int cylinder_index = 0; cylinder_index < g.cld.group_4_cylinders_count; ++cylinder_index) {
+                    PH2CLD_Cylinder *cylinder = &g.cld.group_4_cylinders[cylinder_index];
+                    float r = cylinder->radius * SCALE;
+                    float h = cylinder->height * SCALE;
+                    // I should also ask the community what the coordinate system is :)
+                    params.M = HMM_Scale(HMM_Vec3{ 1, -1, -1 }) * HMM_Translate(-g.cld_origin()) * HMM_Translate(*(HMM_Vec3 *)cylinder->position * SCALE) * HMM_Scale(HMM_Vec3{ r, h, r });
+                    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_cld_vs_params, SG_RANGE(params));
+                    {
+                        sg_bindings b = {};
+                        b.vertex_buffers[0] = g.cld_cylinder_buffer.buf;
+                        sg_apply_bindings(b);
+                        sg_draw(0, g.cld_cylinder_buffer.num_vertices, 1);
+                    }
+                }
+            }
         }
         {
             map_vs_params_t vs_params = {};
@@ -9488,6 +9698,16 @@ static void viewport_callback(const ImDrawList* dl, const ImDrawCmd* cmd) {
                         draw_highlight_vertex_circle(face->vertices[i], scale_factor, alpha);
                     }
                 }
+            }
+            if (g.select_cld_cylinder >= 0 && g.select_cld_cylinder < g.cld.group_4_cylinders_count) {
+                PH2CLD_Cylinder *cylinder = &g.cld.group_4_cylinders[g.select_cld_cylinder];
+                draw_highlight_vertex_circle(cylinder->position, 1, 1);
+                float top[3] = {
+                    cylinder->position[0],
+                    cylinder->position[1] + cylinder->height,
+                    cylinder->position[2],
+                };
+                draw_highlight_vertex_circle(top, 1, 1);
             }
 #if (0)
             { // @Debug
