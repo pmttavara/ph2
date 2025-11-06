@@ -169,6 +169,58 @@ void MsgBox_(const char *title, int flag, const char *msg, ...) {
 
 sg_context_desc sapp_sgcontext(void);
 
+bool read_entire_file(const char *filename, Array<uint8_t> *out) {
+    FILE *f = PH2CLD__fopen(filename, "rb");
+    if (!f) {
+        LogErr("Failed loading file \"%s\": Couldn't open file for reading!", filename);
+        return false;
+    }
+    defer {
+        fclose(f);
+    };
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        LogErr("Failed loading file \"%s\": Couldn't seek to end of file!", filename);
+        return false;
+    }
+
+    fpos_t filesize = {};
+    if (fgetpos(f, &filesize) != 0 || filesize < 0) {
+        LogErr("Failed loading file \"%s\": Couldn't query length!", filename);
+        return false;
+    }
+
+    auto checked_filesize = (uintmax_t)filesize;
+    if (checked_filesize > INT64_MAX || checked_filesize > SIZE_MAX) {
+        LogErr("Failed loading file \"%s\": File was too big to read!", filename);
+        return false;
+    }
+
+    auto new_count = (int64_t)checked_filesize;
+    assert((uintmax_t)new_count == checked_filesize);
+
+    if (new_count > out->capacity) {
+        auto old_capacity = out->capacity;
+        auto new_data = (uint8_t *)Mallocator::reallocate(out->data, new_count, out->capacity);
+        if (!new_data) {
+            LogErr("Failed loading file \"%s\": Couldn't allocate memory for file!", filename);
+            return false;
+        }
+        out->capacity = new_count;
+        out->data = new_data;
+        ++num_array_resizes;
+    }
+
+    rewind(f);
+    out->count = (int64_t)fread(out->data, 1, (size_t)new_count, f);
+    if (out->count != new_count) {
+        LogErr("Failed loading file \"%s\": Read failed!", filename);
+        return false; // Allocation succeeded, but read failed.
+    }
+
+    return true;
+}
+
 #ifdef _WIN32
 #pragma warning(disable : 4255)
 #pragma warning(disable : 4668)
@@ -1378,41 +1430,11 @@ static void cld_load(G &g, const char *filename) {
     cld_unload(g);
     auto arena_alloc = [] (size_t n, void *userdata) { return The_Arena_Allocator::allocate(n); };
 
-    {
-        FILE *fp = PH2CLD__fopen(filename, "rb");
-        defer { fclose(fp); };
-        if (!fp) {
-            LogErr("Failed opening CLD file \"%s\"!", filename);
-            return;
-        }
-        if (fseek(fp, 0, SEEK_END) != 0) {
-            LogErr("Failed reading CLD file \"%s\"!", filename);
-            return;
-        }
-        fpos_t raw_file_length = {0};
-        if (fgetpos(fp, &raw_file_length) != 0 || raw_file_length < 0) {
-            LogErr("Failed reading CLD file \"%s\"!", filename);
-            return;
-        }
-        uintmax_t checked_filesize = (uintmax_t)raw_file_length;
-        if (checked_filesize > SIZE_MAX) {
-            LogErr("Failed reading CLD file \"%s\"!", filename);
-            return;
-        }
-        size_t file_memory_length = (size_t)checked_filesize;
-        void *file_memory = malloc(file_memory_length);
-        if (!file_memory) {
-            LogErr("Failed reading CLD file \"%s\"!", filename);
-            return;
-        }
-        defer { free(file_memory); };
-        rewind(fp);
-        if (fread(file_memory, 1, file_memory_length, fp) != file_memory_length) {
-            LogErr("Failed reading CLD file \"%s\"!", filename);
-            return; /* Allocation succeeded, but read failed */
-        }
-        g.cld = PH2CLD_get_collision_data_from_file_memory_with_allocator(file_memory, file_memory_length, arena_alloc, nullptr);
+    static Array<uint8_t> filedata = {};
+    if (!read_entire_file(filename, &filedata)) {
+        return;
     }
+    g.cld = PH2CLD_get_collision_data_from_file_memory_with_allocator(filedata.data, filedata.count, arena_alloc, nullptr);
     if (!g.cld.valid) {
         LogErr("Failed loading CLD file \"%s\"!", filename);
         return;
@@ -2657,36 +2679,21 @@ void map_load(G &g, const char *filename, bool is_non_numbered_dependency = fals
     defer {
         // Log("%d array resizes", num_array_resizes - prev_num_array_resizes);
     };
-    
-    enum { MAP_FILE_DATA_LENGTH_MAX = 32 * 1024 * 1024 }; // @Temporary?    
-    static char filedata_do_not_modify_me_please[MAP_FILE_DATA_LENGTH_MAX]; // @Temporary
-    uint32_t file_len_do_not_modify_me_please = 0;
+
+    static Array<uint8_t> filedata = {};
+    if (!read_entire_file(filename, &filedata)) {
+        return;
+    }
+    const char *ptr = (const char *)filedata.data;
+    const char *end = (const char *)filedata.data + filedata.count;
+
     {
         {
-            FILE *f = PH2CLD__fopen(filename, "rb");
-            if (!f) {
-                LogErr("Failed loading MAP file \"%s\"!", filename);
-                return;
-            }
-            assert(f);
-            defer {
-                fclose(f);
-            };
-
-            // @Temporary @Debug
-            const char *ptr = nullptr;
-            const char *end = nullptr;
             PH2MAP__Header header = {};
             {
-                char *filedata = filedata_do_not_modify_me_please;
-                assert((uintptr_t)filedata % 16 == 0);
-                uint32_t file_len = (uint32_t)fread(filedata, 1, MAP_FILE_DATA_LENGTH_MAX, f);
-                file_len_do_not_modify_me_please = file_len;
-                ptr = filedata;
-                end = filedata + file_len;
                 Read(ptr, header);
                 assert(header.magic == 0x20010510);
-                assert(header.file_length == file_len);
+                assert(header.file_length == filedata.count);
                 assert(header.padding0 == 0);
             }
             // Log("Map \"%s\" has %u subfiles.", filename, header.subfile_count);
@@ -2963,8 +2970,8 @@ void map_load(G &g, const char *filename, bool is_non_numbered_dependency = fals
                 round_trip.release();
             };
             map_write_to_memory(g, &round_trip);
-            assert(round_trip.count == file_len_do_not_modify_me_please);
-            assert(memcmp(round_trip.data, filedata_do_not_modify_me_please, round_trip.count) == 0);
+            assert(round_trip.count == filedata.count);
+            assert(memcmp(round_trip.data, filedata.data, round_trip.count) == 0);
         }
     }
 

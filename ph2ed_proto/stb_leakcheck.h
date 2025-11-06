@@ -30,6 +30,7 @@ struct malloc_info
    int line;
    size_t size;
    stb_leakcheck_malloc_info *next,*prev;
+   void *PH2_pad[3];
 };
 
 static stb_leakcheck_malloc_info *mi_head;
