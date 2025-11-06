@@ -152,7 +152,7 @@ void do_crash_handler() {
         // Get NtQueryInformationProcess function
         auto NtQueryInformationProcess =
             (/*__kernel_entry*/ NTSTATUS (*)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG))
-                GetProcAddress(ntdll, "NtQueryInformationProcess");
+                (void *)GetProcAddress(ntdll, "NtQueryInformationProcess");
         if (!NtQueryInformationProcess) return;
 
         // Query process information to find the PEB address

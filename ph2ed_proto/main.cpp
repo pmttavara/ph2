@@ -855,7 +855,7 @@ SPALL_FN double get_rdtsc_multiplier(void) {
     if (ntdll) {
 
         int (*NtQuerySystemInformation)(int, void *, unsigned int, unsigned int *) =
-        (int (*)(int, void *, unsigned int, unsigned int *))GetProcAddress(ntdll, "NtQuerySystemInformation");
+            (int (*)(int, void *, unsigned int, unsigned int *))(void *)GetProcAddress(ntdll, "NtQuerySystemInformation");
         if (NtQuerySystemInformation) {
 
             volatile uint64_t *hypervisor_shared_page = NULL;
