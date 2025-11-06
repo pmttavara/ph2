@@ -1,2 +1,2 @@
-#define APP_VERSION 0,0,0,4
-#define APP_VERSION_STRING "0.004"
+#define APP_VERSION 0,0,0,5
+#define APP_VERSION_STRING "0.005"

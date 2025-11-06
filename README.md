@@ -1,4 +1,4 @@
-<img align="left" width="128" height="128" src="https://github.com/pmttavara/ph2/assets/34119228/e0277412-de6b-4c6b-a560-a924243ca3be">
+<img align="left" width="64" height="64" src="https://github.com/pmttavara/ph2/assets/34119228/e0277412-de6b-4c6b-a560-a924243ca3be">
 
 # Psilent pHill 2
 
