@@ -254,14 +254,24 @@ static inline double get_time(void) {
 // How's this done for Linux/etc?
 #define KEY(vk) ((unsigned short)GetAsyncKeyState(vk) >= 0x8000)
 
+static bool has_aesni = false;
+
 #include "meow_hash_x64_aesni.h"
 
-uint64_t meow_hash(void *key, int len) {
+#define XXH_STATIC_LINKING_ONLY /* access advanced declarations */
+#define XXH_IMPLEMENTATION      /* access definitions */
+#include "xxhash.h"
+
+uint64_t hash_arena(void *key, int len) {
     ProfileFunction();
 
-    meow_u128 hash = MeowHash(MeowDefaultSeed, len, key);
-    auto hash64 = MeowU64From(hash, 0);
-    return hash64;
+    if (has_aesni) {
+        meow_u128 hash = MeowHash(MeowDefaultSeed, len, key);
+        auto hash64 = MeowU64From(hash, 0);
+        return hash64;
+    } else {
+        return XXH3_64bits(key, len);
+    }
 }
 
 extern "C" {
@@ -1119,7 +1129,7 @@ struct G : Map {
     Array<Map_History_Entry> undo_stack = {};
     Array<Map_History_Entry> redo_stack = {};
 
-    uint64_t saved_arena_hash = meow_hash(nullptr, 0);
+    uint64_t saved_arena_hash = hash_arena(nullptr, 0);
 
     double last_time = 0;
     double t = 0;
@@ -1302,7 +1312,7 @@ struct G : Map {
 };
 
 bool has_unsaved_changes(G &g) {
-    bool unsaved = (g.saved_arena_hash != meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head));
+    bool unsaved = (g.saved_arena_hash != hash_arena(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head));
     if (unsaved) {
         assert(g.opened_map_filename || g.opened_cld_filename);
     }
@@ -1443,7 +1453,7 @@ static void cld_load(G &g, const char *filename) {
     g.opened_cld_filename = strdup(filename);
     assert(g.opened_cld_filename);
 
-    g.saved_arena_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
+    g.saved_arena_hash = hash_arena(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
 }
 #define Read(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(&(x), ptr, sizeof(x)) && (ptr += sizeof(x)))
 #define WritePtr(ptr, x) (assert(ptr + sizeof(x) <= end), memcpy(ptr, &(x), sizeof(x)) && (ptr += sizeof(x)))
@@ -2615,7 +2625,7 @@ void unload(G &g) {
 
     The_Arena_Allocator::free_all();
     g.clear_undo_redo_stacks();
-    g.saved_arena_hash = meow_hash(nullptr, 0);
+    g.saved_arena_hash = hash_arena(nullptr, 0);
     assert(!has_unsaved_changes(g));
 }
 
@@ -3088,7 +3098,7 @@ void map_load(G &g, const char *filename, bool is_non_numbered_dependency = fals
     g.solo_material = -1;
 
     g.reset_camera = true;
-    g.saved_arena_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
+    g.saved_arena_hash = hash_arena(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
 }
 static void map_upload(G &g) {
     ProfileFunction();
@@ -3525,6 +3535,12 @@ static bool file_exists(const char *filename8) {
 #define PH2_SETTINGS_PATH "settings.ph2"
 #define PH2_SETTINGS_MAGIC "PH2SET\x1b"
 
+auto cpuid(int function) {
+    union { struct { uint32_t eax, ebx, ecx, edx; }; int array[4]; } result = {};
+    __cpuid(result.array, function);
+    return result;
+}
+
 void *operator new(size_t, void *ptr) { return ptr; }
 static void init(void *userdata) {
 
@@ -3536,10 +3552,61 @@ static void init(void *userdata) {
 
     ProfileFunction();
 
+    Log("Psilent pHill 2 Editor v" APP_VERSION_STRING " (" GIT_HASH_STRING ")");
+
+#ifndef NDEBUG
+    if (cpuid(0).eax > 0) {
+        auto features = cpuid(1).ecx;
+
+        char *feature_strings[][2] = {
+            { "SSE3",                "Streaming SIMD Extensions 3 (SSE3). A value of 1 indicates the processor supports this technology." },
+            { "PCLMULQDQ",           "PCLMULQDQ. A value of 1 indicates the processor supports the PCLMULQDQ instruction." },
+            { "DTES64",              "64-bit DS Area. A value of 1 indicates the processor supports DS area using 64-bit layout." },
+            { "MONITOR",             "MONITOR/MWAIT. A value of 1 indicates the processor supports this feature." },
+            { "DS-CPL",              "CPL Qualified Debug Store. A value of 1 indicates the processor supports the extensions to the Debug Store feature to allow for branch message storage qualified by CPL." },
+            { "VMX",                 "Virtual Machine Extensions. A value of 1 indicates that the processor supports this technology." },
+            { "SMX",                 "Safer Mode Extensions. A value of 1 indicates that the processor supports this technology. See Chapter 7, “Safer Mode Extensions Reference.”" },
+            { "EIST",                "Enhanced Intel SpeedStep® technology. A value of 1 indicates that the processor supports this technology." },
+            { "TM2",                 "Thermal Monitor 2. A value of 1 indicates whether the processor supports this technology." },
+            { "SSSE3",               "A value of 1 indicates the presence of the Supplemental Streaming SIMD Extensions 3 (SSSE3). A value of 0 indicates the instruction extensions are not present in the processor." },
+            { "CNXT-ID",             "L1 Context ID. A value of 1 indicates the L1 data cache mode can be set to either adaptive mode or shared mode. A value of 0 indicates this feature is not supported. See definition of the IA32_MISC_ENABLE MSR Bit 24 (L1 Data Cache Context Mode) for details." },
+            { "SDBG",                "A value of 1 indicates the processor supports IA32_DEBUG_INTERFACE MSR for silicon debug." },
+            { "FMA",                 "A value of 1 indicates the processor supports FMA extensions using YMM state." },
+            { "CMPXCHG16B",          "CMPXCHG16B Available. A value of 1 indicates that the feature is available. See the “CMPXCHG8B/CMPXCHG16B—Compare and Exchange Bytes” section in this chapter for a description." },
+            { "xTPR Update Control", "xTPR Update Control. A value of 1 indicates that the processor supports changing IA32_MISC_ENABLE[bit 23]." },
+            { "PDCM",                "Perfmon and Debug Capability: A value of 1 indicates the processor supports the performance and debug feature indication MSR IA32_PERF_CAPABILITIES." },
+            { "Reserved",            "Reserved" },
+            { "PCID",                "Process-context identifiers. A value of 1 indicates that the processor supports PCIDs and that software may set CR4.PCIDE to 1." },
+            { "DCA",                 "A value of 1 indicates the processor supports the ability to prefetch data from a memory mapped device." },
+            { "SSE4_1",              "A value of 1 indicates that the processor supports SSE4.1." },
+            { "SSE4_2",              "A value of 1 indicates that the processor supports SSE4.2." },
+            { "x2APIC",              "A value of 1 indicates that the processor supports x2APIC feature." },
+            { "MOVBE",               "A value of 1 indicates that the processor supports MOVBE instruction." },
+            { "POPCNT",              "A value of 1 indicates that the processor supports the POPCNT instruction." },
+            { "TSC-Deadline",        "A value of 1 indicates that the processor’s local APIC timer supports one-shot operation using a TSC deadline value." },
+            { "AESNI",               "A value of 1 indicates that the processor supports the AESNI instruction extensions." },
+            { "XSAVE",               "A value of 1 indicates that the processor supports the XSAVE/XRSTOR processor extended states feature, the XSETBV/XGETBV instructions, and XCR0." },
+            { "OSXSAVE",             "A value of 1 indicates that the OS has set CR4.OSXSAVE[bit 18] to enable XSETBV/XGETBV instructions to access XCR0 and to support processor extended state management using XSAVE/XRSTOR." },
+            { "AVX",                 "A value of 1 indicates the processor supports the AVX instruction extensions." },
+            { "F16C",                "A value of 1 indicates that processor supports 16-bit floating-point conversion instructions." },
+            { "RDRAND",              "A value of 1 indicates that processor supports RDRAND instruction." },
+            { "Not Used",            "Always returns 0." },
+        };
+
+        Log("CPU Features:");
+        for (int feature_index = 0; feature_index < 32; ++feature_index) {
+            Log("  %s - %s", ((features >> feature_index) & 1) ? "Supported  " : "Unsupported", feature_strings[feature_index][0]);
+        }
+        Log("");
+    }
+#endif
+
+    has_aesni = cpuid(0).eax > 0 && !!((cpuid(1).ecx >> 25) & 1);
+
     double init_time = -get_time();
     defer {
         init_time += get_time();
-        // Log("Init() took %f seconds.", init_time);
+        Log("Init() took %f seconds.", init_time);
     };
     The_Arena_Allocator::init();
 #ifndef NDEBUG
@@ -5754,7 +5821,7 @@ bool save(G &g, char *requested_map_filename, char *requested_cld_filename) {
         cld_success = cld_save(g, requested_cld_filename);
     }
     if (map_success && cld_success) {
-        g.saved_arena_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
+        g.saved_arena_hash = hash_arena(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
         assert(!has_unsaved_changes(g));
         return true;
     }
@@ -9299,7 +9366,7 @@ static void frame(void *userdata) {
         no_asan_memcpy(The_Arena_Allocator::arena_data, entry.data, The_Arena_Allocator::arena_head);
     };
 
-    uint64_t arena_hash = meow_hash(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
+    uint64_t arena_hash = hash_arena(The_Arena_Allocator::arena_data, (int)The_Arena_Allocator::arena_head);
     if (g.undo_stack.count < 1 ||
         (g.control_state != ControlState::Dragging &&
          !ImGui::GetIO().WantCaptureKeyboard &&

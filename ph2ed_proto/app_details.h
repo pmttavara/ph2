@@ -1,2 +1,6 @@
 #define APP_VERSION 0,0,0,5
 #define APP_VERSION_STRING "0.005"
+
+#define STR_(x) #x
+#define STR(x) STR_(x)
+#define GIT_HASH_STRING STR(GIT_HASH)

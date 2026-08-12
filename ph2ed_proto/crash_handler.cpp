@@ -1,9 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #include "app_details.h"
-#define STR_(x) #x
-#define STR(x) STR_(x)
-#define GIT_HASH_STRING STR(GIT_HASH)
 
 #include <stdint.h>
 #include <stdlib.h>

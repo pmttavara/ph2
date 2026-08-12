@@ -6,9 +6,10 @@ rule Sokol_Shdc
   description = Sokol $out
 
 flags = -showIncludes -nologo -diagnostics:caret -Z7 -EHsc- $
+  -DGIT_HASH=$git_hash $
   -W4 -WX -wd4189 -wd4456 -wd4457 -wd4800 -wd4324 -wd4505 -wd4334 -wd4244 -wd4267 -wd4706 -wd4100
 
-clang_flags = -maes -mavx2 -Brepro $
+clang_flags = -march=westmere -maes -Brepro $
   -Wno-sign-compare -Wno-missing-field-initializers -Wno-microsoft-include -Wno-unused $
   -Wno-missing-field-initializers -Wno-missing-braces -Wno-unused-variable -Wno-deprecated-declarations $
   -Wno-writable-strings -Wno-string-plus-int -Wno-format-security -Wno-tautological-constant-out-of-range-compare $
@@ -26,7 +27,6 @@ rule Link
 
 build shaders.glsl.h: Sokol_Shdc shaders.glsl
 build $builddir/main.obj: Compile main.cpp
-build $builddir/libs.obj: Compile libs.cpp
 build $builddir/crash_handler.obj: Compile crash_handler.cpp
-  extra_flags = -DGIT_HASH=$git_hash
+build $builddir/libs.obj: Compile libs.cpp
 build $builddir/ph2ed_proto.exe: Link $builddir/main.obj $builddir/crash_handler.obj $builddir/libs.obj
