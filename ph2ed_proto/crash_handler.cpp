@@ -437,6 +437,12 @@ void do_crash_handler() {
         if (!hSession) continue;
         defer { WinHttpCloseHandle(hSession); };
 
+        DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | 0x2000;
+        if (!WinHttpSetOption(hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
+            protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+            WinHttpSetOption(hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols)); // Win7
+        }
+
         // Connect to domain
         HINTERNET hConnect = WinHttpConnect(hSession, L"discord.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
         if (!hConnect) continue;
