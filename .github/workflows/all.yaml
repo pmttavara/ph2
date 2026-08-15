@@ -1,21 +1,25 @@
 name: builds
-on: [push]
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ph2ed_proto:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v2
-      - name: Cache LLVM and Clang
-        id: cache-llvm
-        uses: actions/cache@v3
-        with:
-          path: C:/Program Files/LLVM
-          key: llvm-14
+      - uses: actions/checkout@v4
       - name: Install LLVM and Clang
-        uses: KyleMayes/install-llvm-action@v1
+        uses: KyleMayes/install-llvm-action@v2
         with:
           version: "14"
-          cached: ${{ steps.cache-llvm.outputs.cache-hit }}
       - run: ./ci.bat
       - uses: actions/upload-artifact@v4
         with:
@@ -23,10 +27,40 @@ jobs:
           path: |
             ph2ed_proto/ph2ed_proto.exe
             ph2ed_proto/ph2ed_proto.pdb
-      - uses: "marvinpinto/action-automatic-releases@latest"
+          if-no-files-found: error
+
+      # --- Archival release: only when a vX.YYY tag is pushed. Never overwritten. ---
+      - name: Name the archival zip after the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: Copy-Item ph2ed_proto.zip "ph2ed_proto-$env:TAG.zip"
+      - name: Publish archival release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          automatic_release_tag: "latest"
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           prerelease: false
-          title: "Latest"
+          make_latest: true
+          generate_release_notes: true
+          files: ph2ed_proto-${{ github.ref_name }}.zip
+          fail_on_unmatched_files: true
+
+      # --- Rolling release: only on main. The "latest" tag is force-moved to HEAD. ---
+      - name: Move the "latest" tag to this commit
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: git tag -f latest && git push -f origin latest
+      - name: Publish rolling release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest
+          body: Rolling build of the newest commit on main. For a fixed version, use a tagged release.
+          prerelease: true
+          make_latest: false
           files: ph2ed_proto.zip
+          fail_on_unmatched_files: true
